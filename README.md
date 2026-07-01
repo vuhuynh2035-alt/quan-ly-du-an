@@ -22,13 +22,14 @@ git push
 **Máy 2 (lần đầu):**
 
 ```powershell
-git clone https://github.com/vuhuynh2035-alt/quan-ly-du-an.git
+git clone https://github.com/TEN-GITHUB/quan-ly-du-an.git
 cd quan-ly-du-an
 npm install
 copy public\firebase-config.example.js public\firebase-config.js
-# Điền Firebase config (nếu dùng cloud)
 npm run dev
 ```
+
+> Thay `TEN-GITHUB` bằng username GitHub của bạn (ví dụ `vuhuynh2035-alt`).
 
 **Máy 2 (các lần sau):**
 
