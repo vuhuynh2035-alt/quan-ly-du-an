@@ -568,7 +568,19 @@ exports.notifyAssignment = onDocumentWritten(
     for (const asgn of targets) {
       const emp = empById.get(asgn.empId);
       const token = await empFcmToken(emp);
-      const toUid = (emp && emp.authUid) || "";
+      let toUid = (emp && emp.authUid) || "";
+      if (!toUid && asgn.empId) {
+        try {
+          const uSnap = await db
+            .collection("users")
+            .where("empId", "==", asgn.empId)
+            .limit(1)
+            .get();
+          if (!uSnap.empty) toUid = uSnap.docs[0].id;
+        } catch (err) {
+          console.warn("lookup toUid:", err);
+        }
+      }
       const baseDelivery = {
         type: "assignment",
         refId: asgn.id || "",
