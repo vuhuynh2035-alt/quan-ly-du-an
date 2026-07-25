@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:host": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
     "start": "vite",
-    "deploy": "npm run build && firebase deploy",
-    "deploy:hosting": "npm run build && firebase deploy --only hosting",
-    "deploy:rules": "firebase deploy --only firestore:rules",
-    "deploy:functions": "firebase deploy --only functions"
+    "predeploy": "node scripts/bump-app-version.js",
+    "deploy": "npm run build && npx -y firebase-tools@latest deploy",
+    "deploy:hosting": "node scripts/bump-app-version.js && npm run build && npx -y firebase-tools@latest deploy --only hosting",
+    "deploy:rules": "npx -y firebase-tools@latest deploy --only firestore:rules",
+    "deploy:functions": "npx -y firebase-tools@latest deploy --only functions"
   },
   "dependencies": {
     "firebase": "^11.6.0"

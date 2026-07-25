@@ -1,4 +1,6 @@
-const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const crypto = require("crypto");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
@@ -9,6 +11,20 @@ initializeApp();
 
 const db = getFirestore();
 const adminAuth = getAuth();
+const STATUS_RANK = { failed: 0, sent: 1, delivered: 2, read: 3 };
+
+function makeAckToken() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function normalizeOrgId(org) {
+  return (
+    String(org || "saree")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "") || "saree"
+  );
+}
 
 function sanitizeUsername(name) {
   return String(name || "")
@@ -24,8 +40,6 @@ function sanitizeUsername(name) {
 function defaultEmployeePassword(username, password) {
   const pw = String(password || "");
   if (pw.length >= 6) return pw;
-  const u = String(username || "");
-  if (u.length >= 6) return u;
   return "123456";
 }
 
@@ -71,7 +85,180 @@ async function empFcmToken(emp) {
     const u = await db.doc(`users/${emp.authUid}`).get();
     if (docExists(u) && u.data().fcmToken) return u.data().fcmToken;
   }
+  if (emp.id) {
+    const snap = await db
+      .collection("users")
+      .where("empId", "==", emp.id)
+      .limit(1)
+      .get();
+    if (!snap.empty) {
+      const t = snap.docs[0].data().fcmToken;
+      if (t) return t;
+    }
+  }
   return null;
+}
+
+async function clearEmpFcmTokenInWorkspace(orgId, token) {
+  if (!orgId || !token) return;
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) return;
+  const ws = wsSnap.data() || {};
+  const empList = Array.isArray(ws.emp) ? ws.emp : [];
+  let changed = false;
+  const next = empList.map((e) => {
+    if (e && e.fcmToken === token) {
+      changed = true;
+      return { ...e, fcmToken: null };
+    }
+    return e;
+  });
+  if (!changed) return;
+  await wsRef.set(
+    {
+      ...ws,
+      emp: next,
+      patch: (ws.patch || 0) + 1,
+      updatedAt: new Date(),
+    }
+  );
+}
+
+async function clearUserFcmToken(token) {
+  if (!token) return;
+  const snap = await db
+    .collection("users")
+    .where("fcmToken", "==", token)
+    .limit(5)
+    .get();
+  const orgIds = new Set();
+  for (const d of snap.docs) {
+    const data = d.data() || {};
+    if (data.orgId) orgIds.add(normalizeOrgId(data.orgId));
+    await d.ref.set({ fcmToken: null }, { merge: true });
+  }
+  for (const orgId of orgIds) {
+    await clearEmpFcmTokenInWorkspace(orgId, token);
+  }
+}
+
+async function createDeliveryDoc(orgId, payload) {
+  const ref = db.collection(`workspaces/${orgId}/delivery`).doc();
+  const ackToken = makeAckToken();
+  const now = new Date();
+  const fromUid = String(payload.fromUid || "");
+  const toUid = String(payload.toUid || "");
+  let participants = Array.from(new Set([fromUid, toUid].filter(Boolean)));
+  // Giám đốc cần thấy trạng thái giao việc dù không phải người nhận.
+  if (String(payload.type || "") === "assignment") {
+    try {
+      const dirs = await directorFcmTokens(orgId);
+      dirs.forEach((d) => {
+        if (d && d.uid) participants.push(d.uid);
+      });
+      participants = Array.from(new Set(participants));
+    } catch (err) {
+      console.warn("createDeliveryDoc directors:", err);
+    }
+  }
+  const docData = {
+    type: String(payload.type || ""),
+    refId: String(payload.refId || ""),
+    toUid,
+    toEmpId: String(payload.toEmpId || ""),
+    fromUid,
+    participants,
+    threadId: String(payload.threadId || ""),
+    status: payload.status || "sent",
+    sentAt: now,
+    deliveredAt: null,
+    readAt: null,
+    ackToken,
+    error: payload.error ? String(payload.error).slice(0, 500) : null,
+  };
+  await ref.set(docData);
+  return { id: ref.id, ackToken, orgId, ...docData };
+}
+
+async function markDeliveryFailed(orgId, payload, error) {
+  try {
+    await createDeliveryDoc(orgId, {
+      ...payload,
+      status: "failed",
+      error: error || "push failed",
+    });
+  } catch (err) {
+    console.warn("markDeliveryFailed:", err);
+  }
+}
+
+async function handleAckPush(data, authUid) {
+  const deliveryId = String((data && data.deliveryId) || "").trim();
+  const ackToken = String((data && data.ackToken) || "").trim();
+  const orgId = normalizeOrgId((data && data.orgId) || "");
+  const status = String((data && data.status) || "").trim();
+  if (!deliveryId || !orgId) {
+    throw new HttpsError("invalid-argument", "Thiếu deliveryId hoặc orgId.");
+  }
+  if (status !== "delivered" && status !== "read") {
+    throw new HttpsError("invalid-argument", "status phải là delivered hoặc read.");
+  }
+  const ref = db.doc(`workspaces/${orgId}/delivery/${deliveryId}`);
+  const snap = await ref.get();
+  if (!docExists(snap)) {
+    throw new HttpsError("not-found", "Không tìm thấy bản ghi thông báo.");
+  }
+  const cur = snap.data() || {};
+  const tokenOk = ackToken && cur.ackToken === ackToken;
+  const uidOk =
+    authUid &&
+    (authUid === cur.toUid ||
+      authUid === cur.fromUid ||
+      (Array.isArray(cur.participants) && cur.participants.indexOf(authUid) >= 0));
+  if (!tokenOk && !uidOk) {
+    throw new HttpsError("permission-denied", "Không xác thực được xác nhận thông báo.");
+  }
+  if (status === "read" && authUid && cur.toUid && authUid !== cur.toUid && !tokenOk) {
+    // Người gửi không tự đánh dấu đã đọc hộ người nhận (trừ khi có ackToken từ click noti).
+    if (authUid === cur.fromUid) {
+      throw new HttpsError("permission-denied", "Chỉ người nhận mới đánh dấu đã đọc.");
+    }
+  }
+  const curRank = STATUS_RANK[cur.status] != null ? STATUS_RANK[cur.status] : 0;
+  const nextRank = STATUS_RANK[status] != null ? STATUS_RANK[status] : 0;
+  if (nextRank <= curRank) {
+    return { ok: true, status: cur.status, skipped: true };
+  }
+  const patch = { status };
+  if (status === "delivered") patch.deliveredAt = new Date();
+  if (status === "read") {
+    patch.readAt = new Date();
+    if (!cur.deliveredAt) patch.deliveredAt = new Date();
+  }
+  await ref.set(patch, { merge: true });
+  return { ok: true, status, skipped: false };
+}
+
+async function userFcmTokenByUid(uid) {
+  if (!uid) return null;
+  const snap = await db.doc(`users/${uid}`).get();
+  if (!docExists(snap)) return null;
+  return snap.data().fcmToken || null;
+}
+
+async function employeeTokensInOrg(orgId) {
+  const snap = await db
+    .collection("users")
+    .where("orgId", "==", orgId)
+    .where("role", "==", "employee")
+    .get();
+  const out = [];
+  snap.docs.forEach((d) => {
+    const t = d.data().fcmToken;
+    if (t) out.push({ token: t, uid: d.id, empId: d.data().empId || "" });
+  });
+  return out;
 }
 
 function asgnKey(a) {
@@ -103,28 +290,261 @@ function findNotifyTargets(before, after) {
   return targets;
 }
 
-function buildMessage(emp, asgn, proj) {
-  const title = "Bạn được giao việc mới";
+async function directorFcmTokens(orgId) {
+  const snap = await db
+    .collection("users")
+    .where("orgId", "==", orgId)
+    .where("role", "==", "director")
+    .get();
+  const tokens = [];
+  snap.docs.forEach((d) => {
+    const t = d.data().fcmToken;
+    if (t) tokens.push({ token: t, uid: d.id });
+  });
+  return tokens;
+}
+
+function buildReminderMessage(reminder) {
+  const text = String(reminder.text || "Đã đến giờ nhắc").slice(0, 500);
+  const rid = String(reminder.id || "");
+  return {
+    data: {
+      type: "reminder",
+      title: "🔔 Nhắc hẹn",
+      body: text,
+      reminderId: rid,
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link: "/?tab=lich" },
+    },
+  };
+}
+
+function buildArrivalReminderMessage(reminder) {
+  const text = String(reminder.text || "Xác nhận đã đến vị trí mới").slice(0, 500);
+  const rid = String(reminder.id || "");
+  const asgnId = String(reminder.asgnId || "");
+  return {
+    data: {
+      type: "arrival",
+      title: "📍 Xác nhận đến vị trí",
+      body: text,
+      reminderId: rid,
+      asgnId,
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link: "/?tab=mywork" },
+    },
+  };
+}
+
+function buildMessage(emp, asgn, proj, delivery) {
+  const title = "📋 Bạn được giao việc mới";
   const work =
     asgn.workContent ||
     (proj && proj.name) ||
     "Công việc mới";
   const where = proj ? proj.name : "";
   const body = where ? `${work} · ${where}` : work;
+  const asgnId = asgn.id || "";
+  const link = asgnId
+    ? `/?tab=mywork&asgn=${encodeURIComponent(asgnId)}`
+    : "/?tab=mywork";
+  const data = {
+    type: "assignment",
+    title,
+    body,
+    asgnId,
+    empId: asgn.empId || "",
+    projId: asgn.projId || "",
+    orgId: (delivery && delivery.orgId) || "",
+    deliveryId: (delivery && delivery.id) || "",
+    ackToken: (delivery && delivery.ackToken) || "",
+  };
   return {
-    notification: { title, body },
-    data: {
-      type: "assignment",
-      asgnId: asgn.id || "",
-      empId: asgn.empId || "",
-      projId: asgn.projId || "",
-    },
+    data,
     webpush: {
-      fcmOptions: { link: "/" },
-      notification: { icon: "/icon-192.png", badge: "/icon-192.png" },
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link },
     },
   };
 }
+
+function buildChatMessage(msg, delivery, opts) {
+  opts = opts || {};
+  const fromName = String(msg.fromName || msg.from || "Tin nhắn").slice(0, 80);
+  const text = String(msg.text || "").slice(0, 500);
+  const isBc = msg.type === "broadcast";
+  const title = isBc ? "📢 Thông báo đội" : "💬 " + fromName;
+  const body = text || "Tin nhắn mới";
+  const threadId = isBc
+    ? "broadcast"
+    : String(msg.threadId || (delivery && delivery.threadId) || "");
+  const link = threadId
+    ? `/?tab=chat&thread=${encodeURIComponent(threadId)}`
+    : "/?tab=chat";
+  return {
+    data: {
+      type: "chat",
+      title,
+      body,
+      msgId: String(opts.msgId || ""),
+      threadId,
+      orgId: (delivery && delivery.orgId) || "",
+      deliveryId: (delivery && delivery.id) || "",
+      ackToken: (delivery && delivery.ackToken) || "",
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link },
+    },
+  };
+}
+
+function buildTestMessage(delivery) {
+  return {
+    data: {
+      type: "test",
+      title: "✓ Push thử từ server",
+      body: "Nếu thấy tin này khi app đóng — thông báo nền đang hoạt động.",
+      orgId: (delivery && delivery.orgId) || "",
+      deliveryId: (delivery && delivery.id) || "",
+      ackToken: (delivery && delivery.ackToken) || "",
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link: "/" },
+    },
+  };
+}
+
+function parseRemindAt(at) {
+  if (!at) return NaN;
+  const s = String(at);
+  if (/Z$|[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return new Date(s).getTime();
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 7, +m[5], 0);
+}
+
+exports.dispatchReminders = onSchedule(
+  {
+    schedule: "every 1 minutes",
+    timeZone: "Asia/Ho_Chi_Minh",
+  },
+  async () => {
+    const snap = await db.collectionGroup("data").get();
+    if (snap.empty) return null;
+
+    const messaging = getMessaging();
+    const tokenCache = new Map();
+    let workspacesUpdated = 0;
+    let pushesSent = 0;
+
+    for (const wsDoc of snap.docs) {
+      if (wsDoc.id !== "main") continue;
+      const orgRef = wsDoc.ref.parent && wsDoc.ref.parent.parent;
+      if (!orgRef) continue;
+      const orgId = orgRef.id;
+      const data = wsDoc.data() || {};
+      const reminders = Array.isArray(data.reminders) ? data.reminders : [];
+      if (!reminders.length) continue;
+
+      const now = Date.now();
+      const due = [];
+      let changed = false;
+      const nextReminders = reminders.map((r) => {
+        if (!r || r.fired || r.done) return r;
+        const t = parseRemindAt(r.at);
+        if (!t || Number.isNaN(t) || now < t) return r;
+        due.push(r);
+        changed = true;
+        return {
+          ...r,
+          fired: true,
+          firedAt: new Date().toISOString(),
+          seen: false,
+          pushSent: true,
+        };
+      });
+      if (!due.length) continue;
+
+      const empList = data.emp || [];
+      const empById = new Map(empList.map((e) => [e.id, e]));
+      const arrivalDue = due.filter((r) => r && r.kind === "arrival" && r.empId);
+      const generalDue = due.filter((r) => !r || r.kind !== "arrival" || !r.empId);
+
+      for (const reminder of arrivalDue) {
+        const emp = empById.get(reminder.empId);
+        const token = await empFcmToken(emp);
+        if (!token) continue;
+        try {
+          await messaging.send({
+            ...buildArrivalReminderMessage(reminder),
+            token,
+          });
+          pushesSent += 1;
+        } catch (err) {
+          const code = err && err.code;
+          if (
+            code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token"
+          ) {
+            await clearUserFcmToken(token);
+          }
+          console.warn("arrival push:", orgId, reminder.empId, String(err));
+        }
+      }
+
+      if (generalDue.length) {
+        let tokenEntries = tokenCache.get(orgId);
+        if (!tokenEntries) {
+          tokenEntries = await directorFcmTokens(orgId);
+          tokenCache.set(orgId, tokenEntries);
+        }
+
+        for (const entry of tokenEntries) {
+          for (const reminder of generalDue) {
+            try {
+              await messaging.send({
+                ...buildReminderMessage(reminder),
+                token: entry.token,
+              });
+              pushesSent += 1;
+            } catch (err) {
+              const code = err && err.code;
+              if (
+                code === "messaging/registration-token-not-registered" ||
+                code === "messaging/invalid-registration-token"
+              ) {
+                await db
+                  .doc(`users/${entry.uid}`)
+                  .set({ fcmToken: null }, { merge: true });
+              }
+              console.warn("reminder push:", orgId, entry.uid, String(err));
+            }
+          }
+        }
+      }
+
+      if (changed) {
+        await wsDoc.ref.set(
+          {
+            reminders: nextReminders,
+            patch: (data.patch || 0) + 1,
+            updatedAt: new Date(),
+          },
+          { merge: true }
+        );
+        workspacesUpdated += 1;
+      }
+    }
+
+    return { workspacesUpdated, pushesSent };
+  }
+);
 
 exports.notifyAssignment = onDocumentWritten(
   "workspaces/{orgId}/data/{docId}",
@@ -132,7 +552,9 @@ exports.notifyAssignment = onDocumentWritten(
     const before = event.data.before.exists ? event.data.before.data() : null;
     const after = event.data.after.exists ? event.data.after.data() : null;
     if (!after) return null;
+    if (event.params.docId !== "main") return null;
 
+    const orgId = normalizeOrgId(event.params.orgId);
     const targets = findNotifyTargets(before, after);
     if (!targets.length) return null;
 
@@ -142,29 +564,268 @@ exports.notifyAssignment = onDocumentWritten(
     const projById = new Map(projList.map((p) => [p.id, p]));
     const messaging = getMessaging();
 
-    const tokenEntries = [];
+    const results = [];
     for (const asgn of targets) {
       const emp = empById.get(asgn.empId);
       const token = await empFcmToken(emp);
-      if (token) tokenEntries.push({ token, asgn, emp });
-    }
-
-    if (!tokenEntries.length) return null;
-
-    const results = [];
-    for (const entry of tokenEntries) {
-      const { token, asgn, emp } = entry;
-      const proj = projById.get(asgn.projId);
+      let toUid = (emp && emp.authUid) || "";
+      if (!toUid && asgn.empId) {
+        try {
+          const uSnap = await db
+            .collection("users")
+            .where("empId", "==", asgn.empId)
+            .limit(1)
+            .get();
+          if (!uSnap.empty) toUid = uSnap.docs[0].id;
+        } catch (err) {
+          console.warn("lookup toUid:", err);
+        }
+      }
+      const baseDelivery = {
+        type: "assignment",
+        refId: asgn.id || "",
+        toUid,
+        toEmpId: asgn.empId || "",
+        fromUid: "",
+      };
+      if (!token) {
+        await markDeliveryFailed(orgId, baseDelivery, "no-token");
+        results.push({ asgnId: asgn.id, ok: false, err: "no-token" });
+        continue;
+      }
+      let delivery = null;
       try {
-        await messaging.send({ ...buildMessage(emp, asgn, proj), token });
-        results.push({ token, ok: true });
+        delivery = await createDeliveryDoc(orgId, {
+          ...baseDelivery,
+          status: "sent",
+        });
+        const proj = projById.get(asgn.projId);
+        await messaging.send({
+          ...buildMessage(emp, asgn, proj, delivery),
+          token,
+        });
+        results.push({ asgnId: asgn.id, ok: true, deliveryId: delivery.id });
       } catch (err) {
-        results.push({ token, ok: false, err: String(err) });
+        const code = err && err.code;
+        if (
+          code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token"
+        ) {
+          await clearUserFcmToken(token);
+        }
+        if (delivery && delivery.id) {
+          await db.doc(`workspaces/${orgId}/delivery/${delivery.id}`).set(
+            {
+              status: "failed",
+              error: String(err).slice(0, 500),
+            },
+            { merge: true }
+          );
+        } else {
+          await markDeliveryFailed(orgId, baseDelivery, String(err));
+        }
+        console.warn("assignment push:", asgn.empId, String(err));
+        results.push({ asgnId: asgn.id, ok: false, err: String(err) });
       }
     }
     return results;
   }
 );
+
+exports.notifyChatMessage = onDocumentCreated(
+  "workspaces/{orgId}/messages/{msgId}",
+  async (event) => {
+    const msg = event.data && event.data.data ? event.data.data() : null;
+    if (!msg) return null;
+    const orgId = normalizeOrgId(event.params.orgId);
+    const msgId = event.params.msgId;
+    const messaging = getMessaging();
+    const fromUid = String(msg.uid || "");
+
+    if (msg.type === "dm") {
+      const toUid = String(msg.toUid || "");
+      if (!toUid || toUid === fromUid) return null;
+      const token = await userFcmTokenByUid(toUid);
+      const baseDelivery = {
+        type: "chat",
+        refId: msgId,
+        toUid,
+        toEmpId: "",
+        fromUid,
+        threadId: String(msg.threadId || ""),
+      };
+      if (!token) {
+        await markDeliveryFailed(orgId, baseDelivery, "no-token");
+        return { ok: false, reason: "no-token" };
+      }
+      let delivery = null;
+      try {
+        delivery = await createDeliveryDoc(orgId, {
+          ...baseDelivery,
+          status: "sent",
+        });
+        await messaging.send({
+          ...buildChatMessage(msg, delivery, { msgId }),
+          token,
+        });
+        return { ok: true, deliveryId: delivery.id };
+      } catch (err) {
+        const code = err && err.code;
+        if (
+          code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token"
+        ) {
+          await clearUserFcmToken(token);
+        }
+        if (delivery && delivery.id) {
+          await db.doc(`workspaces/${orgId}/delivery/${delivery.id}`).set(
+            { status: "failed", error: String(err).slice(0, 500) },
+            { merge: true }
+          );
+        }
+        console.warn("chat dm push:", toUid, String(err));
+        return { ok: false, err: String(err) };
+      }
+    }
+
+    if (msg.type === "broadcast" || !msg.type) {
+      const targets = await employeeTokensInOrg(orgId);
+      const results = [];
+      for (const entry of targets) {
+        if (entry.uid === fromUid) continue;
+        try {
+          await messaging.send({
+            ...buildChatMessage(
+              msg,
+              { id: "", ackToken: "", orgId },
+              { msgId }
+            ),
+            token: entry.token,
+          });
+          results.push({ uid: entry.uid, ok: true });
+        } catch (err) {
+          const code = err && err.code;
+          if (
+            code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token"
+          ) {
+            await clearUserFcmToken(entry.token);
+          }
+          results.push({ uid: entry.uid, ok: false });
+        }
+      }
+      return { ok: true, broadcast: results.length };
+    }
+
+    return null;
+  }
+);
+
+exports.ackPush = onCall({ cors: true, invoker: "public" }, async (request) => {
+  return handleAckPush(request.data || {}, request.auth ? request.auth.uid : "");
+});
+
+exports.sendTestPush = onCall({ cors: true }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data() || {};
+  const orgId = normalizeOrgId(user.orgId);
+  const token = user.fcmToken;
+  if (!token) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Chưa bật thông báo trên máy này — bật trước rồi thử lại."
+    );
+  }
+  const delivery = await createDeliveryDoc(orgId, {
+    type: "test",
+    refId: "test",
+    toUid: uid,
+    toEmpId: user.empId || "",
+    fromUid: uid,
+    status: "sent",
+  });
+  try {
+    await getMessaging().send({
+      ...buildTestMessage(delivery),
+      token,
+    });
+    return { ok: true, deliveryId: delivery.id };
+  } catch (err) {
+    const code = err && err.code;
+    if (
+      code === "messaging/registration-token-not-registered" ||
+      code === "messaging/invalid-registration-token"
+    ) {
+      await clearUserFcmToken(token);
+    }
+    await db.doc(`workspaces/${orgId}/delivery/${delivery.id}`).set(
+      { status: "failed", error: String(err).slice(0, 500) },
+      { merge: true }
+    );
+    throw new HttpsError(
+      "internal",
+      "Không gửi được push thử — kiểm tra quyền thông báo và thử bật lại."
+    );
+  }
+});
+
+async function syncFcmToWorkspace(orgId, empId, uid, token) {
+  if (!empId || !token) return false;
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) return false;
+  const ws = wsSnap.data();
+  const empList = [...(ws.emp || [])];
+  const idx = empList.findIndex((e) => e.id === empId);
+  if (idx < 0) return false;
+  const prev = empList[idx];
+  if (prev.fcmToken === token && prev.authUid === uid) return false;
+  empList[idx] = { ...prev, fcmToken: token, authUid: uid };
+  await wsRef.set({
+    ...ws,
+    emp: empList,
+    patch: (ws.patch || 0) + 1,
+    updatedAt: new Date(),
+  });
+  return true;
+}
+
+exports.syncFcmToken = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+  const data = request.data || {};
+  const token = String(data.token || "").trim();
+  if (!token) {
+    throw new HttpsError("invalid-argument", "Thiếu token thông báo.");
+  }
+  const uid = request.auth.uid;
+  const userRef = db.doc(`users/${uid}`);
+  const userSnap = await userRef.get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data();
+  const orgId =
+    String(user.orgId || "saree")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const empId = user.empId || "";
+  await userRef.set({ fcmToken: token, empId }, { merge: true });
+  let synced = false;
+  if (empId) {
+    synced = await syncFcmToWorkspace(orgId, empId, uid, token);
+  }
+  return { ok: true, synced };
+});
 
 exports.hasDirectorInOrg = onCall(async (request) => {
   const data = request.data || {};
@@ -343,6 +1004,10 @@ exports.provisionAllEmployees = onCall(async (request) => {
   const newEmpList = [];
 
   for (const raw of empList) {
+    if (raw.accountRole === "director") {
+      changed = true;
+      continue;
+    }
     const username = empLoginKey(raw);
     const emp = raw.loginKey ? raw : { ...raw, loginKey: username };
     if (!raw.loginKey && username) {
@@ -494,6 +1159,386 @@ exports.submitDailyReport = onCall(async (request) => {
   return { ok: true, reportId, prog };
 });
 
+function vnMinsOfDay(d) {
+  const m = d.toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const p = m.split(":");
+  return parseInt(p[0], 10) * 60 + parseInt(p[1], 10);
+}
+
+const ATT_IN_DEADLINE = 8 * 60 + 10;
+const ATT_OUT_EARLIEST = 17 * 60 - 10;
+const ATT_TOLERANCE_MIN = 10;
+
+function attEvalDeviationServer(type, mins) {
+  if (type === "in") {
+    return mins > ATT_IN_DEADLINE ? mins - ATT_IN_DEADLINE : 0;
+  }
+  return mins < ATT_OUT_EARLIEST ? ATT_OUT_EARLIEST - mins : 0;
+}
+
+function attEvaluatePunchServer(type, when) {
+  const mins = vnMinsOfDay(when || new Date());
+  const deviation = attEvalDeviationServer(type, mins);
+  if (deviation <= 0) {
+    return {
+      deviationMinutes: 0,
+      flag: "ok",
+      label: "Đúng giờ",
+      needsReason: false,
+      kpiWeight: 1,
+    };
+  }
+  if (deviation > 180) {
+    return {
+      deviationMinutes: deviation,
+      flag: "full_day",
+      label: "Không đi làm cả ngày",
+      needsReason: true,
+      kpiWeight: 0,
+    };
+  }
+  if (deviation > 60) {
+    return {
+      deviationMinutes: deviation,
+      flag: "half_day",
+      label: "Không làm 1/2 ngày",
+      needsReason: true,
+      kpiWeight: 0.5,
+    };
+  }
+  const flag = type === "in" ? "late" : "early";
+  const label =
+    type === "in"
+      ? `Đi trễ ${deviation} phút`
+      : `Về sớm ${deviation} phút`;
+  return {
+    deviationMinutes: deviation,
+    flag,
+    label,
+    needsReason: true,
+    kpiWeight: 1,
+  };
+}
+
+exports.submitAttendance = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data();
+  if (user.role !== "employee" || !user.empId) {
+    throw new HttpsError("permission-denied", "Chỉ nhân viên mới được chấm công.");
+  }
+
+  const data = request.data || {};
+  const orgId =
+    String(data.orgId || user.orgId || "saree")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const type = data.type === "out" ? "out" : "in";
+  const date = String(data.date || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new HttpsError("invalid-argument", "Ngày không hợp lệ.");
+  }
+
+  const punchId = String(data.punchId || Date.now()).replace(/[^0-9]/g, "") || String(Date.now());
+  const recordId = `${user.empId}_${punchId}`;
+
+  const latRaw = data.lat;
+  const lngRaw = data.lng;
+  const lat =
+    latRaw != null && Number.isFinite(Number(latRaw)) ? Number(latRaw) : null;
+  const lng =
+    lngRaw != null && Number.isFinite(Number(lngRaw)) ? Number(lngRaw) : null;
+
+  const sitePhoto = String(data.sitePhoto || "").trim();
+  let workPhotos = [];
+
+  const todaySnap = await db
+    .collection(`workspaces/${orgId}/attendance`)
+    .where("empId", "==", user.empId)
+    .where("date", "==", date)
+    .get();
+  const todayRecs = todaySnap.docs.map(doc => doc.data());
+  todayRecs.sort((a, b) => {
+    const tA = a.at && a.at.toDate ? a.at.toDate().getTime() : (a.at && a.at.seconds ? a.at.seconds * 1000 : 0);
+    const tB = b.at && b.at.toDate ? b.at.toDate().getTime() : (b.at && b.at.seconds ? b.at.seconds * 1000 : 0);
+    return tA - tB;
+  });
+  const lastRec = todayRecs.length ? todayRecs[todayRecs.length - 1] : null;
+
+  if (type === "out") {
+    if (!lastRec || lastRec.type !== "in") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Phải chấm vào trước khi chấm ra."
+      );
+    }
+  } else {
+    if (lastRec && lastRec.type === "in") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Bạn đã chấm vào rồi, cần chấm ra trước."
+      );
+    }
+  }
+
+  if (type === "in") {
+    if (!sitePhoto) {
+      throw new HttpsError("invalid-argument", "Chấm vào cần 1 ảnh nhà máy / công trường.");
+    }
+  } else {
+    workPhotos = Array.isArray(data.workPhotos)
+      ? data.workPhotos
+          .filter((u) => typeof u === "string" && u.length < 2000)
+          .slice(0, 12)
+      : [];
+    if (workPhotos.length < 3) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Chấm ra cần ít nhất 3 ảnh công việc đã hoàn thành."
+      );
+    }
+  }
+
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) {
+    throw new HttpsError("not-found", "Chưa có dữ liệu dự án.");
+  }
+  const ws = wsSnap.data();
+  const emp = (ws.emp || []).find((e) => e.id === user.empId);
+  const fromName = emp ? emp.name : user.username || "";
+  const punchedAt = new Date();
+
+  const evalResult = attEvaluatePunchServer(type, punchedAt);
+  const lateReason = String(data.lateReason || "").trim().slice(0, 500);
+  if (evalResult.needsReason && !lateReason) {
+    throw new HttpsError(
+      "invalid-argument",
+      evalResult.label + " — cần ghi rõ lý do giải trình cho KPI."
+    );
+  }
+
+  await db.doc(`workspaces/${orgId}/attendance/${recordId}`).set({
+    empId: user.empId,
+    empName: fromName,
+    date,
+    type,
+    at: punchedAt,
+    lat,
+    lng,
+    locationLabel: String(data.locationLabel || "").slice(0, 200),
+    sitePhoto: type === "in" ? sitePhoto : "",
+    workPhotos: type === "out" ? workPhotos : [],
+    uid,
+    punchId,
+    immutable: true,
+    outsideWindow: !!evalResult.needsReason,
+    deviationMinutes: evalResult.deviationMinutes,
+    attendanceFlag: evalResult.flag,
+    attendanceLabel: evalResult.label,
+    kpiWeight: evalResult.kpiWeight,
+    lateReason: evalResult.needsReason ? lateReason : "",
+    scheduledTime: type === "in" ? "08:00" : "17:00",
+    toleranceMinutes: ATT_TOLERANCE_MIN,
+  });
+
+  const projLogEntry = {
+    id: `${recordId}_log`,
+    projId: "",
+    at: punchedAt.toISOString(),
+    type: "attendance",
+    empId: user.empId,
+    empName: fromName,
+    by: fromName,
+    text: `${fromName} chấm ${type === "in" ? "vào" : "ra"} lúc ${punchedAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh" })}${evalResult.flag !== "ok" ? " · " + evalResult.label : ""}`,
+    meta: {
+      attendanceId: recordId,
+      punchType: type,
+      date,
+      punchId,
+    },
+  };
+  const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
+  const patch = (ws.patch || 0) + 1;
+  await wsRef.set({ ...ws, projLog, patch, updatedAt: punchedAt });
+
+  return {
+    ok: true,
+    id: recordId,
+    at: punchedAt.toISOString(),
+    type,
+  };
+});
+
+exports.confirmArrival = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data();
+  if (user.role !== "employee" || !user.empId) {
+    throw new HttpsError("permission-denied", "Chỉ nhân viên mới xác nhận đến vị trí.");
+  }
+
+  const data = request.data || {};
+  const orgId =
+    String(data.orgId || user.orgId || "saree")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const asgnId = String(data.asgnId || "");
+  const reminderId = String(data.reminderId || "");
+  const lat = Number(data.lat);
+  const lng = Number(data.lng);
+  const photo = String(data.photo || "").trim();
+  const locationLabel = String(data.locationLabel || "").slice(0, 200);
+
+  if (!asgnId) {
+    throw new HttpsError("invalid-argument", "Thiếu mã công việc.");
+  }
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new HttpsError("invalid-argument", "Cần vị trí GPS.");
+  }
+  if (!photo) {
+    throw new HttpsError("invalid-argument", "Cần ảnh tại vị trí mới.");
+  }
+
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) {
+    throw new HttpsError("not-found", "Chưa có dữ liệu dự án.");
+  }
+  const ws = wsSnap.data();
+  const asgn = (ws.asgn || []).find(
+    (a) => a.id === asgnId && a.empId === user.empId
+  );
+  if (!asgn) {
+    throw new HttpsError("permission-denied", "Bạn không được xác nhận công việc này.");
+  }
+  if (asgn.status !== "active" && asgn.status !== "paused") {
+    throw new HttpsError("failed-precondition", "Công việc không còn đang thực hiện.");
+  }
+
+  const emp = (ws.emp || []).find((e) => e.id === user.empId);
+  const fromName = emp ? emp.name : user.username || "";
+  const proj = (ws.proj || []).find((p) => p.id === asgn.projId);
+  const locName =
+    locationLabel ||
+    (proj && proj.name) ||
+    asgn.workContent ||
+    "vị trí mới";
+  const now = new Date();
+  const recordId = `${asgnId}_${now.getTime()}`;
+
+  await db.doc(`workspaces/${orgId}/arrivals/${recordId}`).set({
+    empId: user.empId,
+    empName: fromName,
+    asgnId,
+    projId: asgn.projId || "",
+    reminderId,
+    at: now,
+    lat,
+    lng,
+    locationLabel: locName,
+    photo,
+    uid,
+  });
+
+  let empList = [...(ws.emp || [])];
+  const empIdx = empList.findIndex((e) => e.id === user.empId);
+  if (empIdx >= 0) {
+    empList[empIdx] = {
+      ...empList[empIdx],
+      lastLoc: {
+        label: locName,
+        lat,
+        lng,
+        date: (() => {
+          const vnStr = now.toLocaleDateString("en-GB", { timeZone: "Asia/Ho_Chi_Minh" });
+          const parts = vnStr.split("/");
+          return `${parts[2]}-${parts[1].padStart(2, "0")}-${parts[0].padStart(2, "0")}`;
+        })(),
+      },
+    };
+  }
+
+  let reminders = [...(ws.reminders || [])];
+  let reminderDone = false;
+  if (reminderId) {
+    reminders = reminders.map((r) => {
+      if (r && r.id === reminderId) {
+        reminderDone = true;
+        return { ...r, done: true, doneAt: now.toISOString(), seen: true };
+      }
+      return r;
+    });
+  } else {
+    reminders = reminders.map((r) => {
+      if (
+        r &&
+        r.kind === "arrival" &&
+        r.asgnId === asgnId &&
+        r.empId === user.empId &&
+        !r.done
+      ) {
+        reminderDone = true;
+        return { ...r, done: true, doneAt: now.toISOString(), seen: true };
+      }
+      return r;
+    });
+  }
+
+  const projLogEntry = {
+    id: `${recordId}_log`,
+    projId: asgn.projId || "",
+    at: now.toISOString(),
+    type: "arrival",
+    empId: user.empId,
+    empName: fromName,
+    by: fromName,
+    text: `${fromName} xác nhận đã đến ${locName}`,
+    meta: {
+      asgnId,
+      arrivalId: recordId,
+      lat,
+      lng,
+      locationLabel: locName,
+      photo,
+    },
+  };
+  const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
+  const patch = (ws.patch || 0) + 1;
+
+  await wsRef.set({
+    ...ws,
+    emp: empList,
+    reminders,
+    projLog,
+    patch,
+    updatedAt: now,
+  });
+
+  return { ok: true, id: recordId, reminderDone };
+});
+
 function findDirectorEmpIndex(empList, uid, username, empId) {
   if (empId) {
     const i = empList.findIndex((e) => e.id === empId);
@@ -512,59 +1557,53 @@ async function syncProfileToWorkspace(orgId, uid, user, displayName, username) {
   const wsSnap = await wsRef.get();
   if (!docExists(wsSnap)) return { changed: false, empId: user.empId || "" };
   const ws = wsSnap.data();
-  const empList = [...(ws.emp || [])];
-  const idx = findDirectorEmpIndex(empList, uid, username || user.username, user.empId);
+  let empList = [...(ws.emp || [])];
   let changed = false;
   let empId = user.empId || "";
 
-  if (idx >= 0) {
-    const e = empList[idx];
-    const next = { ...e };
-    if (displayName && displayName !== e.name) {
-      next.name = displayName;
-      changed = true;
-    }
-    if (username && sanitizeUsername(username) !== sanitizeUsername(e.loginKey || e.name)) {
-      next.loginKey = sanitizeUsername(username);
-      changed = true;
-    }
-    if (!e.authUid) {
-      next.authUid = uid;
-      changed = true;
-    }
-    if (user.role === "director" && e.accountRole !== "director") {
-      next.accountRole = "director";
-      changed = true;
-    }
-    if (user.role === "director" && e.group === "Phụ việc") {
-      next.group = "Quản lý";
-      changed = true;
-    }
-    empList[idx] = next;
-    empId = next.id;
-  } else if (user.role === "director") {
+  if (user.role === "director") {
     const lk = sanitizeUsername(username || user.username);
-    const stubId = `dir_${uid.slice(0, 8)}`;
-    empList.unshift({
-      id: stubId,
-      name: displayName || user.username || "Giám đốc",
-      group: "Quản lý",
-      province: "TP. Hồ Chí Minh",
-      skill: 5,
-      status: "available",
-      note: "",
-      lastLoc: null,
-      loginKey: lk,
-      authUid: uid,
-      accountRole: "director",
-    });
+    const contact = {
+      uid,
+      name: displayName || user.displayName || user.username || "Giám đốc",
+      username: lk,
+    };
+    const prev = (ws.cfg && ws.cfg.directorContact) || {};
+    const nextCfg = { ...(ws.cfg || {}), directorContact: contact };
+    const stripped = empList.filter((e) => e.accountRole !== "director");
+    if (
+      stripped.length !== empList.length ||
+      prev.uid !== contact.uid ||
+      prev.name !== contact.name ||
+      prev.username !== contact.username
+    ) {
+      changed = true;
+    }
+    empList = stripped;
+    if (changed) {
+      await wsRef.set({
+        ...ws,
+        emp: empList,
+        cfg: nextCfg,
+        patch: (ws.patch || 0) + 1,
+        updatedAt: new Date(),
+      });
+    }
+    return { changed, empId: "" };
+  }
+
+  const idx = findDirectorEmpIndex(empList, uid, username || user.username, user.empId);
+  if (idx >= 0) {
+    empList.splice(idx, 1);
     changed = true;
-    empId = stubId;
-  } else if (user.empId) {
+  }
+
+  if (user.empId) {
     const ei = empList.findIndex((e) => e.id === user.empId);
     if (ei >= 0 && displayName && displayName !== empList[ei].name) {
       empList[ei] = { ...empList[ei], name: displayName };
       changed = true;
+      empId = user.empId;
     }
   }
 
