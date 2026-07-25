@@ -14,5 +14,8 @@ var FIREBASE_CONFIG = {
 // Bắt buộc cho thông báo trên trình duyệt / điện thoại
 var FIREBASE_VAPID_KEY = "YOUR_VAPID_KEY";
 
+// Region Cloud Functions (mặc định us-central1) — dùng cho ack push từ service worker
+var FIREBASE_FUNCTIONS_REGION = "us-central1";
+
 // Mã đội mặc định (cùng team dùng chung mã này khi đăng ký)
 var FIREBASE_DEFAULT_ORG = "saree";

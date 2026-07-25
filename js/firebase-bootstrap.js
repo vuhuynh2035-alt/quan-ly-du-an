@@ -71,7 +71,12 @@ var chatMsgsBc = [];
 var chatMsgsDm = [];
 var unsubReports = null;
 var unsubAttendance = null;
+var unsubDelivery = null;
+var deliveryByRef = {};
+var deliveryById = {};
 var pushReady = false;
+var fcmRefreshBound = false;
+var lastFcmRefreshAt = 0;
 var writeTimer = null;
 var writing = false;
 var remotePatch = 0;
@@ -230,6 +235,11 @@ function stopSubscriptions() {
   unsubReports = null;
   if (unsubAttendance) unsubAttendance();
   unsubAttendance = null;
+  if (unsubDelivery) unsubDelivery();
+  unsubDelivery = null;
+  deliveryByRef = {};
+  deliveryById = {};
+  if (appCv3 && appCv3.setDeliveryMap) appCv3.setDeliveryMap({});
   provisionBusy = false;
   provisionDone = false;
   if (provisionRetryTimer) clearTimeout(provisionRetryTimer);
@@ -238,6 +248,119 @@ function stopSubscriptions() {
   booted = false;
   lastAuthUid = null;
   subsUid = null;
+}
+
+function deliveryColRef() {
+  return collection(doc(db, "workspaces", orgId), "delivery");
+}
+
+function publishDeliveryMap() {
+  if (appCv3 && appCv3.setDeliveryMap) appCv3.setDeliveryMap(deliveryByRef);
+}
+
+function subscribeDelivery() {
+  if (unsubDelivery) unsubDelivery();
+  unsubDelivery = null;
+  deliveryByRef = {};
+  deliveryById = {};
+  if (!db || !auth || !auth.currentUser) return;
+  var uid = auth.currentUser.uid;
+  var qDel = query(
+    deliveryColRef(),
+    where("participants", "array-contains", uid),
+    orderBy("sentAt", "desc"),
+    limit(250)
+  );
+  unsubDelivery = onSnapshot(
+    qDel,
+    function (snap) {
+      var byRef = {};
+      var byId = {};
+      snap.docs.forEach(function (d) {
+        var row = Object.assign({ id: d.id }, d.data());
+        byId[d.id] = row;
+        if (row.refId) {
+          var key = String(row.type || "") + ":" + String(row.refId);
+          var prev = byRef[key];
+          if (!prev) byRef[key] = row;
+          else {
+            var prevT =
+              (prev.sentAt && prev.sentAt.toMillis && prev.sentAt.toMillis()) ||
+              0;
+            var curT =
+              (row.sentAt && row.sentAt.toMillis && row.sentAt.toMillis()) || 0;
+            if (curT >= prevT) byRef[key] = row;
+          }
+        }
+      });
+      deliveryByRef = byRef;
+      deliveryById = byId;
+      publishDeliveryMap();
+    },
+    function (err) {
+      console.error("delivery:", err);
+    }
+  );
+}
+
+async function callAckPush(payload) {
+  if (!app) return { ok: false };
+  var fn = httpsCallable(getFunctions(app), "ackPush");
+  var res = await fn(payload || {});
+  return res.data || { ok: true };
+}
+
+async function ackDeliveryStatus(opts) {
+  opts = opts || {};
+  var status = opts.status === "read" ? "read" : "delivered";
+  var deliveryId = opts.deliveryId || "";
+  var ackToken = opts.ackToken || "";
+  var type = opts.type || "";
+  var refId = opts.refId || "";
+  if (!deliveryId && type && refId) {
+    var row = deliveryByRef[type + ":" + refId];
+    if (row) {
+      deliveryId = row.id;
+      ackToken = row.ackToken || "";
+    }
+  }
+  if (!deliveryId) return { ok: false, reason: "no-delivery" };
+  try {
+    return await callAckPush({
+      deliveryId: deliveryId,
+      ackToken: ackToken,
+      orgId: orgId,
+      status: status,
+    });
+  } catch (err) {
+    console.warn("ackPush:", err);
+    return { ok: false, reason: (err && err.message) || "ack-fail" };
+  }
+}
+
+async function sendTestPushFromServer() {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app), "sendTestPush");
+  var res = await fn({});
+  return res.data || {};
+}
+
+function bindFcmRefresh(cv3) {
+  if (fcmRefreshBound) return;
+  fcmRefreshBound = true;
+  function maybeRefresh() {
+    if (document.visibilityState && document.visibilityState !== "visible") return;
+    if (!auth || !auth.currentUser) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    var now = Date.now();
+    if (now - lastFcmRefreshAt < 5 * 60 * 1000) return;
+    lastFcmRefreshAt = now;
+    registerMessaging(cv3, { request: false }).catch(function () {});
+  }
+  document.addEventListener("visibilitychange", maybeRefresh);
+  window.addEventListener("focus", maybeRefresh);
 }
 
 function subscribeChat() {
@@ -1373,7 +1496,15 @@ function bindForegroundMessaging(messaging, cv3) {
   if (!messaging || messaging.__cv3Bound) return;
   messaging.__cv3Bound = true;
   onMessage(messaging, function (payload) {
-    var type = payload.data && payload.data.type;
+    var d = (payload && payload.data) || {};
+    var type = d.type;
+    if (d.deliveryId) {
+      ackDeliveryStatus({
+        deliveryId: d.deliveryId,
+        ackToken: d.ackToken || "",
+        status: "delivered",
+      }).catch(function () {});
+    }
     if (type === "reminder" && cv3 && typeof cv3.onReminderPush === "function") {
       cv3.onReminderPush(payload);
       return;
@@ -1382,16 +1513,34 @@ function bindForegroundMessaging(messaging, cv3) {
       cv3.onArrivalPush(payload);
       return;
     }
-    if (type === "assignment" && cv3) {
-      var d = payload.data || {};
-      var title = d.title || "Công việc mới";
+    if (type === "chat" && cv3) {
+      var cTitle = d.title || "Tin nhắn mới";
+      var cBody = d.body || "";
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(cTitle, {
+            body: cBody,
+            icon: "/icon-192.png",
+            tag: "chat_" + (d.msgId || d.threadId || "fg"),
+            silent: false,
+          });
+        } catch (e) {}
+      }
+      if (typeof cv3.showAppToast === "function") {
+        cv3.showAppToast(cTitle + (cBody ? " — " + cBody : ""), "ok");
+      }
+      if (typeof cv3.onChatPush === "function") cv3.onChatPush(payload);
+      return;
+    }
+    if ((type === "assignment" || type === "test") && cv3) {
+      var title = d.title || (type === "test" ? "Push thử" : "Công việc mới");
       var body = d.body || "";
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
           new Notification(title, {
             body: body,
             icon: "/icon-192.png",
-            tag: "asgn_" + (d.asgnId || "fg"),
+            tag: type === "test" ? "test_fg" : "asgn_" + (d.asgnId || "fg"),
             silent: false,
           });
         } catch (e) {}
@@ -1598,6 +1747,12 @@ async function bootOnline(cv3) {
   window.__CV3_enableRemindPush = function () {
     return registerMessaging(cv3, { request: true });
   };
+  window.__CV3_sendTestPush = sendTestPushFromServer;
+  window.__CV3_ackPush = ackDeliveryStatus;
+  window.__CV3_getDelivery = function (type, refId) {
+    if (!type || !refId) return null;
+    return deliveryByRef[type + ":" + refId] || null;
+  };
   window.__CV3_flushCloud = function () {
     if (writeTimer) clearTimeout(writeTimer);
     writeTimer = null;
@@ -1613,6 +1768,7 @@ async function bootOnline(cv3) {
   window.__CV3_submitReport = callSubmitReport;
   window.__CV3_submitAttendance = callSubmitAttendance;
   window.__CV3_confirmArrival = callConfirmArrival;
+  bindFcmRefresh(cv3);
   onAuthStateChanged(auth, async function (user) {
     var epoch = ++authEpoch;
     var uid = user ? user.uid : null;
@@ -1656,6 +1812,7 @@ async function bootOnline(cv3) {
       subscribeChat();
       subscribeReports();
       subscribeAttendance();
+      subscribeDelivery();
       registerMessaging(cv3, {
         request:
           Notification.permission === "granted" ||

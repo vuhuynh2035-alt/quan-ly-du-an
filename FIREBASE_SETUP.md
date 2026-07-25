@@ -40,18 +40,28 @@ npm run deploy
 - Đăng nhập cùng tài khoản, **mã đội** giống nhau (mặc định `saree`)
 - Mọi thay đổi sync realtime
 
-## 6. Thông báo trên điện thoại
+## 6. Thông báo trên điện thoại (khi đóng app)
 
-1. Mở app trên điện thoại, đăng nhập cloud
-2. Cho phép thông báo
-3. **Nhân sự** → chọn tên → **Bật thông báo trên thiết bị này**
-4. Khi có giao việc mới, điện thoại nhận push
+Điều kiện bắt buộc:
 
-**iOS:** thêm vào Màn hình chính (PWA), iOS 16.4+.
+1. Mở bằng **HTTPS** (URL Hosting), không dùng IP LAN
+2. **Thêm app vào màn hình chính** (PWA) — bắt buộc trên iPhone (iOS 16.4+)
+3. Đăng nhập cloud → **Cài đặt** → bật thông báo
+4. Checklist trong app phải có: HTTPS · PWA · quyền granted · có token FCM
+5. Bấm **Gửi push thử từ server**, rồi **đóng app** — phải thấy banner hệ thống
+
+Khi đã bật đúng:
+
+- Giao việc mới / tin nhắn riêng → push khi app đóng
+- Người gửi thấy trạng thái: **đã gửi → đã nhận → đã đọc** (tick chat, dòng trạng thái ở Tiến độ)
+
+Sau mỗi lần deploy Functions/Hosting: trên điện thoại mở lại app đã cài, bật thông báo một lần nếu token cũ bị xóa.
 
 ## 7. Lệnh
 
 | Lệnh | Mô tả |
 |------|--------|
 | `npm run dev` | Chạy local |
-| `npm run deploy` | Build + deploy toàn bộ |
+| `npm run deploy` | Build + deploy toàn bộ (hosting, rules, functions, indexes) |
+| `npm run deploy:functions` | Chỉ Cloud Functions |
+| `npm run deploy:rules` | Chỉ Firestore rules |

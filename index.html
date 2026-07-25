@@ -624,6 +624,16 @@ input[type=range]{padding:0}
 .bio-settings-status{font-size:13px;color:var(--c-muted2);margin-bottom:12px;line-height:1.45}
 .bio-settings-status b{color:var(--c-text)}
 .bio-settings-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.push-check{font-size:12px;line-height:1.7;color:var(--c-muted2);margin:8px 0 10px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.04)}
+.push-check .ok{color:#4ade80}
+.push-check .bad{color:#f87171}
+.push-check .warn{color:#fbbf24}
+.chat-ticks{font-size:11px;margin-top:3px;letter-spacing:.5px;user-select:none}
+.chat-ticks.sent{color:var(--c-muted3)}
+.chat-ticks.delivered{color:var(--c-muted)}
+.chat-ticks.read{color:#38bdf8}
+.asgn-delivery{font-size:12px;margin-top:8px;padding:8px 10px;border-radius:8px;background:rgba(56,189,248,.06);border:1px solid rgba(56,189,248,.18);color:var(--c-muted2);line-height:1.45}
+.asgn-delivery b{color:var(--c-text)}
 .chat-wrap{display:flex;flex-direction:column;height:min(68vh,560px);min-height:360px;padding:0!important;overflow:hidden}
 .chat-to-bar{padding:14px 16px 12px;border-bottom:1px solid var(--c-border3);background:var(--c-surface);flex-shrink:0}
 .chat-to-field{margin-bottom:0}
@@ -1199,8 +1209,9 @@ function themeModeBody(){
     +'<button type="button" class="theme-opt'+(t==="light"?" active":"")+'" onclick="A.setTheme(\'light\')">☀️ Sáng</button>'
     +'</div>';
 }
-var S={tab:"dash",selProjDet:"",selEmp:"",selCust:"",giaoProj:"",giaoMode:"",giaoPick:{},teamToTruong:"",teamVatTu:"",modal:null,form:null,hist:[],expGrp:{},empPushBusy:0,empPushMsg:"",remindPushBusy:0,remindPushMsg:"",
-  emp:load("cv3_e",seedE()),cust:load("cv3_c",[]),proj:load("cv3_p",[]),asgn:load("cv3_a",[]),projLog:load("cv3_pl",[]),cfg:Object.assign({},DS,load("cv3_s",{})),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null},chat:[],chatTo:null,reports:[],attendance:[],attFlow:null,arrivalFlow:null,selMyAsgn:"",reportAsgn:"",reminders:load("cv3_r",null)||(function(){var c=load("cv3_s",{});return c&&Array.isArray(c.reminders)?c.reminders.slice():[]})()};
+var S={tab:"dash",selProjDet:"",selEmp:"",selCust:"",giaoProj:"",giaoMode:"",giaoPick:{},teamToTruong:"",teamVatTu:"",modal:null,form:null,hist:[],expGrp:{},empPushBusy:0,empPushMsg:"",remindPushBusy:0,remindPushMsg:"",testPushBusy:0,testPushMsg:"",
+  emp:load("cv3_e",seedE()),cust:load("cv3_c",[]),proj:load("cv3_p",[]),asgn:load("cv3_a",[]),projLog:load("cv3_pl",[]),cfg:Object.assign({},DS,load("cv3_s",{})),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null},chat:[],chatTo:null,delivery:{},reports:[],attendance:[],attFlow:null,arrivalFlow:null,selMyAsgn:"",reportAsgn:"",reminders:load("cv3_r",null)||(function(){var c=load("cv3_s",{});return c&&Array.isArray(c.reminders)?c.reminders.slice():[]})()};
+var _ackReadDone={};
 ensureCfgGroups();
 if(!S.cfg.theme)S.cfg.theme="dark";
 applyVapidFromCfg();
@@ -1870,11 +1881,97 @@ function empPushOk(empId){
   var token=(e&&e.fcmToken)||(isMe&&window.__CV3_FCM&&window.__CV3_FCM.token)||"";
   return !!(token&&typeof Notification!=="undefined"&&Notification.permission==="granted");
 }
+function isPwaInstalled(){
+  try{
+    if(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)return true;
+    if(navigator.standalone===true)return true;
+  }catch(e){}
+  return false;
+}
+function pushChecklistHTML(){
+  var httpsOk=!!window.isSecureContext;
+  var pwaOk=isPwaInstalled();
+  var perm=typeof Notification!=="undefined"?Notification.permission:"unsupported";
+  var tokenOk=!!(window.__CV3_FCM&&window.__CV3_FCM.token);
+  var vapidOk=remindVapidOk();
+  function row(ok,warn,label){
+    var cls=ok?"ok":(warn?"warn":"bad");
+    var mark=ok?"✓":(warn?"•":"✗");
+    return'<div class="'+cls+'">'+mark+" "+label+"</div>";
+  }
+  var h='<div class="push-check"><div style="font-weight:600;color:var(--c-text);margin-bottom:4px">Checklist nhận thông báo khi đóng app</div>';
+  h+=row(httpsOk,false,"Mở bằng HTTPS (không dùng IP LAN)");
+  h+=row(vapidOk,false,"Đã có VAPID / cấu hình Firebase");
+  h+=row(pwaOk,!pwaOk,"Đã thêm app vào màn hình chính (bắt buộc trên iPhone)");
+  h+=row(perm==="granted",perm==="default","Quyền thông báo: "+esc(perm));
+  h+=row(tokenOk,false,"Đã có token FCM trên máy này");
+  h+='<div style="margin-top:6px;color:var(--c-muted3)">Sau khi bật: đóng app → nhờ người khác giao việc / nhắn tin → phải thấy banner hệ thống.</div>';
+  return h+"</div>";
+}
+function deliveryOf(type,refId){
+  if(!type||!refId)return null;
+  var key=type+":"+refId;
+  return (S.delivery&&S.delivery[key])||(window.__CV3_getDelivery&&window.__CV3_getDelivery(type,refId))||null;
+}
+function deliveryTs(v){
+  if(!v)return 0;
+  if(typeof v.toMillis==="function")return v.toMillis();
+  if(typeof v==="number")return v;
+  var t=Date.parse(v);
+  return isNaN(t)?0:t;
+}
+function deliveryStatusLabel(d){
+  if(!d)return "";
+  if(d.status==="read")return "Đã xem";
+  if(d.status==="delivered")return "Đã nhận";
+  if(d.status==="sent")return "Đã gửi";
+  if(d.status==="failed")return "Gửi lỗi"+(d.error?": "+String(d.error).slice(0,80):"");
+  return d.status||"";
+}
+function chatTicksHTML(msg){
+  if(!msg||!S.auth||msg.uid!==S.auth.uid||msg.type==="broadcast")return "";
+  var d=deliveryOf("chat",msg.id);
+  var st=d?d.status:"sent";
+  if(st==="failed")return'<div class="chat-ticks sent" title="Gửi thông báo thất bại">!</div>';
+  if(st==="read")return'<div class="chat-ticks read" title="Đã xem">✓✓</div>';
+  if(st==="delivered")return'<div class="chat-ticks delivered" title="Đã nhận">✓✓</div>';
+  return'<div class="chat-ticks sent" title="Đã gửi">✓</div>';
+}
+function asgnDeliveryHTML(asgnId){
+  if(!isDir()||!asgnId)return "";
+  var d=deliveryOf("assignment",asgnId);
+  if(!d)return'<div class="asgn-delivery">Thông báo: <b>chưa có phản hồi</b> (nhân viên chưa bật push hoặc chưa gửi).</div>';
+  var label=deliveryStatusLabel(d);
+  var when="";
+  if(d.status==="read"&&d.readAt)when=" · "+new Date(deliveryTs(d.readAt)).toLocaleString("vi-VN");
+  else if(d.status==="delivered"&&d.deliveredAt)when=" · "+new Date(deliveryTs(d.deliveredAt)).toLocaleString("vi-VN");
+  else if(d.sentAt)when=" · gửi "+new Date(deliveryTs(d.sentAt)).toLocaleString("vi-VN");
+  return'<div class="asgn-delivery">Thông báo: <b>'+esc(label)+'</b>'+esc(when)+'</div>';
+}
+function ackRead(type,refId){
+  if(!type||!refId||typeof window.__CV3_ackPush!=="function")return;
+  var key=type+":"+refId;
+  if(_ackReadDone[key])return;
+  var d=deliveryOf(type,refId);
+  if(d&&(d.status==="read"||d.status==="failed")){_ackReadDone[key]=1;return;}
+  if(d&&d.toUid&&S.auth&&S.auth.uid&&d.toUid!==S.auth.uid)return;
+  _ackReadDone[key]=1;
+  window.__CV3_ackPush({type:type,refId:refId,deliveryId:d&&d.id,ackToken:d&&d.ackToken,status:"read"}).catch(function(){_ackReadDone[key]=0;});
+}
+function markChatThreadRead(chatTo){
+  if(!chatTo||chatTo==="broadcast"||!S.auth||!S.auth.uid)return;
+  var msgs=chatMsgsForTo(chatTo)||[];
+  msgs.forEach(function(m){
+    if(!m||!m.id)return;
+    if(m.uid===S.auth.uid)return;
+    ackRead("chat",m.id);
+  });
+}
 function empPushHint(empId){
   if(isLocalDev())return "Đang chạy local (localhost) — dùng để test giao diện. Push khi đóng app cần bản HTTPS: quan-ly-du-an-7d651.web.app";
   if(!window.__CV3_SKIP_SEED)return "Chế độ offline — cần đăng nhập cloud để nhận thông báo.";
   if(!remindVapidOk())return remindVapidFailShort();
-  if(empPushOk(empId))return "Đã bật — sẽ nhận push khi giám đốc giao việc mới (kể cả khi đóng app).";
+  if(empPushOk(empId))return "Đã bật — nhận push giao việc và tin nhắn khi đóng app (cần PWA trên iPhone).";
   if(typeof Notification!=="undefined"&&Notification.permission==="denied")return "Trình duyệt đã chặn thông báo — mở cài đặt trình duyệt để cho phép.";
   if(!window.isSecureContext)return "Cần mở app qua HTTPS (hoặc localhost) để bật thông báo push.";
   return "Bấm «Bật thông báo giao việc». Trên điện thoại: thêm app vào màn hình chính (PWA) rồi bật thông báo — mới nhận được khi đóng app.";
@@ -1894,14 +1991,24 @@ function empPushBlockHTML(empId,opts){
   opts=opts||{};
   var isMe=opts.isMe!==false,showBtn=opts.showBtn!==false,busy=!!S.empPushBusy,status=S.empPushMsg||"";
   var h='<div class="emp-push-block" style="margin-bottom:14px;padding:12px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.2);border-radius:12px">';
-  h+='<div style="font-size:12px;font-weight:600;color:#38bdf8;margin-bottom:6px">📱 Thông báo giao việc</div>';
+  h+='<div style="font-size:12px;font-weight:600;color:#38bdf8;margin-bottom:6px">📱 Thông báo giao việc & tin nhắn</div>';
   h+='<div style="font-size:12px;color:var(--c-muted2);margin-bottom:8px;line-height:1.5">'+empPushHint(empId)+'</div>';
+  if(isMe)h+=pushChecklistHTML();
   if(busy)h+='<div class="emp-push-status busy">⏳ Đang bật thông báo…</div>';
-  else if(empPushOk(empId))h+='<div class="emp-push-status ok">✓ Đã bật thông báo giao việc thành công</div>';
+  else if(empPushOk(empId))h+='<div class="emp-push-status ok">✓ Đã bật thông báo thành công</div>';
   else if(status)h+='<div class="emp-push-status '+(status.indexOf("✓")===0?"ok":"err")+'">'+esc(status)+'</div>';
-  if(showBtn&&isMe&&!empPushOk(empId)){
-    if(busy)h+='<button type="button" class="btn btn-accent btn-sm" disabled>Đang bật…</button>';
-    else h+=btn("btn-accent btn-sm","Bật thông báo giao việc","A.notifEmp('"+empId+"')");
+  if(showBtn&&isMe){
+    h+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">';
+    if(!empPushOk(empId)){
+      if(busy)h+='<button type="button" class="btn btn-accent btn-sm" disabled>Đang bật…</button>';
+      else h+=btn("btn-accent btn-sm","Bật thông báo","A.notifEmp('"+empId+"')");
+    }
+    if(empPushOk(empId)&&window.__CV3_SKIP_SEED){
+      if(S.testPushBusy)h+='<button type="button" class="btn btn-ghost btn-sm" disabled>Đang gửi thử…</button>';
+      else h+=btn("btn-ghost btn-sm","Gửi push thử từ server","A.testServerPush()");
+    }
+    h+='</div>';
+    if(S.testPushMsg)h+='<div class="emp-push-status '+(S.testPushMsg.indexOf("✓")===0?"ok":"err")+'" style="margin-top:8px">'+esc(S.testPushMsg)+'</div>';
   }
   return h+'</div>';
 }
@@ -1922,7 +2029,7 @@ function empPushNotifyTest(){
 function remindPushHint(){
   if(!window.__CV3_SKIP_SEED)return "Chế độ offline — nhắc hẹn chỉ kêu khi mở app. Đăng nhập cloud để nhận khi app đóng.";
   if(!remindVapidOk())return remindVapidFailShort()+" "+remindVapidFailDetail();
-  if(remindPushOk())return "Đã bật thông báo nền — nhắc hẹn sẽ đến ngay cả khi đóng app (tiếng chuông hệ thống trên điện thoại/máy).";
+  if(remindPushOk())return "Đã bật thông báo nền — nhắc hẹn / chat sẽ đến khi đóng app (cần cài PWA trên iPhone).";
   if(typeof Notification!=="undefined"&&Notification.permission==="denied")return "Trình duyệt đã chặn thông báo — mở cài đặt trình duyệt để cho phép, rồi bấm «Bật thông báo nền».";
   return "Bấm «Bật thông báo nền» một lần để nhận nhắc hẹn khi app đóng (cần đăng nhập cloud).";
 }
@@ -2055,6 +2162,7 @@ function pushStatusRows(){
 function pushSettingsBody(){
   var busy=!!S.remindPushBusy,status=S.remindPushMsg||"",ok=remindPushOk(),vk=getVapidKey();
   var h=pushStatusRows();
+  h+=pushChecklistHTML();
   h+='<div style="background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.2);border-radius:12px;padding:12px;margin-bottom:14px">';
   h+='<div style="font-size:12px;font-weight:600;color:#38bdf8;margin-bottom:8px">VAPID Key (Web Push)</div>';
   h+='<p style="font-size:12px;color:var(--c-muted2);margin-bottom:10px;line-height:1.5">Firebase Console → Project settings → Cloud Messaging → <b>Web Push certificates</b> → Generate key pair → copy <b>Key pair</b>. Lưu tại đây để đồng bộ cloud — đổi key sau này không cần deploy.</p>';
@@ -2068,11 +2176,16 @@ function pushSettingsBody(){
   if(busy)h+='<div class="emp-push-status busy">⏳ Đang bật thông báo nền…</div>';
   else if(ok)h+='<div class="emp-push-status ok">✓ Đã bật thông báo nền thành công</div>';
   else if(status)h+='<div class="emp-push-status '+(status.indexOf("✓")===0?"ok":"err")+'">'+esc(status).replace(/\n/g,"<br>")+'</div>';
+  if(S.testPushMsg)h+='<div class="emp-push-status '+(S.testPushMsg.indexOf("✓")===0?"ok":"err")+'">'+esc(S.testPushMsg)+'</div>';
   h+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">';
   h+=btn("btn-ghost btn-sm","Thử chuông","A.testBell()");
   if(window.__CV3_SKIP_SEED){
     if(busy)h+='<button type="button" class="btn btn-accent btn-sm" disabled>Đang bật…</button>';
     else if(!ok)h+=btn("btn-accent btn-sm","Bật thông báo nền","A.notifRemind()");
+    if(ok){
+      if(S.testPushBusy)h+='<button type="button" class="btn btn-ghost btn-sm" disabled>Đang gửi thử…</button>';
+      else h+=btn("btn-ghost btn-sm","Gửi push thử từ server","A.testServerPush()");
+    }
   }
   h+='</div>';
   return h;
@@ -2451,7 +2564,7 @@ function vChatDet(){
     var mine=S.auth&&m.uid&&S.auth.uid===m.uid;
     var who=esc(m.fromName||m.from||"?");
     var role=m.role==="director"?'<span class="dir">Giám đốc</span>':'';
-    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+role+' · '+fmtChatTime(m)+'</div><div class="chat-bubble">'+esc(m.text||"")+'</div></div>';
+    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+role+' · '+fmtChatTime(m)+'</div><div class="chat-bubble">'+esc(m.text||"")+'</div>'+(mine?chatTicksHTML(m):"")+'</div>';
   });
   h+='</div>';
   if(isBc&&!canPostBc)h+='<div class="chat-bar-readonly">Chỉ giám đốc mới được gửi thông báo toàn đội.</div>';
@@ -2469,6 +2582,7 @@ function initChatScroll(){
   if(S.tab!=="chat")return;
   var box=document.getElementById("chat-msgs");
   if(box)box.scrollTop=box.scrollHeight;
+  if(S.chatTo)markChatThreadRead(S.chatTo);
 }
 function initReportPreview(){
   if(S.tab!=="report")return;
@@ -2842,6 +2956,7 @@ function vMyWorkDet(asgnId){
   h+=renderReportsBlock(asgnId,5);
   h+='</div>';
   if(p)h+='<div class="card card-p" style="margin-top:14px">'+renderProjTimeline(p.id)+'</div>';
+  setTimeout(function(){ackRead("assignment",asgnId);},0);
   return h+'</div>';
 }
 
@@ -3120,6 +3235,7 @@ function progCard(a){
   if(asgnHandoffLine(a))h+='<div class="asgn-handoff-note">'+asgnHandoffLine(a)+'</div>';
   if(a.pauseNote&&paused)h+='<div class="asgn-handoff-note">'+esc(a.pauseNote)+'</div>';
   if(info.cust||info.contact)h+='<div style="font-size:12px;color:var(--c-muted);margin-bottom:10px">'+esc(info.cust)+(info.cust&&info.contact?" · ":"")+(info.contact?"☎ "+esc(info.contact):"")+'</div>';
+  h+=asgnDeliveryHTML(a.id);
   if(paused){
     h+='<div class="row" style="gap:8px;margin-bottom:8px;align-items:center"><span style="font-family:monospace;font-weight:700;color:#fbbf24">'+a.prog+'%</span><span style="font-size:12px;color:var(--c-muted4)">Tiến độ giữ nguyên khi tạm dừng</span></div>';
     h+='<div class="row" style="gap:8px">'+btn("btn-accent btn-sm","Quay lại việc này","A.resumeAsgn('"+a.id+"')")+'</div></div>';
@@ -3241,6 +3357,7 @@ function empAsgnCardM(a){
   if(pl)b+='<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Địa điểm</div><div style="font-size:14px">📍 '+esc(pl.name)+(c&&c.address?'<div style="font-size:12px;color:var(--c-muted2);margin-top:4px">'+esc(c.address)+'</div>':"")+'</div></div>';
   if(p)b+='<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Dự án</div><div style="font-size:14px">'+esc(p.name)+' · '+bdg(p.group,groupColor(p.group))+'</div></div>';
   if(asgnHandoffLine(a))b+='<div class="asgn-handoff-note" style="margin-bottom:12px">'+asgnHandoffLine(a)+'</div>';
+  b+=asgnDeliveryHTML(a.id);
   if(mates.length)b+='<div><div style="font-size:12px;color:var(--c-muted);margin-bottom:8px">Cùng làm chung</div><div class="row" style="gap:8px;flex-wrap:wrap">'+mates.map(function(n){return bdg(n,groupColor(p?p.group:"Hệ thống"),"transparent")}).join("")+'</div></div>';
   var eBtns = isDir() ? btn("btn-danger","Sửa","A.editAsgn('"+a.id+"')") : ""; return mw("Chi tiết công việc",b,btn("btn-primary","Đóng","A.cm()"),eBtns);
 }
@@ -4118,6 +4235,23 @@ window.A={
       done=true;clearTimeout(timer);
       fail((e&&e.message)||"Không bật được thông báo nền.");
     });
+  },
+  testServerPush:function(){
+    if(typeof window.__CV3_sendTestPush!=="function")return alert("Cần đăng nhập cloud.");
+    S.testPushBusy=1;S.testPushMsg="";render();
+    window.__CV3_sendTestPush()
+      .then(function(){
+        S.testPushBusy=0;
+        S.testPushMsg="✓ Đã gửi push thử — đóng app để kiểm tra banner hệ thống.";
+        showAppToast("Đã gửi push thử từ server.","ok");
+        render();
+      })
+      .catch(function(e){
+        S.testPushBusy=0;
+        S.testPushMsg="✗ "+((e&&e.message)||"Không gửi được push thử.");
+        showAppToast(S.testPushMsg,"err");
+        render();
+      });
   }
 };
 
@@ -4227,8 +4361,15 @@ window.__CV3={
     if(!same)render();
   },
   setChatMsgs:function(msgs){S.chat=msgs||[];if(S.tab==="chat"){render();setTimeout(initChatScroll,30)}},
+  setDeliveryMap:function(map){
+    S.delivery=map||{};
+    if(S.tab==="chat"||S.tab==="prog"||S.tab==="mywork"||S.tab==="emp")render();
+  },
   setReports:function(reports){S.reports=reports||[];if(S.tab==="report"||S.tab==="prog"||S.tab==="mywork"||S.tab==="chamcong"||(S.tab==="proj"&&S.selProjDet))render();},
   setAttendance:function(rows){S.attendance=rows||[];if(S.tab==="chamcong")render();},
+  onChatPush:function(payload){
+    if(S.tab==="chat"&&S.chatTo)markChatThreadRead(S.chatTo);
+  },
   onArrivalPush:function(payload){
     unlockAppAudio();
     playBellSound();
@@ -4250,10 +4391,35 @@ window.__CV3={
   },
   finishBoot:function(){
     try{
-      var q=new URLSearchParams(location.search).get("tab");
+      var params=new URLSearchParams(location.search);
+      var q=params.get("tab");
+      var asgn=params.get("asgn");
+      var thread=params.get("thread");
       if(q==="lich"&&!isEmp())S.tab="lich";
       else if(q&&isEmp()&&empTabOk(q))S.tab=q;
       else if(q&&tabIds().indexOf(q)>=0&&!isEmp())S.tab=q;
+      if(asgn&&isEmp()){S.tab="mywork";S.selMyAsgn=asgn;}
+      if(thread&&(q==="chat"||!q)){
+        S.tab="chat";
+        if(thread==="broadcast")S.chatTo="broadcast";
+        else{
+          S.chatThread=thread.indexOf("dm:")===0?thread:"dm:"+thread;
+          // resolve after emp/auth ready
+          setTimeout(function(){
+            try{
+              var uid=thread.indexOf("_")>=0?thread.split("_").filter(function(x){return x&&x!==(S.auth&&S.auth.uid);})[0]:thread;
+              if(thread.indexOf("dm:")===0)uid=thread.slice(3);
+              var e=S.emp.find(function(x){return x.authUid===uid});
+              if(!e&&S.auth&&S.auth.uid&&thread.indexOf("_")>=0){
+                var parts=thread.split("_");
+                var other=parts[0]===(S.auth&&S.auth.uid)?parts[1]:parts[0];
+                e=S.emp.find(function(x){return x.authUid===other});
+              }
+              if(e){S.chatTo=e.id;render();setTimeout(initChatScroll,30);}
+            }catch(err){}
+          },400);
+        }
+      }
     }catch(e){}
     if(!window.__CV3_SKIP_SEED)seedDemo();
     render();

@@ -1,4 +1,5 @@
-const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const crypto = require("crypto");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
@@ -10,6 +11,20 @@ initializeApp();
 
 const db = getFirestore();
 const adminAuth = getAuth();
+const STATUS_RANK = { failed: 0, sent: 1, delivered: 2, read: 3 };
+
+function makeAckToken() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function normalizeOrgId(org) {
+  return (
+    String(org || "saree")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "") || "saree"
+  );
+}
 
 function sanitizeUsername(name) {
   return String(name || "")
@@ -84,16 +99,166 @@ async function empFcmToken(emp) {
   return null;
 }
 
+async function clearEmpFcmTokenInWorkspace(orgId, token) {
+  if (!orgId || !token) return;
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) return;
+  const ws = wsSnap.data() || {};
+  const empList = Array.isArray(ws.emp) ? ws.emp : [];
+  let changed = false;
+  const next = empList.map((e) => {
+    if (e && e.fcmToken === token) {
+      changed = true;
+      return { ...e, fcmToken: null };
+    }
+    return e;
+  });
+  if (!changed) return;
+  await wsRef.set(
+    {
+      ...ws,
+      emp: next,
+      patch: (ws.patch || 0) + 1,
+      updatedAt: new Date(),
+    }
+  );
+}
+
 async function clearUserFcmToken(token) {
   if (!token) return;
   const snap = await db
     .collection("users")
     .where("fcmToken", "==", token)
-    .limit(3)
+    .limit(5)
     .get();
+  const orgIds = new Set();
   for (const d of snap.docs) {
+    const data = d.data() || {};
+    if (data.orgId) orgIds.add(normalizeOrgId(data.orgId));
     await d.ref.set({ fcmToken: null }, { merge: true });
   }
+  for (const orgId of orgIds) {
+    await clearEmpFcmTokenInWorkspace(orgId, token);
+  }
+}
+
+async function createDeliveryDoc(orgId, payload) {
+  const ref = db.collection(`workspaces/${orgId}/delivery`).doc();
+  const ackToken = makeAckToken();
+  const now = new Date();
+  const fromUid = String(payload.fromUid || "");
+  const toUid = String(payload.toUid || "");
+  let participants = Array.from(new Set([fromUid, toUid].filter(Boolean)));
+  // Giám đốc cần thấy trạng thái giao việc dù không phải người nhận.
+  if (String(payload.type || "") === "assignment") {
+    try {
+      const dirs = await directorFcmTokens(orgId);
+      dirs.forEach((d) => {
+        if (d && d.uid) participants.push(d.uid);
+      });
+      participants = Array.from(new Set(participants));
+    } catch (err) {
+      console.warn("createDeliveryDoc directors:", err);
+    }
+  }
+  const docData = {
+    type: String(payload.type || ""),
+    refId: String(payload.refId || ""),
+    toUid,
+    toEmpId: String(payload.toEmpId || ""),
+    fromUid,
+    participants,
+    threadId: String(payload.threadId || ""),
+    status: payload.status || "sent",
+    sentAt: now,
+    deliveredAt: null,
+    readAt: null,
+    ackToken,
+    error: payload.error ? String(payload.error).slice(0, 500) : null,
+  };
+  await ref.set(docData);
+  return { id: ref.id, ackToken, orgId, ...docData };
+}
+
+async function markDeliveryFailed(orgId, payload, error) {
+  try {
+    await createDeliveryDoc(orgId, {
+      ...payload,
+      status: "failed",
+      error: error || "push failed",
+    });
+  } catch (err) {
+    console.warn("markDeliveryFailed:", err);
+  }
+}
+
+async function handleAckPush(data, authUid) {
+  const deliveryId = String((data && data.deliveryId) || "").trim();
+  const ackToken = String((data && data.ackToken) || "").trim();
+  const orgId = normalizeOrgId((data && data.orgId) || "");
+  const status = String((data && data.status) || "").trim();
+  if (!deliveryId || !orgId) {
+    throw new HttpsError("invalid-argument", "Thiếu deliveryId hoặc orgId.");
+  }
+  if (status !== "delivered" && status !== "read") {
+    throw new HttpsError("invalid-argument", "status phải là delivered hoặc read.");
+  }
+  const ref = db.doc(`workspaces/${orgId}/delivery/${deliveryId}`);
+  const snap = await ref.get();
+  if (!docExists(snap)) {
+    throw new HttpsError("not-found", "Không tìm thấy bản ghi thông báo.");
+  }
+  const cur = snap.data() || {};
+  const tokenOk = ackToken && cur.ackToken === ackToken;
+  const uidOk =
+    authUid &&
+    (authUid === cur.toUid ||
+      authUid === cur.fromUid ||
+      (Array.isArray(cur.participants) && cur.participants.indexOf(authUid) >= 0));
+  if (!tokenOk && !uidOk) {
+    throw new HttpsError("permission-denied", "Không xác thực được xác nhận thông báo.");
+  }
+  if (status === "read" && authUid && cur.toUid && authUid !== cur.toUid && !tokenOk) {
+    // Người gửi không tự đánh dấu đã đọc hộ người nhận (trừ khi có ackToken từ click noti).
+    if (authUid === cur.fromUid) {
+      throw new HttpsError("permission-denied", "Chỉ người nhận mới đánh dấu đã đọc.");
+    }
+  }
+  const curRank = STATUS_RANK[cur.status] != null ? STATUS_RANK[cur.status] : 0;
+  const nextRank = STATUS_RANK[status] != null ? STATUS_RANK[status] : 0;
+  if (nextRank <= curRank) {
+    return { ok: true, status: cur.status, skipped: true };
+  }
+  const patch = { status };
+  if (status === "delivered") patch.deliveredAt = new Date();
+  if (status === "read") {
+    patch.readAt = new Date();
+    if (!cur.deliveredAt) patch.deliveredAt = new Date();
+  }
+  await ref.set(patch, { merge: true });
+  return { ok: true, status, skipped: false };
+}
+
+async function userFcmTokenByUid(uid) {
+  if (!uid) return null;
+  const snap = await db.doc(`users/${uid}`).get();
+  if (!docExists(snap)) return null;
+  return snap.data().fcmToken || null;
+}
+
+async function employeeTokensInOrg(orgId) {
+  const snap = await db
+    .collection("users")
+    .where("orgId", "==", orgId)
+    .where("role", "==", "employee")
+    .get();
+  const out = [];
+  snap.docs.forEach((d) => {
+    const t = d.data().fcmToken;
+    if (t) out.push({ token: t, uid: d.id, empId: d.data().empId || "" });
+  });
+  return out;
 }
 
 function asgnKey(a) {
@@ -175,7 +340,7 @@ function buildArrivalReminderMessage(reminder) {
   };
 }
 
-function buildMessage(emp, asgn, proj) {
+function buildMessage(emp, asgn, proj, delivery) {
   const title = "📋 Bạn được giao việc mới";
   const work =
     asgn.workContent ||
@@ -183,14 +348,70 @@ function buildMessage(emp, asgn, proj) {
     "Công việc mới";
   const where = proj ? proj.name : "";
   const body = where ? `${work} · ${where}` : work;
+  const asgnId = asgn.id || "";
+  const link = asgnId
+    ? `/?tab=mywork&asgn=${encodeURIComponent(asgnId)}`
+    : "/?tab=mywork";
+  const data = {
+    type: "assignment",
+    title,
+    body,
+    asgnId,
+    empId: asgn.empId || "",
+    projId: asgn.projId || "",
+    orgId: (delivery && delivery.orgId) || "",
+    deliveryId: (delivery && delivery.id) || "",
+    ackToken: (delivery && delivery.ackToken) || "",
+  };
+  return {
+    data,
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link },
+    },
+  };
+}
+
+function buildChatMessage(msg, delivery, opts) {
+  opts = opts || {};
+  const fromName = String(msg.fromName || msg.from || "Tin nhắn").slice(0, 80);
+  const text = String(msg.text || "").slice(0, 500);
+  const isBc = msg.type === "broadcast";
+  const title = isBc ? "📢 Thông báo đội" : "💬 " + fromName;
+  const body = text || "Tin nhắn mới";
+  const threadId = isBc
+    ? "broadcast"
+    : String(msg.threadId || (delivery && delivery.threadId) || "");
+  const link = threadId
+    ? `/?tab=chat&thread=${encodeURIComponent(threadId)}`
+    : "/?tab=chat";
   return {
     data: {
-      type: "assignment",
+      type: "chat",
       title,
       body,
-      asgnId: asgn.id || "",
-      empId: asgn.empId || "",
-      projId: asgn.projId || "",
+      msgId: String(opts.msgId || ""),
+      threadId,
+      orgId: (delivery && delivery.orgId) || "",
+      deliveryId: (delivery && delivery.id) || "",
+      ackToken: (delivery && delivery.ackToken) || "",
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link },
+    },
+  };
+}
+
+function buildTestMessage(delivery) {
+  return {
+    data: {
+      type: "test",
+      title: "✓ Push thử từ server",
+      body: "Nếu thấy tin này khi app đóng — thông báo nền đang hoạt động.",
+      orgId: (delivery && delivery.orgId) || "",
+      deliveryId: (delivery && delivery.id) || "",
+      ackToken: (delivery && delivery.ackToken) || "",
     },
     webpush: {
       headers: { Urgency: "high", TTL: "86400" },
@@ -331,7 +552,9 @@ exports.notifyAssignment = onDocumentWritten(
     const before = event.data.before.exists ? event.data.before.data() : null;
     const after = event.data.after.exists ? event.data.after.data() : null;
     if (!after) return null;
+    if (event.params.docId !== "main") return null;
 
+    const orgId = normalizeOrgId(event.params.orgId);
     const targets = findNotifyTargets(before, after);
     if (!targets.length) return null;
 
@@ -341,22 +564,35 @@ exports.notifyAssignment = onDocumentWritten(
     const projById = new Map(projList.map((p) => [p.id, p]));
     const messaging = getMessaging();
 
-    const tokenEntries = [];
+    const results = [];
     for (const asgn of targets) {
       const emp = empById.get(asgn.empId);
       const token = await empFcmToken(emp);
-      if (token) tokenEntries.push({ token, asgn, emp });
-    }
-
-    if (!tokenEntries.length) return null;
-
-    const results = [];
-    for (const entry of tokenEntries) {
-      const { token, asgn, emp } = entry;
-      const proj = projById.get(asgn.projId);
+      const toUid = (emp && emp.authUid) || "";
+      const baseDelivery = {
+        type: "assignment",
+        refId: asgn.id || "",
+        toUid,
+        toEmpId: asgn.empId || "",
+        fromUid: "",
+      };
+      if (!token) {
+        await markDeliveryFailed(orgId, baseDelivery, "no-token");
+        results.push({ asgnId: asgn.id, ok: false, err: "no-token" });
+        continue;
+      }
+      let delivery = null;
       try {
-        await messaging.send({ ...buildMessage(emp, asgn, proj), token });
-        results.push({ token, ok: true });
+        delivery = await createDeliveryDoc(orgId, {
+          ...baseDelivery,
+          status: "sent",
+        });
+        const proj = projById.get(asgn.projId);
+        await messaging.send({
+          ...buildMessage(emp, asgn, proj, delivery),
+          token,
+        });
+        results.push({ asgnId: asgn.id, ok: true, deliveryId: delivery.id });
       } catch (err) {
         const code = err && err.code;
         if (
@@ -365,13 +601,168 @@ exports.notifyAssignment = onDocumentWritten(
         ) {
           await clearUserFcmToken(token);
         }
+        if (delivery && delivery.id) {
+          await db.doc(`workspaces/${orgId}/delivery/${delivery.id}`).set(
+            {
+              status: "failed",
+              error: String(err).slice(0, 500),
+            },
+            { merge: true }
+          );
+        } else {
+          await markDeliveryFailed(orgId, baseDelivery, String(err));
+        }
         console.warn("assignment push:", asgn.empId, String(err));
-        results.push({ token, ok: false, err: String(err) });
+        results.push({ asgnId: asgn.id, ok: false, err: String(err) });
       }
     }
     return results;
   }
 );
+
+exports.notifyChatMessage = onDocumentCreated(
+  "workspaces/{orgId}/messages/{msgId}",
+  async (event) => {
+    const msg = event.data && event.data.data ? event.data.data() : null;
+    if (!msg) return null;
+    const orgId = normalizeOrgId(event.params.orgId);
+    const msgId = event.params.msgId;
+    const messaging = getMessaging();
+    const fromUid = String(msg.uid || "");
+
+    if (msg.type === "dm") {
+      const toUid = String(msg.toUid || "");
+      if (!toUid || toUid === fromUid) return null;
+      const token = await userFcmTokenByUid(toUid);
+      const baseDelivery = {
+        type: "chat",
+        refId: msgId,
+        toUid,
+        toEmpId: "",
+        fromUid,
+        threadId: String(msg.threadId || ""),
+      };
+      if (!token) {
+        await markDeliveryFailed(orgId, baseDelivery, "no-token");
+        return { ok: false, reason: "no-token" };
+      }
+      let delivery = null;
+      try {
+        delivery = await createDeliveryDoc(orgId, {
+          ...baseDelivery,
+          status: "sent",
+        });
+        await messaging.send({
+          ...buildChatMessage(msg, delivery, { msgId }),
+          token,
+        });
+        return { ok: true, deliveryId: delivery.id };
+      } catch (err) {
+        const code = err && err.code;
+        if (
+          code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token"
+        ) {
+          await clearUserFcmToken(token);
+        }
+        if (delivery && delivery.id) {
+          await db.doc(`workspaces/${orgId}/delivery/${delivery.id}`).set(
+            { status: "failed", error: String(err).slice(0, 500) },
+            { merge: true }
+          );
+        }
+        console.warn("chat dm push:", toUid, String(err));
+        return { ok: false, err: String(err) };
+      }
+    }
+
+    if (msg.type === "broadcast" || !msg.type) {
+      const targets = await employeeTokensInOrg(orgId);
+      const results = [];
+      for (const entry of targets) {
+        if (entry.uid === fromUid) continue;
+        try {
+          await messaging.send({
+            ...buildChatMessage(
+              msg,
+              { id: "", ackToken: "", orgId },
+              { msgId }
+            ),
+            token: entry.token,
+          });
+          results.push({ uid: entry.uid, ok: true });
+        } catch (err) {
+          const code = err && err.code;
+          if (
+            code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token"
+          ) {
+            await clearUserFcmToken(entry.token);
+          }
+          results.push({ uid: entry.uid, ok: false });
+        }
+      }
+      return { ok: true, broadcast: results.length };
+    }
+
+    return null;
+  }
+);
+
+exports.ackPush = onCall({ cors: true, invoker: "public" }, async (request) => {
+  return handleAckPush(request.data || {}, request.auth ? request.auth.uid : "");
+});
+
+exports.sendTestPush = onCall({ cors: true }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data() || {};
+  const orgId = normalizeOrgId(user.orgId);
+  const token = user.fcmToken;
+  if (!token) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Chưa bật thông báo trên máy này — bật trước rồi thử lại."
+    );
+  }
+  const delivery = await createDeliveryDoc(orgId, {
+    type: "test",
+    refId: "test",
+    toUid: uid,
+    toEmpId: user.empId || "",
+    fromUid: uid,
+    status: "sent",
+  });
+  try {
+    await getMessaging().send({
+      ...buildTestMessage(delivery),
+      token,
+    });
+    return { ok: true, deliveryId: delivery.id };
+  } catch (err) {
+    const code = err && err.code;
+    if (
+      code === "messaging/registration-token-not-registered" ||
+      code === "messaging/invalid-registration-token"
+    ) {
+      await clearUserFcmToken(token);
+    }
+    await db.doc(`workspaces/${orgId}/delivery/${delivery.id}`).set(
+      { status: "failed", error: String(err).slice(0, 500) },
+      { merge: true }
+    );
+    throw new HttpsError(
+      "internal",
+      "Không gửi được push thử — kiểm tra quyền thông báo và thử bật lại."
+    );
+  }
+});
 
 async function syncFcmToWorkspace(orgId, empId, uid, token) {
   if (!empId || !token) return false;

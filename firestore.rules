@@ -83,6 +83,12 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken', 'empId', 'updatedAt']);
     }
 
+    function isDeliveryParticipant() {
+      return signedIn()
+        && resource.data.participants is list
+        && request.auth.uid in resource.data.participants;
+    }
+
     match /users/{userId} {
       allow read: if signedIn() && request.auth.uid == userId;
       allow create: if signedIn() && request.auth.uid == userId
@@ -104,6 +110,11 @@ service cloud.firestore {
         && validMsgText(request.resource.data)
         && (validDmCreate(orgId, request.resource.data) || validBroadcastCreate(request.resource.data));
       allow update, delete: if false;
+    }
+
+    match /workspaces/{orgId}/delivery/{deliveryId} {
+      allow read: if sameOrg(orgId) && (isDirector() || isDeliveryParticipant());
+      allow create, update, delete: if false;
     }
 
     match /workspaces/{orgId}/reports/{reportId} {
