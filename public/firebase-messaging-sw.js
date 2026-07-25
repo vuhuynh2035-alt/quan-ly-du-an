@@ -10,6 +10,10 @@ importScripts("/firebase-config.js");
 firebase.initializeApp(FIREBASE_CONFIG);
 var messaging = firebase.messaging();
 
+var BADGE_DB = "cv3-badge";
+var BADGE_STORE = "meta";
+var BADGE_KEY = "count";
+
 function functionsBaseUrl() {
   var projectId = (FIREBASE_CONFIG && FIREBASE_CONFIG.projectId) || "";
   var region =
@@ -37,6 +41,79 @@ function deepLinkFromData(data) {
     return "/?tab=chat";
   }
   return "/";
+}
+
+function openBadgeDb() {
+  return new Promise(function (resolve, reject) {
+    var req = indexedDB.open(BADGE_DB, 1);
+    req.onupgradeneeded = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains(BADGE_STORE)) db.createObjectStore(BADGE_STORE);
+    };
+    req.onsuccess = function () {
+      resolve(req.result);
+    };
+    req.onerror = function () {
+      reject(req.error);
+    };
+  });
+}
+
+function badgeGet() {
+  return openBadgeDb().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(BADGE_STORE, "readonly");
+      var req = tx.objectStore(BADGE_STORE).get(BADGE_KEY);
+      req.onsuccess = function () {
+        resolve(Number(req.result) || 0);
+      };
+      req.onerror = function () {
+        reject(req.error);
+      };
+    });
+  });
+}
+
+function badgeSet(n) {
+  n = Math.max(0, Math.floor(Number(n) || 0));
+  return openBadgeDb().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(BADGE_STORE, "readwrite");
+      tx.objectStore(BADGE_STORE).put(n, BADGE_KEY);
+      tx.oncomplete = function () {
+        resolve(n);
+      };
+      tx.onerror = function () {
+        reject(tx.error);
+      };
+    });
+  });
+}
+
+function applyAppBadge(n) {
+  n = Math.max(0, Math.floor(Number(n) || 0));
+  if (n > 0) {
+    if (navigator.setAppBadge) return navigator.setAppBadge(n).catch(function () {});
+  } else if (navigator.clearAppBadge) {
+    return navigator.clearAppBadge().catch(function () {});
+  }
+  return Promise.resolve();
+}
+
+function syncAppBadge(n) {
+  return badgeSet(n).then(function (v) {
+    return applyAppBadge(v);
+  });
+}
+
+function bumpAppBadge() {
+  return badgeGet()
+    .then(function (n) {
+      return syncAppBadge(n + 1);
+    })
+    .catch(function () {
+      return applyAppBadge(1);
+    });
 }
 
 function ackDelivered(data) {
@@ -112,6 +189,7 @@ messaging.onBackgroundMessage(function (payload) {
   return Promise.all([
     ackDelivered(data),
     showPushNotification(payload),
+    bumpAppBadge(),
   ]);
 });
 
@@ -122,6 +200,12 @@ self.addEventListener("notificationclick", function (event) {
   event.waitUntil(
     Promise.all([
       ackDelivered(data),
+      // Giảm badge ít nhất 1 khi bấm vào thông báo; app sẽ đồng bộ lại số chính xác.
+      badgeGet()
+        .then(function (n) {
+          return syncAppBadge(Math.max(0, n - 1));
+        })
+        .catch(function () {}),
       clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
         for (var i = 0; i < list.length; i++) {
           var c = list[i];
@@ -142,4 +226,15 @@ self.addEventListener("notificationclick", function (event) {
       }),
     ])
   );
+});
+
+self.addEventListener("message", function (event) {
+  var msg = event.data || {};
+  if (msg.type === "sync-badge") {
+    event.waitUntil(syncAppBadge(msg.count));
+  } else if (msg.type === "clear-badge") {
+    event.waitUntil(syncAppBadge(0));
+  } else if (msg.type === "bump-badge") {
+    event.waitUntil(bumpAppBadge());
+  }
 });

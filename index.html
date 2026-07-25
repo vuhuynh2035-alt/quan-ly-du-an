@@ -1956,7 +1956,9 @@ function ackRead(type,refId){
   if(d&&(d.status==="read"||d.status==="failed")){_ackReadDone[key]=1;return;}
   if(d&&d.toUid&&S.auth&&S.auth.uid&&d.toUid!==S.auth.uid)return;
   _ackReadDone[key]=1;
-  window.__CV3_ackPush({type:type,refId:refId,deliveryId:d&&d.id,ackToken:d&&d.ackToken,status:"read"}).catch(function(){_ackReadDone[key]=0;});
+  window.__CV3_ackPush({type:type,refId:refId,deliveryId:d&&d.id,ackToken:d&&d.ackToken,status:"read"})
+    .then(function(){updateAppBadge();})
+    .catch(function(){_ackReadDone[key]=0;});
 }
 function markChatThreadRead(chatTo){
   if(!chatTo||chatTo==="broadcast"||!S.auth||!S.auth.uid)return;
@@ -2060,6 +2062,59 @@ function remindFmt(at){
   return pad2(d.getDate())+"/"+pad2(d.getMonth()+1)+" "+pad2(d.getHours())+":"+pad2(d.getMinutes());
 }
 function unreadRemindCount(){return (S.reminders||[]).filter(function(r){return r.fired&&!r.done&&r.seen!==true}).length}
+function unreadArrivalCount(){
+  if(!isEmp()||!S.auth||!S.auth.empId)return 0;
+  return (S.reminders||[]).filter(function(r){return r.kind==="arrival"&&r.empId===S.auth.empId&&r.fired&&!r.done&&r.seen!==true}).length;
+}
+function unreadDeliveryCount(){
+  var uid=S.auth&&S.auth.uid;
+  if(!uid||!S.delivery)return 0;
+  var n=0,seen={};
+  Object.keys(S.delivery).forEach(function(k){
+    var d=S.delivery[k];
+    if(!d||d.toUid!==uid)return;
+    if(d.type==="test")return;
+    if(d.status!=="sent"&&d.status!=="delivered")return;
+    var id=d.id||k;
+    if(seen[id])return;
+    seen[id]=1;
+    n++;
+  });
+  return n;
+}
+function unreadPushCount(){
+  var n=0;
+  if(isDir())n+=unreadRemindCount();
+  else n+=unreadArrivalCount();
+  n+=unreadDeliveryCount();
+  return n;
+}
+function syncAppBadgeToSW(n){
+  if(!("serviceWorker" in navigator))return;
+  var payload={type:"sync-badge",count:n};
+  if(navigator.serviceWorker.controller){
+    try{navigator.serviceWorker.controller.postMessage(payload);}catch(e){}
+    return;
+  }
+  navigator.serviceWorker.ready.then(function(reg){
+    if(reg.active)try{reg.active.postMessage(payload);}catch(e){}
+  }).catch(function(){});
+}
+function updateAppBadge(){
+  var n=unreadPushCount();
+  document.title=n>0?"("+n+") Quản lý dự án":"Quản lý dự án";
+  if(navigator.setAppBadge){
+    if(n>0)navigator.setAppBadge(n).catch(function(){});
+    else if(navigator.clearAppBadge)navigator.clearAppBadge().catch(function(){});
+  }
+  syncAppBadgeToSW(n);
+  return n;
+}
+window.updateAppBadge=updateAppBadge;
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="visible")updateAppBadge();
+});
+window.addEventListener("focus",function(){updateAppBadge();});
 function updateRemindBadge(){
   var n=unreadRemindCount();
   var btn=document.getElementById("hdr-remind-btn");
@@ -2069,11 +2124,7 @@ function updateRemindBadge(){
     if(n>0){el.textContent=n>99?"99+":String(n);el.style.display="flex";}
     else el.style.display="none";
   }
-  document.title=n>0?"("+n+") Quản lý dự án":"Quản lý dự án";
-  if(navigator.setAppBadge){
-    if(n>0)navigator.setAppBadge(n).catch(function(){});
-    else if(navigator.clearAppBadge)navigator.clearAppBadge().catch(function(){});
-  }
+  updateAppBadge();
 }
 function markRemindersSeen(){
   var changed=false;
@@ -4271,7 +4322,7 @@ function checkAutoBackup(){
 checkAutoBackup();
 initViewActions();
 window.__CV3={
-  S:S,render:render,seedDemo:seedDemo,seedE:seedE,DS:DS,getVapidKey:getVapidKey,applyVapidFromCfg:applyVapidFromCfg,showAppToast:showAppToast,
+  S:S,render:render,seedDemo:seedDemo,seedE:seedE,DS:DS,getVapidKey:getVapidKey,applyVapidFromCfg:applyVapidFromCfg,showAppToast:showAppToast,updateAppBadge:updateAppBadge,
   getPatch:function(){return loadPatch();},
   setSvHook:function(fn){_fbSv=fn;},
   applyRemote:function(data){
@@ -4363,12 +4414,14 @@ window.__CV3={
   setChatMsgs:function(msgs){S.chat=msgs||[];if(S.tab==="chat"){render();setTimeout(initChatScroll,30)}},
   setDeliveryMap:function(map){
     S.delivery=map||{};
+    updateAppBadge();
     if(S.tab==="chat"||S.tab==="prog"||S.tab==="mywork"||S.tab==="emp")render();
   },
   setReports:function(reports){S.reports=reports||[];if(S.tab==="report"||S.tab==="prog"||S.tab==="mywork"||S.tab==="chamcong"||(S.tab==="proj"&&S.selProjDet))render();},
   setAttendance:function(rows){S.attendance=rows||[];if(S.tab==="chamcong")render();},
   onChatPush:function(payload){
     if(S.tab==="chat"&&S.chatTo)markChatThreadRead(S.chatTo);
+    else updateAppBadge();
   },
   onArrivalPush:function(payload){
     unlockAppAudio();
@@ -4423,6 +4476,7 @@ window.__CV3={
     }catch(e){}
     if(!window.__CV3_SKIP_SEED)seedDemo();
     render();
+    setTimeout(updateAppBadge,300);
   }
 };
 window.__CV3.finishBoot();

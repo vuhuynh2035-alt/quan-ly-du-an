@@ -1549,6 +1549,15 @@ function bindForegroundMessaging(messaging, cv3) {
         cv3.showAppToast(title + (body ? " — " + body : ""), "ok");
       }
     }
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      try {
+        navigator.serviceWorker.controller.postMessage({ type: "bump-badge" });
+      } catch (e) {}
+    }
+    setTimeout(function () {
+      if (cv3 && typeof cv3.updateAppBadge === "function") cv3.updateAppBadge();
+      else if (typeof window.updateAppBadge === "function") window.updateAppBadge();
+    }, 400);
   });
 }
 
