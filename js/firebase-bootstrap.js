@@ -6,6 +6,8 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   updateProfile,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
 } from "firebase/auth";
 import {
   getFirestore,
@@ -21,13 +23,36 @@ import {
   orderBy,
   limit,
 } from "firebase/firestore";
-import { getMessaging, getToken, isSupported } from "firebase/messaging";
+import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import {
+  isBiometricAvailable,
+  isBiometricEnabled,
+  getBiometricStatus,
+  enableBiometric,
+  disableBiometric,
+  authenticateBiometric,
+  updateBiometricPassword,
+  updateBiometricUsername,
+  formatBiometricError,
+} from "./biometric-auth.js";
 
 var cfg = window.FIREBASE_CONFIG;
 var vapidKey = window.FIREBASE_VAPID_KEY;
 var defaultOrg = window.FIREBASE_DEFAULT_ORG || "saree";
+
+function isLocalDevHost() {
+  var h = location.hostname;
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+}
+
+function clearLocalServiceWorkers() {
+  if (!isLocalDevHost() || !("serviceWorker" in navigator)) return Promise.resolve();
+  return navigator.serviceWorker.getRegistrations().then(function (regs) {
+    return Promise.all(regs.map(function (r) { return r.unregister(); }));
+  }).catch(function () {});
+}
 var configured =
   cfg &&
   cfg.apiKey &&
@@ -45,6 +70,7 @@ var unsubChatDm = null;
 var chatMsgsBc = [];
 var chatMsgsDm = [];
 var unsubReports = null;
+var unsubAttendance = null;
 var pushReady = false;
 var writeTimer = null;
 var writing = false;
@@ -109,7 +135,7 @@ async function resolveAccount(username, org, forSignup) {
     return e.loginKey || sanitizeUsername(e.name);
   }
   var emp = emps.find(function (e) {
-    return empKey(e) === u;
+    return empKey(e) === u && e.accountRole !== "director";
   });
   if (emp) {
     if (forSignup && emp.authUid) {
@@ -202,6 +228,8 @@ function stopSubscriptions() {
   unsubChatAll();
   if (unsubReports) unsubReports();
   unsubReports = null;
+  if (unsubAttendance) unsubAttendance();
+  unsubAttendance = null;
   provisionBusy = false;
   provisionDone = false;
   if (provisionRetryTimer) clearTimeout(provisionRetryTimer);
@@ -324,6 +352,10 @@ function reportsColRef() {
   return collection(doc(db, "workspaces", orgId), "reports");
 }
 
+function attendanceColRef() {
+  return collection(doc(db, "workspaces", orgId), "attendance");
+}
+
 function subscribeReports() {
   if (unsubReports) unsubReports();
   if (!db) return;
@@ -342,8 +374,43 @@ function subscribeReports() {
   );
 }
 
+function subscribeAttendance() {
+  if (unsubAttendance) unsubAttendance();
+  unsubAttendance = null;
+  if (!db || !auth || !auth.currentUser) return;
+  var empId = window.__CV3_AUTH && window.__CV3_AUTH.empId;
+  var isDir = window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
+  var q;
+  if (isDir) {
+    q = query(attendanceColRef(), orderBy("date", "desc"), limit(500));
+  } else {
+    if (!empId) return;
+    q = query(
+      attendanceColRef(),
+      where("empId", "==", empId),
+      orderBy("date", "desc"),
+      limit(200)
+    );
+  }
+  unsubAttendance = onSnapshot(
+    q,
+    function (snap) {
+      var rows = snap.docs.map(function (d) {
+        return Object.assign({ id: d.id }, d.data());
+      });
+      if (appCv3 && appCv3.setAttendance) appCv3.setAttendance(rows);
+    },
+    function (err) {
+      console.error("attendance:", err);
+    }
+  );
+}
+
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  var d = new Date();
+  var offset = d.getTimezoneOffset();
+  var local = new Date(d.getTime() - (offset * 60 * 1000));
+  return local.toISOString().slice(0, 10);
 }
 
 async function uploadReportPhotos(files, asgnId, date) {
@@ -379,6 +446,147 @@ async function uploadReportPhotos(files, asgnId, date) {
     urls.push(await getDownloadURL(storageRef));
   }
   return urls;
+}
+
+async function uploadAttendancePhotos(files, kind, punchId) {
+  if (!files || !files.length) return [];
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập.");
+  }
+  var storage = getStorage(app);
+  var urls = [];
+  var max = Math.min(files.length, kind === "work" ? 12 : 1);
+  var pid = String(punchId || Date.now());
+  for (var i = 0; i < max; i++) {
+    var file = files[i];
+    if (!file || !file.type || file.type.indexOf("image/") !== 0) continue;
+    if (file.size > 8 * 1024 * 1024) {
+      throw new Error("Ảnh «" + (file.name || "ảnh") + "» quá 8MB.");
+    }
+    var ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+    var path =
+      "workspaces/" +
+      orgId +
+      "/attendance/" +
+      auth.currentUser.uid +
+      "/" +
+      pid +
+      "_" +
+      kind +
+      "_" +
+      i +
+      "." +
+      ext;
+    var storageRef = ref(storage, path);
+    await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
+    urls.push(await getDownloadURL(storageRef));
+  }
+  return urls;
+}
+
+async function submitAttendance(payload) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var date = payload.date || todayIso();
+  var punchId = String(payload.punchId || Date.now());
+  var siteUrls = [];
+  if (payload.type === "in" && payload.sitePhoto) {
+    siteUrls = await uploadAttendancePhotos([payload.sitePhoto], "site", punchId);
+  }
+  var workUrls = [];
+  if (payload.type === "out") {
+    workUrls = await uploadAttendancePhotos(payload.workPhotos || [], "work", punchId);
+  }
+  var fn = httpsCallable(getFunctions(app), "submitAttendance");
+  var res = await fn({
+    orgId: orgId,
+    type: payload.type,
+    date: date,
+    punchId: punchId,
+    lat: payload.lat,
+    lng: payload.lng,
+    locationLabel: payload.locationLabel || "",
+    sitePhoto: siteUrls[0] || "",
+    workPhotos: workUrls,
+    lateReason: payload.lateReason || "",
+  });
+  return res.data || {};
+}
+
+async function callSubmitAttendance(payload) {
+  try {
+    return await submitAttendance(payload);
+  } catch (err) {
+    var msg = (err && err.message) || String(err);
+    if (err && err.code === "functions/invalid-argument" && err.details) {
+      msg = String(err.details);
+    }
+    if (err && err.code === "functions/already-exists" && err.details) {
+      msg = String(err.details);
+    }
+    if (err && err.code === "functions/failed-precondition" && err.details) {
+      msg = String(err.details);
+    }
+    throw new Error(msg);
+  }
+}
+
+async function uploadArrivalPhoto(file, asgnId) {
+  if (!file) return "";
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập.");
+  }
+  if (!file.type || file.type.indexOf("image/") !== 0) {
+    throw new Error("File phải là ảnh.");
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    throw new Error("Ảnh quá 8MB.");
+  }
+  var storage = getStorage(app);
+  var ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+  var path =
+    "workspaces/" +
+    orgId +
+    "/arrivals/" +
+    auth.currentUser.uid +
+    "/" +
+    asgnId +
+    "_" +
+    Date.now() +
+    "." +
+    ext;
+  var storageRef = ref(storage, path);
+  await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
+  return await getDownloadURL(storageRef);
+}
+
+async function confirmArrival(payload) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var photoUrl = await uploadArrivalPhoto(payload.photo, payload.asgnId);
+  var fn = httpsCallable(getFunctions(app), "confirmArrival");
+  var res = await fn({
+    orgId: orgId,
+    asgnId: payload.asgnId,
+    reminderId: payload.reminderId || "",
+    lat: payload.lat,
+    lng: payload.lng,
+    locationLabel: payload.locationLabel || "",
+    photo: photoUrl,
+  });
+  return res.data || {};
+}
+
+async function callConfirmArrival(payload) {
+  try {
+    return await confirmArrival(payload);
+  } catch (err) {
+    var msg = (err && err.message) || String(err);
+    if (err && err.details) msg = String(err.details);
+    throw new Error(msg);
+  }
 }
 
 async function submitDailyReport(payload) {
@@ -578,7 +786,19 @@ async function changeMyPassword(payload) {
   var fn = httpsCallable(getFunctions(app), "changeMyPassword");
   try {
     var res = await fn(payload || {});
-    return res.data || {};
+    var data = res.data || {};
+    var newPw = payload && payload.newPassword;
+    if (newPw && isBiometricEnabled()) {
+      try {
+        var un =
+          (window.__CV3_AUTH && window.__CV3_AUTH.username) ||
+          emailToUsername((auth.currentUser && auth.currentUser.email) || "");
+        await updateBiometricPassword(newPw, un);
+      } catch (bioErr) {
+        console.warn("updateBiometricPassword:", bioErr);
+      }
+    }
+    return data;
   } catch (err) {
     var msg =
       (err && err.message) ||
@@ -625,6 +845,13 @@ async function updateMyUsername(payload) {
     var data = res.data || {};
     var cur = window.__CV3_AUTH || {};
     publishAuth(Object.assign({}, cur, { username: data.username || cur.username }));
+    if (data.username && isBiometricEnabled()) {
+      try {
+        await updateBiometricUsername(data.username);
+      } catch (bioErr) {
+        console.warn("updateBiometricUsername:", bioErr);
+      }
+    }
     return data;
   } catch (err) {
     var msg3 =
@@ -640,13 +867,11 @@ function $(id) {
 }
 
 function setSync(status, text) {
-  var bar = $("sync-bar");
   var dot = $("sync-dot");
-  var lbl = $("sync-label");
-  if (!bar) return;
-  bar.style.display = "flex";
-  if (dot) dot.className = "sync-dot sync-" + status;
-  if (lbl) lbl.textContent = text;
+  if (!dot) return;
+  var lite = status === "online" || status === "syncing" ? "online" : "offline";
+  dot.className = "sync-dot sync-" + lite;
+  dot.title = text || (lite === "online" ? "Online" : "Offline");
 }
 
 function sanitizeUsername(name) {
@@ -703,6 +928,135 @@ function showAuth(show) {
   if (authOverlayVisible === show) return;
   authOverlayVisible = show;
   el.style.display = show ? "flex" : "none";
+  if (show) refreshBiometricLoginUI();
+}
+
+async function refreshBiometricLoginUI() {
+  var wrap = $("auth-bio-wrap");
+  var btn = $("auth-bio-btn");
+  var hint = $("auth-bio-hint");
+  if (!wrap || !btn) return;
+  var form = $("auth-form");
+  var mode = (form && form.dataset.mode) || "login";
+  if (mode !== "login") {
+    wrap.style.display = "none";
+    return;
+  }
+  try {
+    var st = await getBiometricStatus();
+    var show = st.available && st.enabled;
+    wrap.style.display = show ? "block" : "none";
+    if (hint) {
+      hint.textContent = st.username
+        ? "Đăng nhập nhanh cho @" + st.username
+        : "Dùng vân tay hoặc khuôn mặt đã đăng ký trên máy này.";
+    }
+    btn.disabled = !show;
+  } catch (e) {
+    wrap.style.display = "none";
+  }
+}
+
+async function syncOrOfferBiometric(username, password, user) {
+  try {
+    if (!password || password.length < 6) return;
+    if (!(await isBiometricAvailable())) return;
+    var st = await getBiometricStatus();
+    if (st.enabled) {
+      if (st.username && st.username === username) {
+        try {
+          await updateBiometricPassword(password, username);
+        } catch (bioUpd) {
+          console.warn("sync biometric password:", bioUpd);
+        }
+        return;
+      }
+      var switchOk = window.confirm(
+        "Máy này đang bật sinh trắc học cho @" +
+          (st.username || "tài khoản khác") +
+          ".\n\nChuyển sang tài khoản @" +
+          username +
+          "?"
+      );
+      if (!switchOk) return;
+      await disableBiometric();
+    } else {
+      var ok = window.confirm(
+        "Thiết bị hỗ trợ vân tay / khuôn mặt.\n\nBật đăng nhập sinh trắc học để lần sau không cần nhập mật khẩu?"
+      );
+      if (!ok) return;
+    }
+    await enableBiometric({
+      username: username,
+      password: password,
+      uid: (user && user.uid) || "",
+      displayName: (user && user.displayName) || username,
+    });
+    if (typeof window.showAppToast === "function") {
+      window.showAppToast("Đã bật đăng nhập sinh trắc học.", "ok");
+    } else {
+      alert("Đã bật đăng nhập sinh trắc học.");
+    }
+    refreshBiometricLoginUI();
+  } catch (err) {
+    console.warn("biometric setup:", err);
+    alert(formatBiometricError(err));
+  }
+}
+
+async function loginWithBiometric() {
+  var errEl = $("auth-err");
+  var btn = $("auth-bio-btn");
+  if (errEl) errEl.textContent = "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Đang xác thực…";
+  }
+  try {
+    var creds = await authenticateBiometric();
+    var id = resolveAuthIdentity(creds.username, defaultOrg);
+    var lc = await signInWithEmailAndPassword(auth, id.email, creds.password);
+    await ensureUserDoc(lc.user, defaultOrg, id.username);
+    showAuth(false);
+  } catch (err) {
+    if (errEl) errEl.textContent = formatBiometricError(err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Đăng nhập bằng sinh trắc học";
+    }
+    refreshBiometricLoginUI();
+  }
+}
+
+async function enableBiometricForCurrentUser(password) {
+  if (!auth || !auth.currentUser) throw new Error("Cần đăng nhập trước.");
+  var user = auth.currentUser;
+  var username =
+    (window.__CV3_AUTH && window.__CV3_AUTH.username) ||
+    emailToUsername(user.email || "");
+  if (!user.email) throw new Error("Tài khoản chưa có email đăng nhập.");
+  try {
+    var cred = EmailAuthProvider.credential(user.email, password);
+    await reauthenticateWithCredential(user, cred);
+  } catch (err) {
+    var code = (err && err.code) || "";
+    if (
+      code === "auth/wrong-password" ||
+      code === "auth/invalid-credential" ||
+      code === "auth/invalid-login-credentials"
+    ) {
+      throw new Error("Mật khẩu không đúng.");
+    }
+    throw new Error(formatBiometricError(err) || "Không xác minh được mật khẩu.");
+  }
+  await enableBiometric({
+    username: username,
+    password: password,
+    uid: user.uid,
+    displayName: user.displayName || username,
+  });
+  return getBiometricStatus();
 }
 
 function updateAuthHints(mode) {
@@ -768,6 +1122,7 @@ function switchToLoginMode() {
   if (forgot) forgot.style.display = "none";
   updateAuthHints("login");
   refreshBootstrapUI();
+  refreshBiometricLoginUI();
 }
 
 function openAuthPanel() {
@@ -839,11 +1194,7 @@ function payloadFromApp(cv3) {
 
 function applyRemote(cv3, data) {
   var patch = data.patch || 0;
-  if (patch <= cv3.getPatch()) {
-    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
-    return false;
-  }
-  cv3.applyRemote({
+  var payload = {
     emp: data.emp,
     cust: data.cust,
     proj: data.proj,
@@ -852,7 +1203,18 @@ function applyRemote(cv3, data) {
     reminders: data.reminders,
     cfg: data.cfg,
     patch: patch,
-  });
+  };
+  if (!isDirectorRole()) {
+    cv3.applyRemote(payload);
+    remotePatch = patch;
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    return true;
+  }
+  if (patch <= cv3.getPatch()) {
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    return false;
+  }
+  cv3.applyRemote(payload);
   remotePatch = patch;
   return true;
 }
@@ -887,6 +1249,17 @@ async function ensureUserDoc(user, org, username, preset) {
     if (d.orgId) orgId = d.orgId;
     if (!d.username && un) {
       await setDoc(ref, { username: un }, { merge: true });
+    }
+    if (role === "employee" && un && orgId) {
+      try {
+        var acct = await resolveAccount(un, orgId);
+        if (acct && acct.empId && acct.empId !== empId) {
+          empId = acct.empId;
+          await setDoc(ref, { empId: empId }, { merge: true });
+        }
+      } catch (e) {
+        console.warn("Could not re-resolve account", e);
+      }
     }
   }
   publishAuth({
@@ -968,33 +1341,121 @@ function subscribeWorkspace(cv3) {
   );
 }
 
-async function registerMessaging(cv3) {
-  if (!configured || !vapidKey || vapidKey === "YOUR_VAPID_KEY") return;
-  var ok = await isSupported();
-  if (!ok) return;
+async function persistFcmToken(token, cv3) {
+  if (!auth || !auth.currentUser || !db) return;
+  if (isDirectorRole()) {
+    await setDoc(
+      doc(db, "users", auth.currentUser.uid),
+      { fcmToken: token, empId: "" },
+      { merge: true }
+    );
+    try {
+      var fnDir = httpsCallable(getFunctions(app), "syncFcmToken");
+      await fnDir({ token: token });
+    } catch (err) {
+      console.warn("syncFcmToken:", err);
+    }
+    return;
+  }
+  var linked = localStorage.getItem("cv3_fcm_emp");
+  var empId = (window.__CV3_AUTH && window.__CV3_AUTH.empId) || linked;
+  if (empId && cv3) cv3.linkFcmToEmp(empId, token);
+  await saveMyFcmToken(token, empId || "");
   try {
-    var reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {
-      scope: "/",
-    });
+    var fn = httpsCallable(getFunctions(app), "syncFcmToken");
+    await fn({ token: token });
+  } catch (err) {
+    console.warn("syncFcmToken:", err);
+  }
+}
+
+function bindForegroundMessaging(messaging, cv3) {
+  if (!messaging || messaging.__cv3Bound) return;
+  messaging.__cv3Bound = true;
+  onMessage(messaging, function (payload) {
+    var type = payload.data && payload.data.type;
+    if (type === "reminder" && cv3 && typeof cv3.onReminderPush === "function") {
+      cv3.onReminderPush(payload);
+      return;
+    }
+    if (type === "arrival" && cv3 && typeof cv3.onArrivalPush === "function") {
+      cv3.onArrivalPush(payload);
+      return;
+    }
+    if (type === "assignment" && cv3) {
+      var d = payload.data || {};
+      var title = d.title || "Công việc mới";
+      var body = d.body || "";
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(title, {
+            body: body,
+            icon: "/icon-192.png",
+            tag: "asgn_" + (d.asgnId || "fg"),
+            silent: false,
+          });
+        } catch (e) {}
+      }
+      if (typeof cv3.showAppToast === "function") {
+        cv3.showAppToast(title + (body ? " — " + body : ""), "ok");
+      }
+    }
+  });
+}
+
+function fcmFailReason(err) {
+  if (!err) return "unknown";
+  var code = String(err.code || "");
+  var msg = String(err.message || err);
+  var low = (code + " " + msg).toLowerCase();
+  if (low.indexOf("permission") >= 0 || low.indexOf("not granted") >= 0) return "denied";
+  if (low.indexOf("unsupported") >= 0) return "unsupported";
+  if (low.indexOf("service worker") >= 0 || low.indexOf("serviceworker") >= 0) return "sw-fail";
+  if (low.indexOf("vapid") >= 0) return "no-config";
+  if (code === "messaging/token-subscribe-failed") return "no-token";
+  if (!window.isSecureContext) return "insecure";
+  return msg.slice(0, 160) || "unknown";
+}
+
+async function registerMessaging(cv3, options) {
+  var opts = options || {};
+  if (isLocalDevHost() && !opts.request) {
+    return { ok: false, reason: "local-dev" };
+  }
+  var key =
+    (window.__CV3 && typeof window.__CV3.getVapidKey === "function"
+      ? window.__CV3.getVapidKey()
+      : null) || vapidKey;
+  if (!configured || !key || key === "YOUR_VAPID_KEY") return { ok: false, reason: "no-config" };
+  if (typeof Notification === "undefined") return { ok: false, reason: "unsupported" };
+  if (!window.isSecureContext) return { ok: false, reason: "insecure" };
+  var ok = await isSupported();
+  if (!ok) return { ok: false, reason: "unsupported" };
+  try {
+    if (!("serviceWorker" in navigator)) return { ok: false, reason: "unsupported" };
+    var reg = await navigator.serviceWorker.getRegistration("/");
+    if (!reg) {
+      reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", { scope: "/" });
+    }
+    await navigator.serviceWorker.ready;
     var messaging = getMessaging(app, { serviceWorkerRegistration: reg });
-    var perm = await Notification.requestPermission();
-    if (perm !== "granted") return;
-    var token = await getToken(messaging, { vapidKey: vapidKey });
-    if (!token) return;
+    var perm = Notification.permission;
+    if (perm !== "granted") {
+      if (!opts.request) return { ok: false, reason: "denied" };
+      perm = await Notification.requestPermission();
+    }
+    if (perm !== "granted") return { ok: false, reason: "denied" };
+    var token = await getToken(messaging, { vapidKey: key, serviceWorkerRegistration: reg });
+    if (!token) return { ok: false, reason: "no-token" };
     pushReady = true;
     window.__CV3_FCM = { token: token, messaging: messaging };
-    var linked = localStorage.getItem("cv3_fcm_emp");
-    var empId =
-      (window.__CV3_AUTH && window.__CV3_AUTH.empId) || linked;
-    if (isDirectorRole() && empId && appCv3) {
-      appCv3.linkFcmToEmp(empId, token);
-    } else if (empId) {
-      await saveMyFcmToken(token, empId);
-    } else if (linked) {
-      await saveMyFcmToken(token, linked);
-    }
+    await persistFcmToken(token, cv3);
+    if (isDirectorRole()) localStorage.setItem("cv3_remind_push", "1");
+    bindForegroundMessaging(messaging, cv3);
+    return { ok: true, token: token };
   } catch (err) {
     console.warn("FCM:", err);
+    return { ok: false, reason: fcmFailReason(err) };
   }
 }
 
@@ -1041,6 +1502,7 @@ function bindAuthUI(cv3) {
     if (errEl) errEl.textContent = "";
     try {
       var id = resolveAuthIdentity(userInput, org);
+      var signedUser = null;
       if (mode === "signup") {
         var hasDir = await hasDirectorInOrg(org);
         if (hasDir) {
@@ -1061,11 +1523,18 @@ function bindAuthUI(cv3) {
         await updateProfile(cred.user, { displayName: "Giám đốc" });
         await claimDirectorRole(id.username, org);
         await ensureUserDoc(cred.user, org, id.username);
+        signedUser = cred.user;
       } else {
         var lc = await signInWithEmailAndPassword(auth, id.email, pass);
         await ensureUserDoc(lc.user, org, id.username);
+        signedUser = lc.user;
       }
       showAuth(false);
+      if (mode !== "signup") {
+        setTimeout(function () {
+          syncOrOfferBiometric(id.username, pass, signedUser);
+        }, 400);
+      }
     } catch (err) {
       var bootstrapMode = (form.dataset.mode || "login") === "signup";
       if (errEl) errEl.textContent = authErrMsg(err, form.dataset.mode || "login", bootstrapMode);
@@ -1083,11 +1552,24 @@ function bindAuthUI(cv3) {
   var btnLogin = $("auth-login-mode");
   if (btnLogin) btnLogin.addEventListener("click", switchToLoginMode);
 
+  var btnBio = $("auth-bio-btn");
+  if (btnBio) btnBio.addEventListener("click", loginWithBiometric);
+
   var btnOut = $("auth-signout");
   var btnIn = $("auth-signin");
   if (btnIn) btnIn.addEventListener("click", openAuthPanel);
   if (btnOut) btnOut.addEventListener("click", doSignOut);
   window.__CV3_signOut = doSignOut;
+  window.__CV3_bio = {
+    status: getBiometricStatus,
+    available: isBiometricAvailable,
+    enabled: isBiometricEnabled,
+    enable: enableBiometricForCurrentUser,
+    disable: disableBiometric,
+    login: loginWithBiometric,
+    refreshLoginUI: refreshBiometricLoginUI,
+  };
+  refreshBiometricLoginUI();
 }
 
 async function bootOffline(cv3) {
@@ -1096,14 +1578,30 @@ async function bootOffline(cv3) {
 }
 
 async function bootOnline(cv3) {
+  await clearLocalServiceWorkers();
   bindAuthUI(cv3);
   cv3.setSvHook(function () {
     scheduleWrite(cv3);
   });
   window.__CV3_enablePush = function (empId) {
-    localStorage.setItem("cv3_fcm_emp", empId);
-    if (window.__CV3_FCM && window.__CV3_FCM.token)
-      cv3.linkFcmToEmp(empId, window.__CV3_FCM.token);
+    localStorage.setItem("cv3_fcm_emp", empId || "");
+    return registerMessaging(cv3, { request: true }).then(function (res) {
+      if (!res || !res.ok) return res || { ok: false, reason: "unknown" };
+      var token = res.token || (window.__CV3_FCM && window.__CV3_FCM.token);
+      if (!token) return { ok: false, reason: "no-token" };
+      cv3.linkFcmToEmp(empId, token);
+      return persistFcmToken(token, cv3).then(function () {
+        return { ok: true, token: token };
+      });
+    });
+  };
+  window.__CV3_enableRemindPush = function () {
+    return registerMessaging(cv3, { request: true });
+  };
+  window.__CV3_flushCloud = function () {
+    if (writeTimer) clearTimeout(writeTimer);
+    writeTimer = null;
+    return flushWrite(cv3);
   };
   window.__CV3_provisionEmp = provisionEmployeeAccount;
   window.__CV3_provisionAllEmployees = function (force) {
@@ -1113,6 +1611,8 @@ async function bootOnline(cv3) {
   window.__CV3_updateProfile = updateMyProfile;
   window.__CV3_updateUsername = updateMyUsername;
   window.__CV3_submitReport = callSubmitReport;
+  window.__CV3_submitAttendance = callSubmitAttendance;
+  window.__CV3_confirmArrival = callConfirmArrival;
   onAuthStateChanged(auth, async function (user) {
     var epoch = ++authEpoch;
     var uid = user ? user.uid : null;
@@ -1155,7 +1655,12 @@ async function bootOnline(cv3) {
       subscribeWorkspace(cv3);
       subscribeChat();
       subscribeReports();
-      registerMessaging(cv3);
+      subscribeAttendance();
+      registerMessaging(cv3, {
+        request:
+          Notification.permission === "granted" ||
+          (isDirectorRole() && localStorage.getItem("cv3_remind_push") === "1"),
+      });
       if (isDirectorRole()) scheduleProvision(cv3, { delay: 600 });
     }
   });

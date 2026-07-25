@@ -1,11 +1,11 @@
 {
   "name": "doi-thi-cong-functions",
-  "description": "Push thông báo khi giao việc",
+  "description": "Push thông báo giao việc và nhắc hẹn",
   "main": "index.js",
-  "engines": { "node": "20" },
+  "engines": { "node": "22" },
   "scripts": {
     "serve": "firebase emulators:start --only functions",
-    "deploy": "firebase deploy --only functions"
+    "deploy": "npx -y firebase-tools@latest deploy --only functions"
   },
   "dependencies": {
     "firebase-admin": "^13.0.2",

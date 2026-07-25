@@ -110,5 +110,15 @@ service cloud.firestore {
       allow read: if sameOrg(orgId);
       allow create, update, delete: if false;
     }
+
+    match /workspaces/{orgId}/attendance/{recordId} {
+      allow read: if sameOrg(orgId);
+      allow create, update, delete: if false;
+    }
+
+    match /workspaces/{orgId}/arrivals/{recordId} {
+      allow read: if sameOrg(orgId);
+      allow create, update, delete: if false;
+    }
   }
 }
