@@ -1,4 +1,4 @@
-const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
@@ -84,7 +84,7 @@ async function empFcmToken(emp) {
   return null;
 }
 
-async function clearUserFcmToken(token) {
+async function clearUserFcmToken(token, orgId) {
   if (!token) return;
   const snap = await db
     .collection("users")
@@ -94,6 +94,25 @@ async function clearUserFcmToken(token) {
   for (const d of snap.docs) {
     await d.ref.set({ fcmToken: null }, { merge: true });
   }
+  if (!orgId) return;
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) return;
+  const ws = wsSnap.data();
+  const empList = ws.emp || [];
+  let changed = false;
+  const nextEmpList = empList.map((e) => {
+    if (e && e.fcmToken === token) {
+      changed = true;
+      return { ...e, fcmToken: null };
+    }
+    return e;
+  });
+  if (!changed) return;
+  await wsRef.set(
+    { emp: nextEmpList, patch: (ws.patch || 0) + 1, updatedAt: new Date() },
+    { merge: true }
+  );
 }
 
 function asgnKey(a) {
@@ -194,7 +213,28 @@ function buildMessage(emp, asgn, proj) {
     },
     webpush: {
       headers: { Urgency: "high", TTL: "86400" },
-      fcmOptions: { link: "/" },
+      fcmOptions: { link: "/?tab=mywork" },
+    },
+  };
+}
+
+function buildChatMessage(msg) {
+  const isBc = msg.type === "broadcast";
+  const from = String(msg.fromName || msg.from || "Tin nhắn").slice(0, 80);
+  const body = String(msg.text || "").slice(0, 180);
+  return {
+    data: {
+      type: "chat",
+      title: isBc ? "📢 Thông báo đội" : "💬 " + from,
+      body,
+      msgId: String(msg.id || ""),
+      threadId: String(msg.threadId || (isBc ? "broadcast" : "")),
+      fromUid: String(msg.uid || ""),
+      chatType: isBc ? "broadcast" : "dm",
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link: "/?tab=chat" },
     },
   };
 }
@@ -271,7 +311,7 @@ exports.dispatchReminders = onSchedule(
             code === "messaging/registration-token-not-registered" ||
             code === "messaging/invalid-registration-token"
           ) {
-            await clearUserFcmToken(token);
+            await clearUserFcmToken(token, orgId);
           }
           console.warn("arrival push:", orgId, reminder.empId, String(err));
         }
@@ -328,6 +368,7 @@ exports.dispatchReminders = onSchedule(
 exports.notifyAssignment = onDocumentWritten(
   "workspaces/{orgId}/data/{docId}",
   async (event) => {
+    const orgId = event.params.orgId;
     const before = event.data.before.exists ? event.data.before.data() : null;
     const after = event.data.after.exists ? event.data.after.data() : null;
     if (!after) return null;
@@ -363,7 +404,7 @@ exports.notifyAssignment = onDocumentWritten(
           code === "messaging/registration-token-not-registered" ||
           code === "messaging/invalid-registration-token"
         ) {
-          await clearUserFcmToken(token);
+          await clearUserFcmToken(token, orgId);
         }
         console.warn("assignment push:", asgn.empId, String(err));
         results.push({ token, ok: false, err: String(err) });
@@ -372,6 +413,139 @@ exports.notifyAssignment = onDocumentWritten(
     return results;
   }
 );
+
+exports.notifyChatMessage = onDocumentCreated(
+  "workspaces/{orgId}/messages/{msgId}",
+  async (event) => {
+    const orgId = event.params.orgId;
+    const snap = event.data;
+    if (!snap || !snap.exists) return null;
+    const msg = Object.assign({ id: snap.id }, snap.data());
+    const messaging = getMessaging();
+
+    const tokenEntries = [];
+    if (msg.type === "broadcast") {
+      const usersSnap = await db
+        .collection("users")
+        .where("orgId", "==", orgId)
+        .get();
+      usersSnap.docs.forEach((d) => {
+        if (d.id === msg.uid) return;
+        const t = d.data().fcmToken;
+        if (t) tokenEntries.push({ token: t });
+      });
+    } else if (msg.type === "dm" && msg.toUid) {
+      let token = null;
+      const toSnap = await db.doc(`users/${msg.toUid}`).get();
+      if (docExists(toSnap) && toSnap.data().fcmToken) {
+        token = toSnap.data().fcmToken;
+      }
+      if (!token) {
+        const wsSnap = await db.doc(`workspaces/${orgId}/data/main`).get();
+        if (docExists(wsSnap)) {
+          const empList = wsSnap.data().emp || [];
+          const emp = empList.find((e) => e && e.authUid === msg.toUid);
+          token = await empFcmToken(emp);
+        }
+      }
+      if (token) tokenEntries.push({ token });
+    }
+
+    if (!tokenEntries.length) return null;
+
+    const payload = buildChatMessage(msg);
+    const results = [];
+    for (const entry of tokenEntries) {
+      const { token } = entry;
+      try {
+        await messaging.send({ ...payload, token });
+        results.push({ token, ok: true });
+      } catch (err) {
+        const code = err && err.code;
+        if (
+          code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token"
+        ) {
+          await clearUserFcmToken(token, orgId);
+        }
+        console.warn("chat push:", orgId, msg.id, String(err));
+        results.push({ token, ok: false, err: String(err) });
+      }
+    }
+    return results;
+  }
+);
+
+exports.ackAssignment = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data();
+  if (user.role !== "employee" || !user.empId) {
+    throw new HttpsError("permission-denied", "Chỉ nhân viên mới được xác nhận công việc.");
+  }
+
+  const data = request.data || {};
+  const asgnId = String(data.asgnId || "");
+  const kind = data.kind === "read" ? "read" : "delivered";
+  if (!asgnId) {
+    throw new HttpsError("invalid-argument", "Thiếu mã công việc.");
+  }
+
+  const orgId =
+    String(user.orgId || "saree")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) {
+    throw new HttpsError("not-found", "Chưa có dữ liệu dự án.");
+  }
+  const ws = wsSnap.data();
+  const asgnList = ws.asgn || [];
+  const idx = asgnList.findIndex((a) => a.id === asgnId && a.empId === user.empId);
+  if (idx < 0) {
+    throw new HttpsError("permission-denied", "Bạn không được xác nhận công việc này.");
+  }
+
+  const now = new Date().toISOString();
+  const asgn = asgnList[idx];
+  let changed = false;
+  const nextAsgn = { ...asgn };
+  if (kind === "delivered" && !nextAsgn.deliveredAt) {
+    nextAsgn.deliveredAt = now;
+    changed = true;
+  }
+  if (kind === "read") {
+    if (!nextAsgn.deliveredAt) {
+      nextAsgn.deliveredAt = now;
+      changed = true;
+    }
+    if (!nextAsgn.readAt) {
+      nextAsgn.readAt = now;
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return { ok: true, asgn };
+  }
+
+  const nextAsgnList = asgnList.slice();
+  nextAsgnList[idx] = nextAsgn;
+  await wsRef.set(
+    { asgn: nextAsgnList, patch: (ws.patch || 0) + 1, updatedAt: new Date() },
+    { merge: true }
+  );
+
+  return { ok: true, asgn: nextAsgn };
+});
 
 async function syncFcmToWorkspace(orgId, empId, uid, token) {
   if (!empId || !token) return false;

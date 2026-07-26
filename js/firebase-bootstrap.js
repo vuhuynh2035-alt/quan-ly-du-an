@@ -18,6 +18,7 @@ import {
   serverTimestamp,
   collection,
   addDoc,
+  updateDoc,
   query,
   where,
   orderBy,
@@ -198,6 +199,10 @@ function msgAtMs(m) {
   return 0;
 }
 
+var deliveredMsgIds = {};
+var readMsgIds = {};
+var ackAsgnIds = {};
+
 function mergeChatMsgs() {
   var map = {};
   chatMsgsBc.concat(chatMsgsDm).forEach(function (m) {
@@ -211,6 +216,100 @@ function mergeChatMsgs() {
       return msgAtMs(a) - msgAtMs(b);
     });
   if (appCv3 && appCv3.setChatMsgs) appCv3.setChatMsgs(all);
+  autoMarkIncomingDelivered(all);
+}
+
+function isoNow() {
+  return new Date().toISOString();
+}
+
+function msgDocRef(msgId) {
+  return doc(db, "workspaces", orgId, "messages", msgId);
+}
+
+async function markMessageDelivered(msgId) {
+  if (!auth || !auth.currentUser || !db || !msgId) return;
+  if (deliveredMsgIds[msgId]) return;
+  deliveredMsgIds[msgId] = 1;
+  try {
+    await updateDoc(msgDocRef(msgId), { deliveredAt: isoNow() });
+  } catch (err) {
+    delete deliveredMsgIds[msgId];
+    console.warn("markMessageDelivered:", err);
+  }
+}
+
+async function markMessageRead(msgId) {
+  if (!auth || !auth.currentUser || !db || !msgId) return;
+  if (readMsgIds[msgId]) return;
+  readMsgIds[msgId] = 1;
+  var now = isoNow();
+  var patch = { readAt: now };
+  var known = chatMsgsDm.find(function (m) {
+    return m && m.id === msgId;
+  });
+  if (!known || !known.deliveredAt) patch.deliveredAt = now;
+  try {
+    await updateDoc(msgDocRef(msgId), patch);
+  } catch (err) {
+    delete readMsgIds[msgId];
+    console.warn("markMessageRead:", err);
+  }
+}
+
+function autoMarkIncomingDelivered(msgs) {
+  if (!auth || !auth.currentUser) return;
+  var me = auth.currentUser.uid;
+  (msgs || []).forEach(function (m) {
+    if (!m || m.type !== "dm" || !m.id) return;
+    if (m.uid === me) return;
+    if (m.toUid && m.toUid !== me) return;
+    if (m.deliveredAt || deliveredMsgIds[m.id]) return;
+    markMessageDelivered(m.id);
+  });
+}
+
+async function markChatThreadRead(msgs, myUid) {
+  if (!myUid || !msgs || !msgs.length) return;
+  var jobs = [];
+  msgs.forEach(function (m) {
+    if (!m || m.type !== "dm" || !m.id) return;
+    if (m.uid === myUid) return;
+    if (m.toUid && m.toUid !== myUid) return;
+    if (m.readAt || readMsgIds[m.id]) return;
+    jobs.push(markMessageRead(m.id));
+  });
+  if (jobs.length) await Promise.all(jobs);
+}
+
+async function ackAssignment(asgnId, kind) {
+  if (!auth || !auth.currentUser || !asgnId) return null;
+  var key = asgnId + ":" + (kind === "read" ? "read" : "delivered");
+  if (ackAsgnIds[key]) return null;
+  ackAsgnIds[key] = 1;
+  try {
+    var fn = httpsCallable(getFunctions(app), "ackAssignment");
+    var res = await fn({ asgnId: asgnId, kind: kind === "read" ? "read" : "delivered" });
+    return res.data || null;
+  } catch (err) {
+    delete ackAsgnIds[key];
+    console.warn("ackAssignment:", err);
+    return null;
+  }
+}
+
+function bindPushDeliveredListener() {
+  if (!("serviceWorker" in navigator) || navigator.serviceWorker.__cv3PushBound) return;
+  navigator.serviceWorker.__cv3PushBound = true;
+  navigator.serviceWorker.addEventListener("message", function (ev) {
+    var payload = ev && ev.data;
+    if (!payload || payload.type !== "cv3-push-delivered") return;
+    var d = payload.data || {};
+    if (d.type === "chat" && d.msgId) markMessageDelivered(d.msgId);
+    if (d.type === "assignment" && d.asgnId) {
+      ackAssignment(d.asgnId, "delivered");
+    }
+  });
 }
 
 function unsubChatAll() {
@@ -1374,6 +1473,7 @@ function bindForegroundMessaging(messaging, cv3) {
   messaging.__cv3Bound = true;
   onMessage(messaging, function (payload) {
     var type = payload.data && payload.data.type;
+    var d = payload.data || {};
     if (type === "reminder" && cv3 && typeof cv3.onReminderPush === "function") {
       cv3.onReminderPush(payload);
       return;
@@ -1382,8 +1482,27 @@ function bindForegroundMessaging(messaging, cv3) {
       cv3.onArrivalPush(payload);
       return;
     }
+    if (type === "chat") {
+      if (d.msgId) markMessageDelivered(d.msgId);
+      var titleC = d.title || "Tin nhắn mới";
+      var bodyC = d.body || "";
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(titleC, {
+            body: bodyC,
+            icon: "/icon-192.png",
+            tag: "chat_" + (d.msgId || "fg"),
+            silent: false,
+          });
+        } catch (e) {}
+      }
+      if (cv3 && typeof cv3.showAppToast === "function") {
+        cv3.showAppToast(titleC + (bodyC ? " — " + bodyC : ""), "ok");
+      }
+      return;
+    }
     if (type === "assignment" && cv3) {
-      var d = payload.data || {};
+      if (d.asgnId) ackAssignment(d.asgnId, "delivered");
       var title = d.title || "Công việc mới";
       var body = d.body || "";
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -1668,6 +1787,11 @@ async function bootOnline(cv3) {
   window.__CV3_openAuth = openAuthPanel;
   window.__CV3_sendChat = sendChatMessage;
   window.__CV3_dmThreadId = dmThreadId;
+  window.__CV3_markMsgDelivered = markMessageDelivered;
+  window.__CV3_markMsgRead = markMessageRead;
+  window.__CV3_markChatThreadRead = markChatThreadRead;
+  window.__CV3_ackAssignment = ackAssignment;
+  bindPushDeliveredListener();
   refreshBootstrapUI();
 }
 

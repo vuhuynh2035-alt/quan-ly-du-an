@@ -59,6 +59,21 @@ service cloud.firestore {
         && isDirector();
     }
 
+    function validMsgReceiptUpdate() {
+      let diff = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.type == 'dm'
+        && isDmParticipant(resource.data)
+        && request.auth.uid != resource.data.uid
+        && diff.hasOnly(['deliveredAt', 'readAt'])
+        && (!diff.hasAny(['deliveredAt']) || request.resource.data.deliveredAt is string)
+        && (!diff.hasAny(['readAt']) || request.resource.data.readAt is string)
+        && request.resource.data.text == resource.data.text
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.type == resource.data.type
+        && request.resource.data.threadId == resource.data.threadId
+        && request.resource.data.participants == resource.data.participants;
+    }
+
     function validProfileAge(age) {
       return age == null || (age is int && age >= 1 && age <= 150);
     }
@@ -103,7 +118,8 @@ service cloud.firestore {
       allow create: if sameOrg(orgId)
         && validMsgText(request.resource.data)
         && (validDmCreate(orgId, request.resource.data) || validBroadcastCreate(request.resource.data));
-      allow update, delete: if false;
+      allow update: if sameOrg(orgId) && validMsgReceiptUpdate();
+      allow delete: if false;
     }
 
     match /workspaces/{orgId}/reports/{reportId} {

@@ -649,6 +649,11 @@ input[type=range]{padding:0}
 .chat-row.other{align-self:flex-start;align-items:flex-start}
 .chat-meta{font-size:10px;color:var(--c-muted);margin-bottom:3px;display:flex;gap:6px;align-items:center}
 .chat-meta .dir{color:#fbbf24}
+.chat-ticks{margin-left:4px;font-size:11px;letter-spacing:-1px;color:var(--c-muted)}
+.chat-ticks.delivered{color:var(--c-sub)}
+.chat-ticks.read{color:#38bdf8}
+.asgn-receipt{font-size:12px;color:var(--c-muted2);margin-top:8px;line-height:1.4}
+.asgn-receipt .ok{color:#4ade80;font-weight:600}
 .chat-bubble{padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.45;word-break:break-word}
 .chat-row.mine .chat-bubble{background:linear-gradient(135deg,rgba(56,189,248,.35),rgba(26,111,212,.45));border:1px solid rgba(56,189,248,.4);border-bottom-right-radius:4px}
 .chat-row.other .chat-bubble{background:var(--c-surface2);border:1px solid var(--c-border);border-bottom-left-radius:4px}
@@ -758,7 +763,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-da
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="26">
+<meta name="app-build" content="27">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -2306,6 +2311,30 @@ function fmtChatTime(m){
   if(same)return pad2(d.getHours())+":"+pad2(d.getMinutes());
   return pad2(d.getDate())+"/"+pad2(d.getMonth()+1)+" "+pad2(d.getHours())+":"+pad2(d.getMinutes());
 }
+function fmtIsoShort(iso){
+  if(!iso)return "";
+  var d=new Date(iso);
+  if(isNaN(d.getTime()))return String(iso).slice(0,16).replace("T"," ");
+  return pad2(d.getDate())+"/"+pad2(d.getMonth()+1)+" "+pad2(d.getHours())+":"+pad2(d.getMinutes());
+}
+function chatTicksHTML(m){
+  if(!m||!S.auth||m.uid!==S.auth.uid||m.type==="broadcast")return "";
+  if(m.readAt)return '<span class="chat-ticks read" title="Đã đọc">✓✓</span>';
+  if(m.deliveredAt)return '<span class="chat-ticks delivered" title="Đã nhận">✓✓</span>';
+  return '<span class="chat-ticks" title="Đã gửi">✓</span>';
+}
+function asgnReceiptHTML(a){
+  if(!a)return "";
+  if(a.readAt)return '<div class="asgn-receipt">📩 <span class="ok">Đã đọc</span> · '+esc(fmtIsoShort(a.readAt))+'</div>';
+  if(a.deliveredAt)return '<div class="asgn-receipt">📩 Đã nhận · '+esc(fmtIsoShort(a.deliveredAt))+'</div>';
+  return '<div class="asgn-receipt">📩 Đã gửi thông báo</div>';
+}
+function markOpenChatRead(){
+  if(S.tab!=="chat"||!S.auth||!S.auth.uid||S.chatTo==="broadcast")return;
+  if(typeof window.__CV3_markChatThreadRead!=="function")return;
+  var msgs=chatMsgsForTo(S.chatTo);
+  window.__CV3_markChatThreadRead(msgs,S.auth.uid);
+}
 function dmThreadId(a,b){
   if(typeof window.__CV3_dmThreadId==="function")return window.__CV3_dmThreadId(a,b);
   return [a,b].sort().join("_");
@@ -2476,7 +2505,7 @@ function vChatDet(){
     var mine=S.auth&&m.uid&&S.auth.uid===m.uid;
     var who=esc(m.fromName||m.from||"?");
     var role=m.role==="director"?'<span class="dir">Giám đốc</span>':'';
-    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+role+' · '+fmtChatTime(m)+'</div><div class="chat-bubble">'+esc(m.text||"")+'</div></div>';
+    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+role+' · '+fmtChatTime(m)+(mine?chatTicksHTML(m):"")+'</div><div class="chat-bubble">'+esc(m.text||"")+'</div></div>';
   });
   h+='</div>';
   if(isBc&&!canPostBc)h+='<div class="chat-bar-readonly">Chỉ giám đốc mới được gửi thông báo toàn đội.</div>';
@@ -2494,6 +2523,7 @@ function initChatScroll(){
   if(S.tab!=="chat")return;
   var box=document.getElementById("chat-msgs");
   if(box)box.scrollTop=box.scrollHeight;
+  markOpenChatRead();
 }
 function initReportPreview(){
   if(S.tab!=="report")return;
@@ -2849,6 +2879,7 @@ function vMyWorkDet(asgnId){
   var h='<div class="emp-portal"><div class="row" style="justify-content:space-between;margin-bottom:16px">'+btn("btn-ghost","← Quay lại","A.myworkBack()")+'</div>';
   h+='<div class="card card-p"><h2 class="emp-page-title" style="margin-bottom:12px">'+esc(info.title)+'</h2>';
   if(a.status==="paused")h+='<div style="margin-bottom:12px">'+bdg("Tạm dừng","#ef4444","rgba(239,68,68,.15)")+'</div>';
+  h+=asgnReceiptHTML(a);
   h+='<div class="emp-detail-grid">';
   h+='<div class="emp-detail-item"><div class="lab">Nội dung công việc</div><div class="emp-detail-val">'+esc(a.workContent||(p?p.name:"—"))+'</div></div>';
   h+='<div class="emp-detail-item"><div class="lab">Làm ở đâu</div><div class="emp-detail-val">📍 '+esc(pl?pl.name:(p?p.province:"—"))+'</div>';
@@ -3316,6 +3347,7 @@ function empAsgnCardM(a){
   if(pl)b+='<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Địa điểm</div><div style="font-size:14px">📍 '+esc(pl.name)+(c&&c.address?'<div style="font-size:12px;color:var(--c-muted2);margin-top:4px">'+esc(c.address)+'</div>':"")+'</div></div>';
   if(p)b+='<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Dự án</div><div style="font-size:14px">'+esc(p.name)+' · '+bdg(p.group,groupColor(p.group))+'</div></div>';
   if(asgnHandoffLine(a))b+='<div class="asgn-handoff-note" style="margin-bottom:12px">'+asgnHandoffLine(a)+'</div>';
+  b+=asgnReceiptHTML(a);
   if(mates.length)b+='<div><div style="font-size:12px;color:var(--c-muted);margin-bottom:8px">Cùng làm chung</div><div class="row" style="gap:8px;flex-wrap:wrap">'+mates.map(function(n){return bdg(n,groupColor(p?p.group:"Hệ thống"),"transparent")}).join("")+'</div></div>';
   var eBtns = isDir() ? btn("btn-danger","Sửa","A.editAsgn('"+a.id+"')") : ""; return mw("Chi tiết công việc",b,btn("btn-primary","Đóng","A.cm()"),eBtns);
 }
@@ -3669,7 +3701,7 @@ window.A={
       setTimeout(initArrivalPreview,50);
     });
   },
-  selectChatTo:function(val){S.chatTo=val||defaultChatTo();render();setTimeout(initChatScroll,30);},
+  selectChatTo:function(val){S.chatTo=val||defaultChatTo();render();setTimeout(function(){initChatScroll();markOpenChatRead();},30);},
   chatBack:function(){S.chatTo="";render();},
   hideChat:function(id){
     S.cfg.hiddenChats = S.cfg.hiddenChats || {};
@@ -3724,7 +3756,12 @@ window.A={
       });
     }else alert("Chat cần đăng nhập cloud.");
   },
-  myworkDet:function(id){S.selMyAsgn=id;render()},
+  myworkDet:function(id){
+    S.selMyAsgn=id;render();
+    if(id&&typeof window.__CV3_ackAssignment==="function"){
+      window.__CV3_ackAssignment(id,"read").catch(function(){});
+    }
+  },
   myworkBack:function(){S.selMyAsgn="";render()},
   empDet:function(id){if(isEmp())return;var e=eById(id);if(e&&!isStaffEmp(e))return alert("Hồ sơ giám đốc quản lý tại Cài đặt → Tài khoản.");if(S.tab!=="emp"){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab="emp";S.selEmp=id;S.selProjDet="";S.selCust="";S.modal=null;S.form=null;render()},
   empAsgnCard:function(id){var a=asgnById(id);if(!a)return;S.modal=empAsgnCardM(a);render()},
