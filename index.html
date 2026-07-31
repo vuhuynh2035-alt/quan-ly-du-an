@@ -763,7 +763,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-da
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="27">
+<meta name="app-build" content="28">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -1174,23 +1174,7 @@ function seedDemo(){
     }
     return list;
   }
-  function toggleSearch(){
-    var sw=document.getElementById("search-wrap");
-    sw.style.display=sw.style.display==="none"?"block":"none";
-    if(sw.style.display==="block")document.getElementById("search-inp").focus();
-  }
-  function showNoti(title, opts, type) {
-    try {
-      if (opts && !opts.vibrate) {
-        opts.vibrate = type === "remind" ? [0, 250, 120, 250, 120, 350, 120, 350] : [0, 280, 140, 280, 140, 280, 140, 400];
-      }
-      new Notification(title, opts);
-    } catch (e) {}
-    try {
-      var a = new Audio(type === "remind" ? "/remind.wav" : "/noti.wav");
-      a.play().catch(function(){});
-    } catch (e) {}
-  }
+
   getGroups().forEach(function(g){
     var emps=S.emp.filter(function(e){return e.group===g});
     var projs=projsFor(g);
@@ -1200,6 +1184,25 @@ function seedDemo(){
     });
   });
   sv();return S.asgn.length>0;
+}
+
+function toggleSearch(){
+  var sw=document.getElementById("search-wrap");
+  sw.style.display=sw.style.display==="none"?"block":"none";
+  if(sw.style.display==="block")document.getElementById("search-inp").focus();
+}
+
+function showNoti(title, opts, type) {
+  try {
+    if (opts && !opts.vibrate) {
+      opts.vibrate = type === "remind" ? [0, 250, 120, 250, 120, 350, 120, 350] : [0, 280, 140, 280, 140, 280, 140, 400];
+    }
+    new Notification(title, opts);
+  } catch (e) {}
+  try {
+    var a = new Audio(type === "remind" ? "/remind.wav" : "/noti.wav");
+    a.play().catch(function(){});
+  } catch (e) {}
 }
 var LS=null;try{localStorage.setItem("_t","1");localStorage.removeItem("_t");LS=localStorage}catch(e){}
 var mem={};
