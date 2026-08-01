@@ -4085,6 +4085,7 @@ function vProjDet(id){
   h+=projRoleEditCardHTML(p);
   h+='<div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px;margin-top:4px">Đội dự án</div>';
   h+=projTeamListHTML(p,{link:true,acts:acts});
+  h+=projOversightNoteHTML();
   h+='</div>';
   h+='<div class="card card-p" style="margin-top:14px">'+renderProjTimeline(p.id)+'</div>';
   return h}
