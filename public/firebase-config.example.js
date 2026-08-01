@@ -14,5 +14,11 @@ var FIREBASE_CONFIG = {
 // Bắt buộc cho thông báo trên trình duyệt / điện thoại
 var FIREBASE_VAPID_KEY = "YOUR_VAPID_KEY";
 
-// Mã đội mặc định (cùng team dùng chung mã này khi đăng ký)
-var FIREBASE_DEFAULT_ORG = "saree";
+// Danh sách đội (Công trình tỉnh / Công trình HCM)
+var FIREBASE_ORGS = [
+  { id: "cong-trinh", label: "Công trình tỉnh" },
+  { id: "nha-may", label: "Công trình HCM" },
+];
+
+// Mã đội mặc định khi đăng nhập
+var FIREBASE_DEFAULT_ORG = "cong-trinh";

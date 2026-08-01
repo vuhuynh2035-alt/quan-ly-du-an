@@ -1,0 +1,18 @@
+{
+  "rule": [
+    {
+      "action": { "type": "Delete" },
+      "condition": {
+        "age": 31,
+        "matchesPrefix": [
+          "workspaces/cong-trinh/attendance/",
+          "workspaces/cong-trinh/reports/",
+          "workspaces/nha-may/attendance/",
+          "workspaces/nha-may/reports/",
+          "workspaces/saree/attendance/",
+          "workspaces/saree/reports/"
+        ]
+      }
+    }
+  ]
+}

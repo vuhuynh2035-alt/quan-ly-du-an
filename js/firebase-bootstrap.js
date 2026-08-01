@@ -19,10 +19,12 @@ import {
   collection,
   addDoc,
   updateDoc,
+  deleteDoc,
   query,
   where,
   orderBy,
   limit,
+  getDocs,
 } from "firebase/firestore";
 import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -41,7 +43,76 @@ import {
 
 var cfg = window.FIREBASE_CONFIG;
 var vapidKey = window.FIREBASE_VAPID_KEY;
-var defaultOrg = window.FIREBASE_DEFAULT_ORG || "saree";
+var ORG_ALIAS = { saree: "cong-trinh" };
+var DEFAULT_ORGS = [
+  { id: "cong-trinh", label: "Công trình tỉnh" },
+  { id: "nha-may", label: "Công trình HCM" },
+];
+
+function listOrgs() {
+  var raw = window.FIREBASE_ORGS;
+  if (Array.isArray(raw) && raw.length) {
+    return raw
+      .map(function (o) {
+        return {
+          id: normalizeOrgId(o.id || o),
+          label: o.label || orgLabel(normalizeOrgId(o.id || o)),
+        };
+      })
+      .filter(function (o) {
+        return !!o.id;
+      });
+  }
+  return DEFAULT_ORGS.slice();
+}
+
+function normalizeOrgId(id) {
+  var o = String(id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "");
+  if (ORG_ALIAS[o]) return ORG_ALIAS[o];
+  return o || "cong-trinh";
+}
+
+function orgLabel(id) {
+  var nid = normalizeOrgId(id);
+  var found = listOrgs().find(function (o) {
+    return o.id === nid;
+  });
+  if (found) return found.label;
+  if (nid === "cong-trinh") return "Công trình tỉnh";
+  if (nid === "nha-may") return "Công trình HCM";
+  return nid;
+}
+
+function allOrgIds() {
+  return listOrgs().map(function (o) {
+    return o.id;
+  });
+}
+
+function otherOrgId(active) {
+  var ids = allOrgIds();
+  var cur = normalizeOrgId(active || orgId);
+  for (var i = 0; i < ids.length; i++) {
+    if (ids[i] !== cur) return ids[i];
+  }
+  return ids[0] || "nha-may";
+}
+
+function normalizeOrgIds(list, fallback) {
+  var out = [];
+  var src = Array.isArray(list) ? list : fallback ? [fallback] : [];
+  src.forEach(function (x) {
+    var n = normalizeOrgId(x);
+    if (n && out.indexOf(n) < 0) out.push(n);
+  });
+  if (!out.length && fallback) out.push(normalizeOrgId(fallback));
+  return out;
+}
+
+var defaultOrg = normalizeOrgId(window.FIREBASE_DEFAULT_ORG || "cong-trinh");
 
 function isLocalDevHost() {
   var h = location.hostname;
@@ -66,17 +137,38 @@ var auth = null;
 var db = null;
 var orgId = defaultOrg;
 var unsubSnap = null;
+var unsubOtherSnap = null;
+var unsubEmpMaster = null;
+var empMasterById = {};
+var unsubCustMaster = null;
+var custMasterById = {};
+var custMasterReady = false;
 var unsubChatBc = null;
 var unsubChatDm = null;
 var chatMsgsBc = [];
 var chatMsgsDm = [];
 var unsubReports = null;
 var unsubAttendance = null;
+/** Live subscribe window for reports/attendance (days). Override: window.CV3_HISTORY_DAYS */
+var HISTORY_WINDOW_DAYS = Math.max(
+  7,
+  Math.min(120, Number(window.CV3_HISTORY_DAYS) || 30)
+);
+var REPORTS_LIVE_LIMIT = 500;
+var ATT_LIVE_LIMIT_DIR = 3000;
+var ATT_LIVE_LIMIT_EMP = 500;
+var ATT_RANGE_LIMIT = 5000;
+var REPORTS_RANGE_LIMIT = 1000;
+/** Cache keys for on-demand historical fetches (cleared on org switch / logout). */
+var historyRangeCache = Object.create(null);
+var liveHistorySince = "";
 var pushReady = false;
 var writeTimer = null;
 var writing = false;
 var remotePatch = 0;
 var booted = false;
+/** Sau đổi đội: snapshot workspace mới phải apply dù patch ≤ local. */
+var forceWorkspaceApply = false;
 var appCv3 = null;
 var authEpoch = 0;
 var lastAuthUid = null;
@@ -127,8 +219,23 @@ function mergeProvisionIntoApp(cv3, data) {
 
 async function resolveAccount(username, org, forSignup) {
   var u = sanitizeUsername(username);
-  var snap = await getDoc(doc(db, "workspaces", org, "data", "main"));
-  var emps = snap.exists() ? snap.data().emp || [] : [];
+  var o = normalizeOrgId(org || orgId);
+  var emps = [];
+  Object.keys(empMasterById).forEach(function (id) {
+    var e = empMasterById[id];
+    if (e) emps.push(e);
+  });
+  if (!emps.length) {
+    try {
+      var snap = await getDoc(doc(db, "workspaces", o, "data", "main"));
+      emps = snap.exists() ? snap.data().emp || [] : [];
+    } catch (e) {
+      emps = [];
+    }
+  }
+  if (!emps.length && appCv3 && appCv3.S && appCv3.S.empAll && appCv3.S.empAll.length) {
+    emps = appCv3.S.empAll;
+  }
   if (!emps.length && appCv3 && appCv3.S && appCv3.S.emp && appCv3.S.emp.length) {
     emps = appCv3.S.emp;
   }
@@ -139,6 +246,14 @@ async function resolveAccount(username, org, forSignup) {
     return empKey(e) === u && e.accountRole !== "director";
   });
   if (emp) {
+    var membership = normalizeOrgIds(emp.orgIds, o);
+    if (membership.indexOf(o) < 0 && membership.length) {
+      var errOrg = new Error(
+        "Nhân viên «" + emp.name + "» không thuộc đội " + orgLabel(o) + "."
+      );
+      errOrg.code = "auth/wrong-org";
+      throw errOrg;
+    }
     if (forSignup && emp.authUid) {
       var err2 = new Error(
         "Nhân viên «" +
@@ -154,6 +269,8 @@ async function resolveAccount(username, org, forSignup) {
       empId: role === "director" ? null : emp.id,
       username: u,
       empName: emp.name,
+      orgIds: membership.length ? membership : [o],
+      empGroup: emp.group || "",
     };
   }
   var err = new Error(
@@ -174,7 +291,10 @@ function authSame(a, b) {
     a.empId === b.empId &&
     a.username === b.username &&
     a.displayName === b.displayName &&
-    a.age === b.age
+    a.age === b.age &&
+    a.empGroup === b.empGroup &&
+    a.orgId === b.orgId &&
+    String(a.orgIds || []) === String(b.orgIds || [])
   );
 }
 
@@ -324,11 +444,21 @@ function unsubChatAll() {
 function stopSubscriptions() {
   if (unsubSnap) unsubSnap();
   unsubSnap = null;
+  if (unsubOtherSnap) unsubOtherSnap();
+  unsubOtherSnap = null;
+  if (unsubEmpMaster) unsubEmpMaster();
+  unsubEmpMaster = null;
+  if (unsubCustMaster) unsubCustMaster();
+  unsubCustMaster = null;
+  custMasterById = {};
+  custMasterReady = false;
   unsubChatAll();
   if (unsubReports) unsubReports();
   unsubReports = null;
   if (unsubAttendance) unsubAttendance();
   unsubAttendance = null;
+  historyRangeCache = Object.create(null);
+  liveHistorySince = "";
   provisionBusy = false;
   provisionDone = false;
   if (provisionRetryTimer) clearTimeout(provisionRetryTimer);
@@ -409,8 +539,8 @@ async function sendChatMessage(text, options) {
   var type = opts.type === "broadcast" ? "broadcast" : "dm";
   try {
     if (type === "broadcast") {
-      if (!isDirectorRole()) {
-        throw new Error("Chỉ giám đốc mới được gửi thông báo toàn đội.");
+      if (!canOperateRole()) {
+        throw new Error("Chỉ giám đốc hoặc Điều hành mới được gửi thông báo toàn đội.");
       }
       await addDoc(chatColRef(), {
         text: t,
@@ -455,17 +585,50 @@ function attendanceColRef() {
   return collection(doc(db, "workspaces", orgId), "attendance");
 }
 
+function todayIso() {
+  var d = new Date();
+  var offset = d.getTimezoneOffset();
+  var local = new Date(d.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 10);
+}
+
+function isoDaysAgo(days) {
+  var d = new Date();
+  var offset = d.getTimezoneOffset();
+  var local = new Date(d.getTime() - offset * 60 * 1000);
+  local.setUTCDate(local.getUTCDate() - Math.max(0, Number(days) || 0));
+  return local.toISOString().slice(0, 10);
+}
+
+function historySinceIso() {
+  return isoDaysAgo(HISTORY_WINDOW_DAYS);
+}
+
+function mapSnapDocs(snap) {
+  return snap.docs.map(function (d) {
+    return Object.assign({ id: d.id }, d.data());
+  });
+}
+
 function subscribeReports() {
   if (unsubReports) unsubReports();
+  unsubReports = null;
   if (!db) return;
-  var q = query(reportsColRef(), orderBy("at", "desc"), limit(300));
+  var since = historySinceIso();
+  liveHistorySince = since;
+  var q = query(
+    reportsColRef(),
+    where("date", ">=", since),
+    orderBy("date", "desc"),
+    limit(REPORTS_LIVE_LIMIT)
+  );
   unsubReports = onSnapshot(
     q,
     function (snap) {
-      var reports = snap.docs.map(function (d) {
-        return Object.assign({ id: d.id }, d.data());
-      });
-      if (appCv3 && appCv3.setReports) appCv3.setReports(reports);
+      var reports = mapSnapDocs(snap);
+      if (appCv3 && appCv3.setReports) {
+        appCv3.setReports(reports, { liveSince: since });
+      }
     },
     function (err) {
       console.error("reports:", err);
@@ -479,25 +642,33 @@ function subscribeAttendance() {
   if (!db || !auth || !auth.currentUser) return;
   var empId = window.__CV3_AUTH && window.__CV3_AUTH.empId;
   var isDir = window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
+  var since = historySinceIso();
+  liveHistorySince = since;
   var q;
   if (isDir) {
-    q = query(attendanceColRef(), orderBy("date", "desc"), limit(500));
+    q = query(
+      attendanceColRef(),
+      where("date", ">=", since),
+      orderBy("date", "desc"),
+      limit(ATT_LIVE_LIMIT_DIR)
+    );
   } else {
     if (!empId) return;
     q = query(
       attendanceColRef(),
       where("empId", "==", empId),
+      where("date", ">=", since),
       orderBy("date", "desc"),
-      limit(200)
+      limit(ATT_LIVE_LIMIT_EMP)
     );
   }
   unsubAttendance = onSnapshot(
     q,
     function (snap) {
-      var rows = snap.docs.map(function (d) {
-        return Object.assign({ id: d.id }, d.data());
-      });
-      if (appCv3 && appCv3.setAttendance) appCv3.setAttendance(rows);
+      var rows = mapSnapDocs(snap);
+      if (appCv3 && appCv3.setAttendance) {
+        appCv3.setAttendance(rows, { liveSince: since });
+      }
     },
     function (err) {
       console.error("attendance:", err);
@@ -505,11 +676,188 @@ function subscribeAttendance() {
   );
 }
 
-function todayIso() {
-  var d = new Date();
-  var offset = d.getTimezoneOffset();
-  var local = new Date(d.getTime() - (offset * 60 * 1000));
-  return local.toISOString().slice(0, 10);
+async function fetchAttendanceRange(from, to, empId) {
+  if (!db || !from || !to) return [];
+  var snap;
+  if (empId) {
+    snap = await getDocs(
+      query(
+        attendanceColRef(),
+        where("empId", "==", empId),
+        where("date", ">=", from),
+        where("date", "<=", to),
+        orderBy("date", "desc"),
+        limit(ATT_RANGE_LIMIT)
+      )
+    );
+  } else {
+    snap = await getDocs(
+      query(
+        attendanceColRef(),
+        where("date", ">=", from),
+        where("date", "<=", to),
+        orderBy("date", "desc"),
+        limit(ATT_RANGE_LIMIT)
+      )
+    );
+  }
+  return mapSnapDocs(snap);
+}
+
+async function fetchReportsRange(from, to, empId) {
+  if (!db || !from || !to) return [];
+  var snap;
+  if (empId) {
+    snap = await getDocs(
+      query(
+        reportsColRef(),
+        where("empId", "==", empId),
+        where("date", ">=", from),
+        where("date", "<=", to),
+        orderBy("date", "desc"),
+        limit(REPORTS_RANGE_LIMIT)
+      )
+    );
+  } else {
+    snap = await getDocs(
+      query(
+        reportsColRef(),
+        where("date", ">=", from),
+        where("date", "<=", to),
+        orderBy("date", "desc"),
+        limit(REPORTS_RANGE_LIMIT)
+      )
+    );
+  }
+  return mapSnapDocs(snap);
+}
+
+/**
+ * Load attendance outside the live window into S.attendance (merge by id).
+ * No-op when the range is already covered by the live subscribe window.
+ */
+async function ensureAttendanceRange(from, to, empId) {
+  if (!from || !to || from > to) return [];
+  var since = liveHistorySince || historySinceIso();
+  if (from >= since) return [];
+  var scopeEmp =
+    empId ||
+    (window.__CV3_AUTH && window.__CV3_AUTH.role === "director"
+      ? ""
+      : (window.__CV3_AUTH && window.__CV3_AUTH.empId) || "");
+  var key =
+    "att|" + orgId + "|" + from + "|" + to + "|" + (scopeEmp || "*");
+  if (historyRangeCache[key]) return [];
+  var rows = await fetchAttendanceRange(from, to, scopeEmp || null);
+  historyRangeCache[key] = 1;
+  if (appCv3 && appCv3.mergeAttendance) appCv3.mergeAttendance(rows);
+  else if (appCv3 && appCv3.setAttendance) {
+    appCv3.setAttendance(rows, { merge: true });
+  }
+  return rows;
+}
+
+async function ensureReportsRange(from, to, empId) {
+  if (!from || !to || from > to) return [];
+  var since = liveHistorySince || historySinceIso();
+  if (from >= since) return [];
+  var scopeEmp = empId || "";
+  var key =
+    "rpt|" + orgId + "|" + from + "|" + to + "|" + (scopeEmp || "*");
+  if (historyRangeCache[key]) return [];
+  var rows = await fetchReportsRange(from, to, scopeEmp || null);
+  historyRangeCache[key] = 1;
+  if (appCv3 && appCv3.mergeReports) appCv3.mergeReports(rows);
+  else if (appCv3 && appCv3.setReports) {
+    appCv3.setReports(rows, { merge: true });
+  }
+  return rows;
+}
+
+function monthRangeFromYm(ym) {
+  var p = String(ym || "").split("-");
+  var y = parseInt(p[0], 10);
+  var m = parseInt(p[1], 10);
+  if (!y || !m || m < 1 || m > 12) return null;
+  var last = new Date(y, m, 0).getDate();
+  var pad = function (n) {
+    return (n < 10 ? "0" : "") + n;
+  };
+  return {
+    from: y + "-" + pad(m) + "-01",
+    to: y + "-" + pad(m) + "-" + pad(last),
+  };
+}
+
+async function ensureAttendanceMonth(ym, empId) {
+  var range = monthRangeFromYm(ym);
+  if (!range) return [];
+  return ensureAttendanceRange(range.from, range.to, empId);
+}
+
+/** Resize/compress before upload (max edge ~1280, JPEG ~0.7) to keep Storage small. */
+function compressImageForUpload(file, maxEdge, quality) {
+  maxEdge = maxEdge || 1280;
+  quality = quality == null ? 0.7 : quality;
+  return new Promise(function (resolve) {
+    if (!file || !file.type || file.type.indexOf("image/") !== 0) {
+      resolve(file);
+      return;
+    }
+    if (typeof document === "undefined" || !document.createElement) {
+      resolve(file);
+      return;
+    }
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      var w = img.naturalWidth || img.width;
+      var h = img.naturalHeight || img.height;
+      if (!w || !h) {
+        resolve(file);
+        return;
+      }
+      var scale = Math.min(1, maxEdge / Math.max(w, h));
+      var cw = Math.max(1, Math.round(w * scale));
+      var ch = Math.max(1, Math.round(h * scale));
+      var canvas = document.createElement("canvas");
+      canvas.width = cw;
+      canvas.height = ch;
+      var ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(file);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, cw, ch);
+      canvas.toBlob(
+        function (blob) {
+          if (!blob) {
+            resolve(file);
+            return;
+          }
+          if (blob.size >= file.size && scale === 1) {
+            resolve(file);
+            return;
+          }
+          var base = String(file.name || "photo").replace(/\.[^.]+$/, "");
+          resolve(
+            new File([blob], base + ".jpg", {
+              type: "image/jpeg",
+              lastModified: Date.now(),
+            })
+          );
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+    img.src = url;
+  });
 }
 
 async function uploadReportPhotos(files, asgnId, date) {
@@ -521,21 +869,27 @@ async function uploadReportPhotos(files, asgnId, date) {
   var urls = [];
   var max = Math.min(files.length, 8);
   for (var i = 0; i < max; i++) {
-    var file = files[i];
-    if (!file || !file.type || file.type.indexOf("image/") !== 0) continue;
+    var raw = files[i];
+    if (!raw || !raw.type || raw.type.indexOf("image/") !== 0) continue;
+    var file = await compressImageForUpload(raw);
     if (file.size > 8 * 1024 * 1024) {
-      throw new Error("Ảnh «" + (file.name || "ảnh") + "» quá 8MB.");
+      throw new Error("Ảnh «" + (raw.name || "ảnh") + "» quá 8MB.");
     }
-    var ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+    var ext = "jpg";
+    if (file.type && file.type.indexOf("jpeg") < 0) {
+      ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+    }
+    // Date folder enables Storage lifecycle + daily purge by YYYY-MM-DD prefix.
+    var day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? String(date) : todayIso();
     var path =
       "workspaces/" +
       orgId +
       "/reports/" +
       auth.currentUser.uid +
       "/" +
-      asgnId +
+      day +
       "/" +
-      date +
+      asgnId +
       "_" +
       i +
       "." +
@@ -547,7 +901,7 @@ async function uploadReportPhotos(files, asgnId, date) {
   return urls;
 }
 
-async function uploadAttendancePhotos(files, kind, punchId) {
+async function uploadAttendancePhotos(files, kind, punchId, date) {
   if (!files || !files.length) return [];
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
@@ -556,18 +910,26 @@ async function uploadAttendancePhotos(files, kind, punchId) {
   var urls = [];
   var max = Math.min(files.length, kind === "work" ? 12 : 1);
   var pid = String(punchId || Date.now());
+  var day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? String(date) : todayIso();
   for (var i = 0; i < max; i++) {
-    var file = files[i];
-    if (!file || !file.type || file.type.indexOf("image/") !== 0) continue;
+    var raw = files[i];
+    if (!raw || !raw.type || raw.type.indexOf("image/") !== 0) continue;
+    var file = await compressImageForUpload(raw);
     if (file.size > 8 * 1024 * 1024) {
-      throw new Error("Ảnh «" + (file.name || "ảnh") + "» quá 8MB.");
+      throw new Error("Ảnh «" + (raw.name || "ảnh") + "» quá 8MB.");
     }
-    var ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+    var ext = "jpg";
+    if (file.type && file.type.indexOf("jpeg") < 0) {
+      ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+    }
+    // Date folder enables Storage lifecycle + daily purge by YYYY-MM-DD prefix.
     var path =
       "workspaces/" +
       orgId +
       "/attendance/" +
       auth.currentUser.uid +
+      "/" +
+      day +
       "/" +
       pid +
       "_" +
@@ -591,11 +953,11 @@ async function submitAttendance(payload) {
   var punchId = String(payload.punchId || Date.now());
   var siteUrls = [];
   if (payload.type === "in" && payload.sitePhoto) {
-    siteUrls = await uploadAttendancePhotos([payload.sitePhoto], "site", punchId);
+    siteUrls = await uploadAttendancePhotos([payload.sitePhoto], "site", punchId, date);
   }
   var workUrls = [];
   if (payload.type === "out") {
-    workUrls = await uploadAttendancePhotos(payload.workPhotos || [], "work", punchId);
+    workUrls = await uploadAttendancePhotos(payload.workPhotos || [], "work", punchId, date);
   }
   var fn = httpsCallable(getFunctions(app), "submitAttendance");
   var res = await fn({
@@ -639,11 +1001,15 @@ async function uploadArrivalPhoto(file, asgnId) {
   if (!file.type || file.type.indexOf("image/") !== 0) {
     throw new Error("File phải là ảnh.");
   }
+  file = await compressImageForUpload(file);
   if (file.size > 8 * 1024 * 1024) {
     throw new Error("Ảnh quá 8MB.");
   }
   var storage = getStorage(app);
-  var ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+  var ext = "jpg";
+  if (file.type && file.type.indexOf("jpeg") < 0) {
+    ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
+  }
   var path =
     "workspaces/" +
     orgId +
@@ -720,6 +1086,47 @@ async function callSubmitReport(payload) {
 
 function isDirectorRole() {
   return window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
+}
+
+function authEmpGroup() {
+  var a = window.__CV3_AUTH || {};
+  if (a.empGroup) return a.empGroup;
+  if (a.empId && appCv3 && appCv3.S && Array.isArray(appCv3.S.emp)) {
+    var e = appCv3.S.emp.find(function (x) {
+      return x && x.id === a.empId;
+    });
+    if (e && e.group) return e.group;
+  }
+  return "";
+}
+
+function canOperateRole() {
+  if (isDirectorRole()) return true;
+  return authEmpGroup() === "Điều hành";
+}
+
+function hasFullUIRole() {
+  if (isDirectorRole()) return true;
+  var g = authEmpGroup();
+  return g === "Điều hành" || g === "Giám sát";
+}
+
+async function syncEmpGroupToUserDoc(empId, group) {
+  if (!auth || !auth.currentUser || !db) return;
+  var g = String(group || "");
+  try {
+    await setDoc(
+      doc(db, "users", auth.currentUser.uid),
+      { empId: empId || "", empGroup: g, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    var cur = window.__CV3_AUTH || {};
+    if (cur.uid === auth.currentUser.uid) {
+      publishAuth(Object.assign({}, cur, { empId: empId || cur.empId, empGroup: g }));
+    }
+  } catch (err) {
+    console.warn("syncEmpGroupToUserDoc:", err);
+  }
 }
 
 async function hasDirectorInOrg(org) {
@@ -804,8 +1211,8 @@ function scheduleProvision(cv3, options) {
 async function provisionAllEmployees(cv3, options) {
   var opts = options || {};
   var force = !!opts.force;
-  if (!app || !auth || !auth.currentUser || !isDirectorRole()) {
-    if (force) throw new Error("Chỉ giám đốc đã đăng nhập mới tạo được tài khoản.");
+  if (!app || !auth || !auth.currentUser || !canOperateRole()) {
+    if (force) throw new Error("Chỉ giám đốc hoặc Điều hành đã đăng nhập mới tạo được tài khoản.");
     return null;
   }
   if (provisionBusy) {
@@ -992,28 +1399,55 @@ function userToEmail(username, org) {
     e.code = "auth/invalid-username";
     throw e;
   }
-  var o =
-    String(org || defaultOrg || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  // Email công ty dùng chung (không gắn org) — hỗ trợ 1 tài khoản nhiều đội
+  return u + "@qlcv.local";
+}
+
+function legacyUserToEmail(username, org) {
+  var u = sanitizeUsername(username);
+  var o = normalizeOrgId(org || defaultOrg);
   return o + "." + u + "@qlcv.local";
 }
 
 function emailToUsername(email) {
   if (!email) return "";
-  var m = String(email).match(/^[^.]+\.([^@]+)@/);
+  var raw = String(email);
+  var m = raw.match(/^[^.]+\.([^@]+)@qlcv\.local$/i);
   if (m) return m[1];
-  return String(email).split("@")[0] || "";
+  var m2 = raw.match(/^([^@]+)@qlcv\.local$/i);
+  if (m2) return m2[1];
+  return raw.split("@")[0] || "";
 }
 
-function resolveAuthIdentity(input, org) {
+function resolveAuthIdentity(input, orgHint) {
   var raw = String(input || "").trim();
   if (raw.indexOf("@") >= 0) {
-    return { email: raw, username: raw.split("@")[0] };
+    return {
+      email: raw,
+      username: emailToUsername(raw),
+      legacyEmail: null,
+      legacyEmails: [],
+    };
   }
   var username = sanitizeUsername(raw);
-  return { email: userToEmail(username, org), username: username };
+  var legacyEmails = [];
+  var rawHint = orgHint || "";
+  try {
+    if (!rawHint) rawHint = localStorage.getItem("cv3_active_org") || "";
+  } catch (e) {}
+  if (rawHint) {
+    legacyEmails.push(legacyUserToEmail(username, normalizeOrgId(rawHint)));
+  }
+  allOrgIds().forEach(function (o) {
+    var e = legacyUserToEmail(username, o);
+    if (legacyEmails.indexOf(e) < 0) legacyEmails.push(e);
+  });
+  return {
+    email: userToEmail(username),
+    legacyEmail: legacyEmails[0] || null,
+    legacyEmails: legacyEmails,
+    username: username,
+  };
 }
 
 function userLabel(user) {
@@ -1046,9 +1480,8 @@ async function refreshBiometricLoginUI() {
     var show = st.available && st.enabled;
     wrap.style.display = show ? "block" : "none";
     if (hint) {
-      hint.textContent = st.username
-        ? "Đăng nhập nhanh cho @" + st.username
-        : "Dùng vân tay hoặc khuôn mặt đã đăng ký trên máy này.";
+      hint.textContent = "";
+      hint.style.display = "none";
     }
     btn.disabled = !show;
   } catch (e) {
@@ -1113,9 +1546,9 @@ async function loginWithBiometric() {
   }
   try {
     var creds = await authenticateBiometric();
-    var id = resolveAuthIdentity(creds.username, defaultOrg);
-    var lc = await signInWithEmailAndPassword(auth, id.email, creds.password);
-    await ensureUserDoc(lc.user, defaultOrg, id.username);
+    var id = resolveAuthIdentity(creds.username);
+    var lc = await signInWithIdentity(id, creds.password);
+    await ensureUserDoc(lc.user, null, id.username);
     showAuth(false);
   } catch (err) {
     if (errEl) errEl.textContent = formatBiometricError(err);
@@ -1159,28 +1592,20 @@ async function enableBiometricForCurrentUser(password) {
 }
 
 function updateAuthHints(mode) {
-  var userHint = $("auth-user-hint");
   var passHint = $("auth-pass-hint");
   var loginBtn = $("auth-login-mode");
   var desc = $("auth-desc");
+  if (desc) {
+    desc.textContent = "";
+    desc.style.display = "none";
+  }
   if (mode === "signup") {
-    if (desc)
-      desc.innerHTML =
-        "Lần đầu dùng app — chọn tên đăng nhập và mật khẩu cho tài khoản <b>giám đốc</b>.";
-    if (userHint)
-      userHint.textContent = "Tên đăng nhập tùy chọn (không dấu, ≥2 ký tự) — quyền giám đốc gắn với chức vụ, không phụ thuộc tên.";
     if (passHint) {
-      passHint.textContent = "Đặt mật khẩu mới (≥6 ký tự).";
-      passHint.style.display = "block";
+      passHint.textContent = "";
+      passHint.style.display = "none";
     }
     if (loginBtn) loginBtn.style.display = "inline-flex";
   } else {
-    if (desc)
-      desc.innerHTML =
-        "Nhân viên đăng nhập bằng <b>tên đăng nhập</b> (không dấu). Mật khẩu ban đầu trùng tên đăng nhập — đổi trong Cài đặt sau khi đăng nhập.";
-    if (userHint)
-      userHint.textContent =
-        "Nhập tên đăng nhập (không dấu) — tài khoản được tạo tự động từ danh sách nhân sự.";
     if (passHint) {
       passHint.textContent = "";
       passHint.style.display = "none";
@@ -1277,13 +1702,26 @@ function workspaceRef() {
 }
 
 function payloadFromApp(cv3) {
+  var emps = (cv3.S.empAll && cv3.S.empAll.length ? cv3.S.empAll : cv3.S.emp) || [];
+  var orgEmps = emps
+    .filter(function (e) {
+      if (!e || e.accountRole === "director") return false;
+      var ids = normalizeOrgIds(e.orgIds, orgId);
+      return ids.indexOf(orgId) >= 0;
+    })
+    .map(function (e) {
+      return Object.assign({}, e, { orgIds: normalizeOrgIds(e.orgIds, orgId) });
+    });
   return {
-    emp: cv3.S.emp,
-    cust: cv3.S.cust,
+    emp: orgEmps,
+    // Khách hàng dùng chung tại company/main/customers — không ghi vào workspace
+    cust: [],
     proj: cv3.S.proj,
     asgn: cv3.S.asgn,
     projLog: cv3.S.projLog || [],
     reminders: cv3.S.reminders || [],
+    auditLog: cv3.S.auditLog || [],
+    trash: cv3.S.trash || [],
     cfg: cv3.S.cfg,
     patch: cv3.getPatch(),
     updatedAt: serverTimestamp(),
@@ -1293,86 +1731,625 @@ function payloadFromApp(cv3) {
 
 function applyRemote(cv3, data) {
   var patch = data.patch || 0;
+  var remoteEmp = data.emp || [];
+  // Merge workspace emp cache with company master (master wins on overlap).
+  var mergedEmp = mergeEmpLists(remoteEmp, Object.keys(empMasterById).map(function (k) {
+    return empMasterById[k];
+  }), orgId);
   var payload = {
-    emp: data.emp,
-    cust: data.cust,
-    proj: data.proj,
-    asgn: data.asgn,
-    projLog: data.projLog,
-    reminders: data.reminders,
+    emp: mergedEmp.forOrg,
+    empAll: mergedEmp.all,
+    // cust từ shared master — không lấy từ workspace
+    proj: Array.isArray(data.proj) ? data.proj : [],
+    asgn: Array.isArray(data.asgn) ? data.asgn : [],
+    projLog: Array.isArray(data.projLog) ? data.projLog : [],
+    reminders: Array.isArray(data.reminders) ? data.reminders : [],
+    auditLog: Array.isArray(data.auditLog) ? data.auditLog : [],
+    trash: Array.isArray(data.trash) ? data.trash : [],
     cfg: data.cfg,
     patch: patch,
   };
-  if (!isDirectorRole()) {
-    cv3.applyRemote(payload);
-    remotePatch = patch;
-    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
-    return true;
+  // Fallback tạm nếu master chưa sẵn sàng và workspace còn cust cũ
+  if (!custMasterReady && Array.isArray(data.cust) && data.cust.length) {
+    payload.cust = data.cust;
   }
-  if (patch <= cv3.getPatch()) {
+  // Bỏ qua echo khi chính mình đang ghi — trừ khi vừa đổi đội (phải nạp workspace mới).
+  if (writing && !forceWorkspaceApply) {
+    if (patch > remotePatch) remotePatch = patch;
     if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    return false;
+  }
+  // Lần đầu / sau đổi đội: luôn nạp workspace đang xem (kể cả proj rỗng).
+  // Tránh giữ dự án đội cũ vì patch localStorage cao hơn workspace mới.
+  var forceApply = !booted || forceWorkspaceApply;
+  if (forceApply) forceWorkspaceApply = false;
+  if (!canOperateRole()) {
+    var shouldApply = forceApply || patch > remotePatch;
+    if (shouldApply) {
+      cv3.applyRemote(payload);
+      remotePatch = patch;
+    }
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    maybeRefreshEmpGroup(cv3);
+    return shouldApply;
+  }
+  if (!forceApply && patch <= cv3.getPatch()) {
+    if (patch > remotePatch) remotePatch = patch;
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    maybeRefreshEmpGroup(cv3);
     return false;
   }
   cv3.applyRemote(payload);
   remotePatch = patch;
+  maybeRefreshEmpGroup(cv3);
   return true;
+}
+
+function mergeEmpLists(workspaceEmp, masterEmp, activeOrg) {
+  var byId = {};
+  (workspaceEmp || []).forEach(function (e) {
+    if (!e || !e.id) return;
+    byId[e.id] = Object.assign({}, e, {
+      orgIds: normalizeOrgIds(e.orgIds, activeOrg),
+    });
+  });
+  (masterEmp || []).forEach(function (e) {
+    if (!e || !e.id) return;
+    var prev = byId[e.id] || {};
+    byId[e.id] = Object.assign({}, prev, e, {
+      orgIds: normalizeOrgIds(e.orgIds || prev.orgIds, activeOrg),
+    });
+  });
+  var all = Object.keys(byId).map(function (id) {
+    return byId[id];
+  });
+  var forOrg = all.filter(function (e) {
+    return normalizeOrgIds(e.orgIds, activeOrg).indexOf(normalizeOrgId(activeOrg)) >= 0;
+  });
+  return { all: all, forOrg: forOrg };
+}
+
+function empMasterColRef() {
+  return collection(doc(db, "company", "main"), "employees");
+}
+
+function custMasterColRef() {
+  return collection(doc(db, "company", "main"), "customers");
+}
+
+function subscribeEmpMaster(cv3) {
+  if (unsubEmpMaster) unsubEmpMaster();
+  if (!db) return;
+  unsubEmpMaster = onSnapshot(
+    empMasterColRef(),
+    function (snap) {
+      empMasterById = {};
+      snap.forEach(function (d) {
+        empMasterById[d.id] = Object.assign({ id: d.id }, d.data());
+      });
+      if (!cv3 || !cv3.S) return;
+      var merged = mergeEmpLists(cv3.S.emp || [], Object.keys(empMasterById).map(function (k) {
+        return empMasterById[k];
+      }), orgId);
+      if (cv3.applyEmpMaster) {
+        cv3.applyEmpMaster(merged.all, merged.forOrg);
+      } else {
+        cv3.S.empAll = merged.all;
+        cv3.S.emp = merged.forOrg;
+        if (cv3.render) cv3.render();
+      }
+      refreshOrgSwitcherUI();
+    },
+    function (err) {
+      console.warn("emp master:", err);
+    }
+  );
+}
+
+function subscribeCustMaster(cv3) {
+  if (unsubCustMaster) unsubCustMaster();
+  if (!db) return;
+  unsubCustMaster = onSnapshot(
+    custMasterColRef(),
+    function (snap) {
+      custMasterById = {};
+      var list = [];
+      snap.forEach(function (d) {
+        var row = Object.assign({ id: d.id }, d.data(), { id: d.id });
+        custMasterById[d.id] = row;
+        list.push(row);
+      });
+      custMasterReady = true;
+      if (!cv3 || !cv3.S) return;
+      if (cv3.applyCustMaster) {
+        cv3.applyCustMaster(list);
+      } else {
+        cv3.S.cust = list;
+        if (cv3.render) cv3.render();
+      }
+    },
+    function (err) {
+      console.warn("cust master:", err);
+    }
+  );
+}
+
+function subscribeOtherOrgAsgn(cv3) {
+  if (unsubOtherSnap) unsubOtherSnap();
+  unsubOtherSnap = null;
+  if (!db || !auth || !auth.currentUser) return;
+  var other = otherOrgId(orgId);
+  var a = window.__CV3_AUTH || {};
+  var allowed =
+    a.role === "director"
+      ? allOrgIds()
+      : normalizeOrgIds(a.orgIds, a.orgId || orgId);
+  // Chỉ mirror đội kia khi tài khoản được gán cả 2 đội (hoặc giám đốc)
+  var canSeeOther = allowed.indexOf(other) >= 0 && allowed.length >= 2;
+  if (a.role === "director") canSeeOther = true;
+  if (!canSeeOther) {
+    if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other);
+    return;
+  }
+  unsubOtherSnap = onSnapshot(
+    doc(db, "workspaces", other, "data", "main"),
+    function (snap) {
+      if (!snap.exists()) {
+        if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other);
+        return;
+      }
+      var data = snap.data() || {};
+      var asgn = (data.asgn || []).map(function (x) {
+        return Object.assign({}, x, { _orgId: other });
+      });
+      if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn(asgn, other);
+    },
+    function (err) {
+      console.warn("other org asgn:", err);
+    }
+  );
+}
+
+async function upsertEmpToMaster(emp) {
+  if (!db || !emp || !emp.id) return;
+  var payload = Object.assign({}, emp, {
+    orgIds: normalizeOrgIds(emp.orgIds, orgId),
+    updatedAt: serverTimestamp(),
+  });
+  await setDoc(doc(db, "company", "main", "employees", emp.id), payload, {
+    merge: true,
+  });
+  empMasterById[emp.id] = Object.assign({}, payload);
+}
+
+async function upsertCustToMaster(cust) {
+  if (!db || !cust || !cust.id) return;
+  var payload = Object.assign({}, cust, {
+    id: cust.id,
+    updatedAt: serverTimestamp(),
+  });
+  await setDoc(doc(db, "company", "main", "customers", cust.id), payload, {
+    merge: true,
+  });
+  custMasterById[cust.id] = Object.assign({}, payload);
+}
+
+async function deleteCustFromMaster(custId) {
+  if (!db || !custId) return;
+  await deleteDoc(doc(db, "company", "main", "customers", custId));
+  delete custMasterById[custId];
+}
+
+async function syncCustMasterFromApp(cv3) {
+  if (!db || !cv3 || !cv3.S) return;
+  var list = cv3.S.cust || [];
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i];
+    if (!c || !c.id) continue;
+    try {
+      await upsertCustToMaster(c);
+    } catch (err) {
+      console.warn("upsertCustToMaster:", err);
+    }
+  }
+}
+
+async function setEmpOrgMembership(empId, orgIds) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app), "setEmpOrgMembership");
+  var res = await fn({
+    empId: empId,
+    orgIds: normalizeOrgIds(orgIds, orgId),
+  });
+  return res.data || {};
+}
+
+/** @deprecated Khách hàng đã dùng chung — gọi migrateSharedCustomers nếu cần. */
+async function copyCustomersToOrg(custIds, toOrg) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app), "migrateSharedCustomers");
+  var res = await fn({});
+  return Object.assign({ ok: true, shared: true, copied: 0, skipped: true }, res.data || {}, {
+    message: "Khách hàng đã dùng chung cả 2 đội — không cần sao chép.",
+  });
+}
+
+async function runDualOrgMigration() {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app), "migrateDualOrgs");
+  var res = await fn({});
+  return res.data || {};
+}
+
+async function exportCompanyBackup() {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app), "exportCompanyBackup");
+  var res = await fn({});
+  return res.data || {};
+}
+
+async function restoreCompanyBackup(backup, targetOrg) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app), "restoreCompanyBackup");
+  var res = await fn({ backup: backup, targetOrg: targetOrg || orgId });
+  return res.data || {};
+}
+
+function refreshOrgSwitcherUI() {
+  var wrap = $("hdr-org-switch");
+  var partBar = $("org-part-bar");
+  var partGrid = $("org-part-grid");
+  var partSingle = $("org-part-single");
+  var titleEl = $("hdr-title-text");
+  var a = window.__CV3_AUTH;
+  var orgs = listOrgs();
+
+  function setTitle(org) {
+    if (!titleEl) return;
+    var label = orgLabel(org || orgId);
+    titleEl.textContent = "QUẢN LÝ DỰ ÁN · " + label.toUpperCase();
+  }
+
+  if (!a || !a.uid) {
+    if (wrap) {
+      wrap.style.display = "none";
+      wrap.innerHTML = "";
+    }
+    if (partBar) {
+      partBar.hidden = true;
+      partBar.classList.remove("show");
+    }
+    if (partSingle) {
+      partSingle.classList.remove("show");
+      partSingle.innerHTML = "";
+    }
+    if (titleEl) titleEl.textContent = "QUẢN LÝ DỰ ÁN";
+    return;
+  }
+
+  var allowed =
+    a.role === "director"
+      ? orgs.map(function (o) {
+          return o.id;
+        })
+      : normalizeOrgIds(a.orgIds, a.orgId || orgId);
+
+  setTitle(orgId);
+
+  // Header: luôn hiện nhãn đội đang xem (gọn)
+  if (wrap) {
+    wrap.style.display = "inline-flex";
+    wrap.innerHTML =
+      '<span class="hdr-org-label" title="Phần đang xem">' +
+      escHtml(orgLabel(orgId)) +
+      "</span>";
+  }
+
+  // Một đội: banner nhỏ
+  if (allowed.length < 2) {
+    if (partBar) {
+      partBar.hidden = true;
+      partBar.classList.remove("show");
+      if (partGrid) partGrid.innerHTML = "";
+    }
+    if (partSingle) {
+      partSingle.classList.add("show");
+      partSingle.innerHTML = escHtml(orgLabel(orgId));
+    }
+    return;
+  }
+
+  // Hai đội: 2 phần riêng, bấm vào để vào phần đó
+  if (partSingle) {
+    partSingle.classList.remove("show");
+    partSingle.innerHTML = "";
+  }
+  if (!partBar || !partGrid) return;
+  partBar.hidden = false;
+  partBar.classList.add("show");
+  var h = "";
+  orgs.forEach(function (o) {
+    if (allowed.indexOf(o.id) < 0) return;
+    var on = o.id === orgId;
+    h +=
+      '<button type="button" class="org-part-card' +
+      (on ? " on" : "") +
+      '" data-org="' +
+      escHtml(o.id) +
+      '" aria-pressed="' +
+      (on ? "true" : "false") +
+      '">' +
+      '<div class="org-part-card-kicker">' +
+      (on ? "Đang xem" : "Chuyển sang") +
+      "</div>" +
+      '<div class="org-part-card-title">' +
+      escHtml(o.label) +
+      "</div></button>";
+  });
+  partGrid.innerHTML = h;
+  partGrid.querySelectorAll(".org-part-card").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var next = btn.getAttribute("data-org");
+      if (!next || next === orgId) return;
+      switchOrg(next).catch(function (err) {
+        alert(err.message || "Không chuyển được phần.");
+      });
+    });
+  });
+}
+
+function escHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function switchOrg(nextOrg) {
+  var next = normalizeOrgId(nextOrg);
+  var a = window.__CV3_AUTH || {};
+  var allowed =
+    a.role === "director"
+      ? allOrgIds()
+      : normalizeOrgIds(a.orgIds, a.orgId || orgId);
+  if (allowed.indexOf(next) < 0) {
+    throw new Error("Tài khoản không thuộc đội " + orgLabel(next) + ".");
+  }
+  if (next === orgId) return;
+  if (writeTimer) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  if (appCv3 && canOperateRole()) {
+    try {
+      await flushWrite(appCv3);
+    } catch (e) {}
+  }
+  orgId = next;
+  remotePatch = 0;
+  booted = false;
+  forceWorkspaceApply = true;
+  try {
+    localStorage.setItem("cv3_active_org", orgId);
+  } catch (e) {}
+  if (auth && auth.currentUser && db) {
+    await setDoc(
+      doc(db, "users", auth.currentUser.uid),
+      { activeOrgId: orgId, orgId: orgId, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  }
+  if (a.uid) {
+    publishAuth(
+      Object.assign({}, a, {
+        orgId: orgId,
+        orgIds: allowed,
+      })
+    );
+  }
+  if (appCv3 && typeof appCv3.prepareOrgWorkspace === "function") {
+    appCv3.prepareOrgWorkspace();
+  } else if (appCv3 && appCv3.S) {
+    appCv3.S.modal = null;
+    appCv3.S.form = null;
+    appCv3.S.selProj = "";
+    appCv3.S.selProjDet = "";
+    appCv3.S.selEmp = "";
+    appCv3.S.selCust = "";
+    appCv3.S.giaoProj = "";
+    appCv3.S.reports = [];
+    appCv3.S.attendance = [];
+    appCv3.S._reportsSig = "";
+    appCv3.S._attSig = "";
+    appCv3.S.proj = [];
+    appCv3.S.asgn = [];
+    appCv3.S.projLog = [];
+    appCv3.S.asgnOther = [];
+    appCv3.S.otherOrgId = "";
+    if (typeof appCv3.render === "function") appCv3.render();
+  }
+  if (appCv3) {
+    if (unsubSnap) unsubSnap();
+    unsubSnap = null;
+    unsubChatAll();
+    if (unsubReports) unsubReports();
+    unsubReports = null;
+    if (unsubAttendance) unsubAttendance();
+    unsubAttendance = null;
+    historyRangeCache = Object.create(null);
+    liveHistorySince = "";
+    subscribeWorkspace(appCv3);
+    subscribeOtherOrgAsgn(appCv3);
+    subscribeChat();
+    subscribeReports();
+    subscribeAttendance();
+  }
+  refreshOrgSwitcherUI();
+  setSync("syncing", "Đang tải phần " + orgLabel(orgId) + "…");
+}
+
+function maybeRefreshEmpGroup(cv3) {
+  var a = window.__CV3_AUTH;
+  if (!a || a.role !== "employee" || !a.empId || !cv3 || !cv3.S) return;
+  var pool = cv3.S.empAll || cv3.S.emp || [];
+  var e = pool.find(function (x) {
+    return x && x.id === a.empId;
+  });
+  var g = e && e.group ? e.group : "";
+  if (g && g !== a.empGroup) {
+    syncEmpGroupToUserDoc(a.empId, g);
+  }
 }
 
 async function ensureUserDoc(user, org, username, preset) {
   var ref = doc(db, "users", user.uid);
   var snap = await getDoc(ref);
   var un = username || user.displayName || emailToUsername(user.email);
-  var role, empId, displayName, age;
+  var chosenOrg = normalizeOrgId(org || defaultOrg);
+  var role, empId, displayName, age, orgIds, empGroup;
   if (!snap.exists()) {
-    var acct = preset || (await resolveAccount(un, org));
-    role = acct.role;
-    empId = acct.empId;
+    var acct = preset || null;
+    if (!acct) {
+      try {
+        acct = await resolveAccount(un, chosenOrg);
+      } catch (e) {
+        if (e && e.code === "auth/unknown-employee") {
+          acct = {
+            role: "employee",
+            empId: "",
+            orgIds: [chosenOrg],
+            empGroup: "",
+          };
+        } else throw e;
+      }
+    }
+    role = acct.role || "employee";
+    empId = acct.empId || "";
     displayName = user.displayName || "";
     age = null;
+    orgIds =
+      role === "director"
+        ? allOrgIds()
+        : normalizeOrgIds(acct.orgIds, chosenOrg);
+    empGroup = acct.empGroup || "";
+    if (orgIds.indexOf(chosenOrg) < 0) chosenOrg = orgIds[0] || chosenOrg;
     await setDoc(ref, {
       username: un,
-      orgId: org,
+      orgId: chosenOrg,
+      orgIds: orgIds,
+      activeOrgId: chosenOrg,
       role: role,
       empId: empId || "",
+      empGroup: empGroup || "",
       displayName: displayName,
       age: age,
       createdAt: serverTimestamp(),
     });
-    orgId = org;
+    orgId = chosenOrg;
   } else {
     var d = snap.data();
     role = d.role || "employee";
     empId = d.empId || null;
     displayName = d.displayName || user.displayName || "";
     age = d.age != null ? d.age : null;
-    if (d.orgId) orgId = d.orgId;
-    if (!d.username && un) {
-      await setDoc(ref, { username: un }, { merge: true });
+    empGroup = d.empGroup || "";
+    orgIds = normalizeOrgIds(d.orgIds, d.orgId || chosenOrg);
+    if (role === "director" && orgIds.length < 2) {
+      orgIds = allOrgIds();
     }
-    if (role === "employee" && un && orgId) {
+    // Đội làm việc lấy từ hồ sơ (activeOrgId / orgIds), không từ form đăng nhập
+    if (d.activeOrgId && orgIds.indexOf(normalizeOrgId(d.activeOrgId)) >= 0) {
+      orgId = normalizeOrgId(d.activeOrgId);
+    } else if (d.orgId && orgIds.indexOf(normalizeOrgId(d.orgId)) >= 0) {
+      orgId = normalizeOrgId(d.orgId);
+    } else {
+      orgId = orgIds[0] || chosenOrg;
+    }
+    var patch = {
+      orgId: orgId,
+      orgIds: orgIds,
+      activeOrgId: orgId,
+    };
+    if (!d.username && un) patch.username = un;
+    if (role === "employee" && un) {
       try {
-        var acct = await resolveAccount(un, orgId);
-        if (acct && acct.empId && acct.empId !== empId) {
-          empId = acct.empId;
-          await setDoc(ref, { empId: empId }, { merge: true });
+        var acct2 = await resolveAccount(un, orgId);
+        if (acct2 && acct2.empId && acct2.empId !== empId) {
+          empId = acct2.empId;
+          patch.empId = empId;
+        }
+        if (acct2 && acct2.orgIds && acct2.orgIds.length) {
+          orgIds = normalizeOrgIds(acct2.orgIds, orgId);
+          patch.orgIds = orgIds;
+          if (orgIds.indexOf(orgId) < 0) {
+            orgId = orgIds[0];
+            patch.orgId = orgId;
+            patch.activeOrgId = orgId;
+          }
+        }
+        if (acct2 && acct2.empGroup) {
+          empGroup = acct2.empGroup;
+          patch.empGroup = empGroup;
         }
       } catch (e) {
         console.warn("Could not re-resolve account", e);
       }
     }
+    await setDoc(ref, patch, { merge: true });
   }
+  if (role === "employee" && empId && appCv3 && appCv3.S) {
+    var pool = appCv3.S.empAll || appCv3.S.emp || [];
+    var empRow = pool.find(function (x) {
+      return x && x.id === empId;
+    });
+    if (empRow && empRow.group) empGroup = empRow.group;
+  }
+  if (role === "employee" && empId) {
+    await setDoc(
+      ref,
+      { empId: empId, empGroup: empGroup || "" },
+      { merge: true }
+    );
+  }
+  try {
+    localStorage.setItem("cv3_active_org", orgId);
+  } catch (e) {}
   publishAuth({
     role: role,
     empId: empId,
+    empGroup: empGroup,
     username: un,
     uid: user.uid,
     displayName: displayName,
     age: age,
+    orgId: orgId,
+    orgIds: orgIds,
   });
   if (empId && appCv3 && appCv3.linkEmpAuth) {
     appCv3.linkEmpAuth(empId, user.uid);
   }
-  return { role: role, empId: empId, username: un, displayName: displayName, age: age };
+  refreshOrgSwitcherUI();
+  return {
+    role: role,
+    empId: empId,
+    empGroup: empGroup,
+    username: un,
+    displayName: displayName,
+    age: age,
+    orgId: orgId,
+    orgIds: orgIds,
+  };
 }
 
 function scheduleWrite(cv3) {
@@ -1382,17 +2359,41 @@ function scheduleWrite(cv3) {
   }, 450);
 }
 
-async function flushWrite(cv3) {
+async function flushWrite(cv3, opts) {
+  opts = opts || {};
   if (!auth || !auth.currentUser || writing) return;
-  if (!isDirectorRole()) return;
+  if (!canOperateRole()) return;
+  // Chưa boot xong workspace (sau đổi đội) thì không ghi — tránh đẩy dữ liệu đội cũ / rỗng nhầm
+  if (!booted && !opts.force) return;
   var localPatch = cv3.getPatch();
-  if (localPatch <= remotePatch) return;
+  // Patch local bị tụt (đổi đội / cache) so với cloud → bắt kịp rồi ghi, không bỏ qua thầm lặng
+  if (localPatch <= remotePatch) {
+    localPatch = remotePatch + 1;
+    if (cv3.setPatch) cv3.setPatch(localPatch);
+  }
   writing = true;
   setSync("syncing", "Đang lưu lên cloud…");
   try {
-    await setDoc(workspaceRef(), payloadFromApp(cv3), { merge: false });
+    var payload = payloadFromApp(cv3);
+    payload.patch = localPatch;
+    await setDoc(workspaceRef(), payload, { merge: false });
+    var pool = (cv3.S.empAll && cv3.S.empAll.length ? cv3.S.empAll : cv3.S.emp) || [];
+    for (var i = 0; i < pool.length; i++) {
+      var e = pool[i];
+      if (!e || !e.id || e.accountRole === "director") continue;
+      try {
+        await upsertEmpToMaster(e);
+      } catch (errEmp) {
+        console.warn("upsertEmpToMaster:", errEmp);
+      }
+    }
+    try {
+      await syncCustMasterFromApp(cv3);
+    } catch (errCust) {
+      console.warn("syncCustMasterFromApp:", errCust);
+    }
     remotePatch = localPatch;
-    setSync("online", "Đồng bộ · " + orgId);
+    setSync("online", "Đồng bộ · " + orgLabel(orgId));
     if (countEmpNeedingAuth(cv3)) scheduleProvision(cv3);
   } catch (err) {
     console.error(err);
@@ -1403,6 +2404,9 @@ async function flushWrite(cv3) {
 
 function subscribeWorkspace(cv3) {
   if (unsubSnap) unsubSnap();
+  subscribeEmpMaster(cv3);
+  subscribeCustMaster(cv3);
+  subscribeOtherOrgAsgn(cv3);
   setSync("syncing", "Đang tải dữ liệu…");
   unsubSnap = onSnapshot(
     workspaceRef(),
@@ -1410,28 +2414,39 @@ function subscribeWorkspace(cv3) {
       if (!snap.exists()) {
         if (!booted) {
           booted = true;
-          cv3.seedDemo();
+          forceWorkspaceApply = false;
+          if (cv3.S) {
+            cv3.S.proj = [];
+            cv3.S.asgn = [];
+            cv3.S.projLog = [];
+            cv3.S.reminders = [];
+            cv3.S.auditLog = [];
+            cv3.S.trash = [];
+          }
+          if (cv3.setPatch) cv3.setPatch(0);
           cv3.render();
-          flushWrite(cv3).then(function () {
-            if (isDirectorRole()) scheduleProvision(cv3);
+          flushWrite(cv3, { force: true }).then(function () {
+            if (canOperateRole()) scheduleProvision(cv3);
           });
         }
-        setSync("online", "Cloud mới · " + orgId);
+        setSync("online", "Cloud mới · " + orgLabel(orgId));
         return;
       }
       var data = snap.data();
       var changed = applyRemote(cv3, data);
       if (!booted) {
         booted = true;
-        if (!changed) cv3.seedDemo();
         cv3.render();
       } else if (changed) {
         cv3.render();
       }
-      remotePatch = data.patch || remotePatch;
+      if (data.patch != null && data.patch > remotePatch) remotePatch = data.patch;
       var who = auth && auth.currentUser ? userLabel(auth.currentUser) : "";
-      setSync("online", (who ? who + " · " : "") + "đồng bộ · " + orgId);
-      if (isDirectorRole()) scheduleProvision(cv3);
+      setSync("online", (who ? who + " · " : "") + "đồng bộ · " + orgLabel(orgId));
+      // Chỉ provision khi còn nhân viên thiếu tài khoản — tránh gọi lặp mỗi snapshot.
+      if (canOperateRole() && !provisionDone && countEmpNeedingAuth(cv3)) {
+        scheduleProvision(cv3);
+      }
     },
     function (err) {
       console.error(err);
@@ -1517,6 +2532,24 @@ function bindForegroundMessaging(messaging, cv3) {
       }
       if (typeof cv3.showAppToast === "function") {
         cv3.showAppToast(title + (body ? " — " + body : ""), "ok");
+      }
+      return;
+    }
+    if (type === "schedule" && cv3) {
+      var titleS = d.title || "Lịch công việc đã điều chỉnh";
+      var bodyS = d.body || "";
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(titleS, {
+            body: bodyS,
+            icon: "/icon-192.png",
+            tag: "sched_" + (d.asgnId || "fg"),
+            silent: false,
+          });
+        } catch (e) {}
+      }
+      if (typeof cv3.showAppToast === "function") {
+        cv3.showAppToast(titleS + (bodyS ? " — " + bodyS : ""), "ok");
       }
     }
   });
@@ -1604,8 +2637,41 @@ function authErrMsg(err, mode, isBootstrap) {
   if (c === "auth/employee-taken") return err.message || "Tài khoản nhân viên này đã được tạo.";
   if (c === "auth/bootstrap-blocked") return err.message || "Đội đã có giám đốc — không thể tự đăng ký.";
   if (c === "auth/too-many-requests") return "Thử quá nhiều lần — đợi vài phút rồi thử lại.";
+  if (c === "auth/wrong-org") return err.message || "Tài khoản không thuộc đội này.";
   if (c === "functions/failed-precondition") return (err && err.message) || "Không thể thiết lập giám đốc.";
   return (err && err.message) || String(err);
+}
+
+function isRetryableAuthCredentialError(err) {
+  var c = (err && err.code) || "";
+  return (
+    c === "auth/user-not-found" ||
+    c === "auth/invalid-credential" ||
+    c === "auth/wrong-password" ||
+    c === "auth/invalid-email"
+  );
+}
+
+async function signInWithIdentity(id, pass) {
+  try {
+    return await signInWithEmailAndPassword(auth, id.email, pass);
+  } catch (err) {
+    if (!isRetryableAuthCredentialError(err)) throw err;
+    var candidates = id.legacyEmails;
+    if (!candidates || !candidates.length) {
+      candidates = id.legacyEmail ? [id.legacyEmail] : [];
+    }
+    var lastErr = err;
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        return await signInWithEmailAndPassword(auth, candidates[i], pass);
+      } catch (e2) {
+        lastErr = e2;
+        if (!isRetryableAuthCredentialError(e2)) throw e2;
+      }
+    }
+    throw lastErr;
+  }
 }
 
 function bindAuthUI(cv3) {
@@ -1620,14 +2686,14 @@ function bindAuthUI(cv3) {
     var mode = form.dataset.mode || "login";
     if (errEl) errEl.textContent = "";
     try {
-      var id = resolveAuthIdentity(userInput, org);
+      var id = resolveAuthIdentity(userInput);
       var signedUser = null;
       if (mode === "signup") {
         var hasDir = await hasDirectorInOrg(org);
         if (hasDir) {
           throw Object.assign(
             new Error(
-              "Đội đã có giám đốc — nhân viên không tự đăng ký. Liên hệ giám đốc để được cấp tài khoản."
+              "Công ty đã có giám đốc — nhân viên không tự đăng ký. Liên hệ giám đốc để được cấp tài khoản."
             ),
             { code: "auth/bootstrap-blocked" }
           );
@@ -1641,11 +2707,15 @@ function bindAuthUI(cv3) {
         orgId = org;
         await updateProfile(cred.user, { displayName: "Giám đốc" });
         await claimDirectorRole(id.username, org);
-        await ensureUserDoc(cred.user, org, id.username);
+        await ensureUserDoc(cred.user, org, id.username, {
+          role: "director",
+          empId: "",
+          orgIds: allOrgIds(),
+        });
         signedUser = cred.user;
       } else {
-        var lc = await signInWithEmailAndPassword(auth, id.email, pass);
-        await ensureUserDoc(lc.user, org, id.username);
+        var lc = await signInWithIdentity(id, pass);
+        await ensureUserDoc(lc.user, null, id.username);
         signedUser = lc.user;
       }
       showAuth(false);
@@ -1691,6 +2761,56 @@ function bindAuthUI(cv3) {
   refreshBiometricLoginUI();
 }
 
+async function maybeSuggestMigration(cv3) {
+  if (!db || !isDirectorRole()) return;
+  try {
+    var ct = await getDoc(doc(db, "workspaces", "cong-trinh", "data", "main"));
+    var saree = await getDoc(doc(db, "workspaces", "saree", "data", "main"));
+    var ctEmpty =
+      !ct.exists() ||
+      !(
+        (ct.data().emp || []).length ||
+        (ct.data().proj || []).length ||
+        (ct.data().asgn || []).length ||
+        (ct.data().cust || []).length
+      );
+    if (saree.exists() && ctEmpty) {
+      var ok = confirm(
+        "Phát hiện dữ liệu đội cũ (saree). Chạy migration sang 2 đội (Công trình tỉnh / Công trình HCM) ngay bây giờ?"
+      );
+      if (ok) {
+        var res = await runDualOrgMigration();
+        alert((res && res.message) || "Migration xong.");
+        location.reload();
+      }
+      return;
+    }
+    var wsCustCount = 0;
+    if (ct.exists()) wsCustCount += (ct.data().cust || []).length;
+    if (saree.exists()) wsCustCount += (saree.data().cust || []).length;
+    var sharedCustCount = Object.keys(custMasterById).length;
+    if (!sharedCustCount) {
+      try {
+        var snap = await getDocs(custMasterColRef());
+        sharedCustCount = snap.size;
+      } catch (e) {}
+    }
+    if (wsCustCount && !sharedCustCount) {
+      var ok2 = confirm(
+        "Phát hiện khách hàng còn trong workspace — chuyển sang danh sách dùng chung cả 2 đội?"
+      );
+      if (ok2) {
+        var fn = httpsCallable(getFunctions(app), "migrateSharedCustomers");
+        var r2 = await fn({});
+        alert((r2.data && r2.data.message) || "Đã chuyển khách hàng dùng chung.");
+        location.reload();
+      }
+    }
+  } catch (err) {
+    console.warn("maybeSuggestMigration:", err);
+  }
+}
+
 async function bootOffline(cv3) {
   setSync("offline", "Chỉ lưu trên máy này");
   cv3.finishBoot();
@@ -1732,6 +2852,30 @@ async function bootOnline(cv3) {
   window.__CV3_submitReport = callSubmitReport;
   window.__CV3_submitAttendance = callSubmitAttendance;
   window.__CV3_confirmArrival = callConfirmArrival;
+  window.__CV3_ensureAttendanceRange = ensureAttendanceRange;
+  window.__CV3_ensureAttendanceMonth = ensureAttendanceMonth;
+  window.__CV3_ensureReportsRange = ensureReportsRange;
+  window.__CV3_historyWindowDays = function () {
+    return HISTORY_WINDOW_DAYS;
+  };
+  window.__CV3_switchOrg = switchOrg;
+  window.__CV3_getOrgId = function () {
+    return orgId;
+  };
+  window.__CV3_getRemotePatch = function () {
+    return remotePatch || 0;
+  };
+  window.__CV3_listOrgs = listOrgs;
+  window.__CV3_orgLabel = orgLabel;
+  window.__CV3_otherOrgId = otherOrgId;
+  window.__CV3_setEmpOrgMembership = setEmpOrgMembership;
+  window.__CV3_copyCustomersToOrg = copyCustomersToOrg;
+  window.__CV3_migrateDualOrgs = runDualOrgMigration;
+  window.__CV3_exportCompanyBackup = exportCompanyBackup;
+  window.__CV3_restoreCompanyBackup = restoreCompanyBackup;
+  window.__CV3_upsertEmpMaster = upsertEmpToMaster;
+  window.__CV3_upsertCustMaster = upsertCustToMaster;
+  window.__CV3_deleteCustMaster = deleteCustFromMaster;
   onAuthStateChanged(auth, async function (user) {
     var epoch = ++authEpoch;
     var uid = user ? user.uid : null;
@@ -1739,6 +2883,7 @@ async function bootOnline(cv3) {
     if (!user) {
       stopSubscriptions();
       publishAuth(null);
+      refreshOrgSwitcherUI();
       if (authOverlayVisible !== true) switchToLoginMode();
       showAuth(true);
       refreshBootstrapUI();
@@ -1747,6 +2892,7 @@ async function bootOnline(cv3) {
     }
     if (uid === lastAuthUid && booted) {
       showAuth(false);
+      refreshOrgSwitcherUI();
       return;
     }
     showAuth(false);
@@ -1757,7 +2903,7 @@ async function bootOnline(cv3) {
         : who;
     setSync("syncing", roleLbl ? "Xin chào " + roleLbl + "…" : "Đang tải dữ liệu…");
     try {
-      await ensureUserDoc(user, orgId, who);
+      await ensureUserDoc(user, null, who);
     } catch (err) {
       console.error("ensureUserDoc:", err);
       if (epoch !== authEpoch) return;
@@ -1780,8 +2926,14 @@ async function bootOnline(cv3) {
           Notification.permission === "granted" ||
           (isDirectorRole() && localStorage.getItem("cv3_remind_push") === "1"),
       });
-      if (isDirectorRole()) scheduleProvision(cv3, { delay: 600 });
+      if (canOperateRole()) scheduleProvision(cv3, { delay: 600 });
+      if (isDirectorRole()) {
+        setTimeout(function () {
+          maybeSuggestMigration(cv3);
+        }, 1200);
+      }
     }
+    refreshOrgSwitcherUI();
   });
   setSync("syncing", "Đang kết nối…");
   window.__CV3_openAuth = openAuthPanel;

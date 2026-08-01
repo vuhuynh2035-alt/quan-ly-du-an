@@ -1,15 +1,17 @@
 const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getAuth } = require("firebase-admin/auth");
 const { getMessaging } = require("firebase-admin/messaging");
+const { getStorage } = require("firebase-admin/storage");
 
 initializeApp();
 
 const db = getFirestore();
 const adminAuth = getAuth();
+const adminStorage = getStorage();
 
 function sanitizeUsername(name) {
   return String(name || "")
@@ -20,6 +22,30 @@ function sanitizeUsername(name) {
     .replace(/đ/g, "d")
     .replace(/\s+/g, "")
     .replace(/[^a-z0-9._-]/g, "");
+}
+
+const ORG_ALIAS = { saree: "cong-trinh" };
+const ALL_ORGS = ["cong-trinh", "nha-may"];
+
+function normalizeOrgId(id) {
+  const raw = String(id || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+  const normalized = ORG_ALIAS[raw] || raw;
+  return ALL_ORGS.includes(normalized) ? normalized : "cong-trinh";
+}
+
+function orgLabel(id) {
+  return normalizeOrgId(id) === "nha-may" ? "Công trình HCM" : "Công trình tỉnh";
+}
+
+function normalizeOrgIds(list, fallback = ["cong-trinh"]) {
+  const input = Array.isArray(list) ? list : list ? [list] : fallback;
+  return [...new Set(input.map(normalizeOrgId).filter((id) => ALL_ORGS.includes(id)))];
+}
+
+function userOrgIds(user) {
+  return normalizeOrgIds(user && user.orgIds, [
+    normalizeOrgId(user && user.orgId),
+  ]);
 }
 
 function defaultEmployeePassword(username, password) {
@@ -33,12 +59,15 @@ function userEmail(org, username) {
   if (u.length < 2) {
     throw new HttpsError("invalid-argument", "Tên đăng nhập cần ít nhất 2 ký tự.");
   }
-  const o =
-    String(org || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
-  return `${o}.${u}@qlcv.local`;
+  return `${u}@qlcv.local`;
+}
+
+function legacyUserEmail(org, username) {
+  const u = sanitizeUsername(username);
+  if (u.length < 2) {
+    throw new HttpsError("invalid-argument", "Tên đăng nhập cần ít nhất 2 ký tự.");
+  }
+  return `${normalizeOrgId(org)}.${u}@qlcv.local`;
 }
 
 function docExists(snap) {
@@ -53,14 +82,48 @@ async function assertDirector(uid) {
   return snap.data();
 }
 
+async function assertCanOperate(uid) {
+  const snap = await db.doc(`users/${uid}`).get();
+  if (!docExists(snap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = snap.data();
+  if (user.role === "director") return user;
+  if (user.empGroup === "Điều hành") return user;
+  if (user.empId) {
+    const companyEmp = await db.doc(`company/main/employees/${user.empId}`).get();
+    if (docExists(companyEmp) && companyEmp.data().group === "Điều hành") {
+      await snap.ref.set({ empGroup: "Điều hành" }, { merge: true });
+      return { ...user, empGroup: "Điều hành" };
+    }
+    for (const orgId of userOrgIds(user)) {
+      const wsSnap = await db.doc(`workspaces/${orgId}/data/main`).get();
+      if (!docExists(wsSnap)) continue;
+      const emp = (wsSnap.data().emp || []).find((e) => e && e.id === user.empId);
+      if (emp && emp.group === "Điều hành") {
+        await snap.ref.set({ empGroup: "Điều hành" }, { merge: true });
+        return { ...user, empGroup: "Điều hành" };
+      }
+    }
+  }
+  throw new HttpsError(
+    "permission-denied",
+    "Chỉ giám đốc hoặc Điều hành mới được thực hiện."
+  );
+}
+
 async function orgHasDirector(orgId) {
   const snap = await db
     .collection("users")
-    .where("orgId", "==", orgId)
     .where("role", "==", "director")
-    .limit(1)
+    .limit(5)
     .get();
-  return !snap.empty;
+  const normalizedOrg = normalizeOrgId(orgId);
+  return snap.docs.some((doc) => {
+    const user = doc.data();
+    return user.orgId === normalizedOrg || userOrgIds(user).includes(normalizedOrg) ||
+      userOrgIds(user).length === ALL_ORGS.length;
+  });
 }
 
 async function empFcmToken(emp) {
@@ -137,8 +200,27 @@ function findNotifyTargets(before, after) {
       a.status === "active" &&
       (a.handoffFrom || prev.handoffTo);
     if (isNew || reactivated || handoff) {
-      targets.push(a);
+      targets.push({ asgn: a, kind: "assignment" });
     }
+  });
+
+  return targets;
+}
+
+function findScheduleNotifyTargets(before, after) {
+  const beforeList = (before && before.asgn) || [];
+  const afterList = (after && after.asgn) || [];
+  const beforeMap = new Map(beforeList.map((a) => [a.id, a]));
+  const targets = [];
+
+  afterList.forEach((a) => {
+    if (!a || !a.schedNotify || !a.schedNotify.at) return;
+    const prev = beforeMap.get(a.id);
+    const prevAt = prev && prev.schedNotify && prev.schedNotify.at;
+    if (prevAt === a.schedNotify.at) return;
+    // New assignment with delay note is already covered by assignment push
+    if (!prev && a.status === "active") return;
+    targets.push({ asgn: a, kind: "schedule" });
   });
 
   return targets;
@@ -147,12 +229,13 @@ function findNotifyTargets(before, after) {
 async function directorFcmTokens(orgId) {
   const snap = await db
     .collection("users")
-    .where("orgId", "==", orgId)
     .where("role", "==", "director")
     .get();
   const tokens = [];
   snap.docs.forEach((d) => {
-    const t = d.data().fcmToken;
+    const user = d.data();
+    if (!userOrgIds(user).includes(normalizeOrgId(orgId))) return;
+    const t = user.fcmToken;
     if (t) tokens.push({ token: t, uid: d.id });
   });
   return tokens;
@@ -195,13 +278,22 @@ function buildArrivalReminderMessage(reminder) {
 }
 
 function buildMessage(emp, asgn, proj) {
-  const title = "📋 Bạn được giao việc mới";
+  const sched = asgn && asgn.schedNotify;
+  const isDelay = sched && sched.type === "delay";
+  const title = isDelay
+    ? "📅 Lịch việc mới đã điều chỉnh"
+    : "📋 Bạn được giao việc mới";
   const work =
     asgn.workContent ||
     (proj && proj.name) ||
     "Công việc mới";
   const where = proj ? proj.name : "";
-  const body = where ? `${work} · ${where}` : work;
+  let body = where ? `${work} · ${where}` : work;
+  if (isDelay && sched.msg) body = String(sched.msg).slice(0, 500);
+  else if (asgn.startDate || asgn.endDate) {
+    const range = [asgn.startDate, asgn.endDate].filter(Boolean).join(" → ");
+    if (range) body = `${body} (${range})`;
+  }
   return {
     data: {
       type: "assignment",
@@ -210,6 +302,33 @@ function buildMessage(emp, asgn, proj) {
       asgnId: asgn.id || "",
       empId: asgn.empId || "",
       projId: asgn.projId || "",
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link: "/?tab=mywork" },
+    },
+  };
+}
+
+function buildScheduleMessage(emp, asgn, proj) {
+  const sched = (asgn && asgn.schedNotify) || {};
+  const title = "📅 Lịch công việc đã điều chỉnh";
+  const work =
+    (asgn && asgn.workContent) ||
+    (proj && proj.name) ||
+    "Công việc";
+  const body = String(sched.msg || `«${work}» đã được điều chỉnh lịch.`).slice(
+    0,
+    500
+  );
+  return {
+    data: {
+      type: "schedule",
+      title,
+      body,
+      asgnId: (asgn && asgn.id) || "",
+      empId: (asgn && asgn.empId) || "",
+      projId: (asgn && asgn.projId) || "",
     },
     webpush: {
       headers: { Urgency: "high", TTL: "86400" },
@@ -373,7 +492,9 @@ exports.notifyAssignment = onDocumentWritten(
     const after = event.data.after.exists ? event.data.after.data() : null;
     if (!after) return null;
 
-    const targets = findNotifyTargets(before, after);
+    const targets = findNotifyTargets(before, after).concat(
+      findScheduleNotifyTargets(before, after)
+    );
     if (!targets.length) return null;
 
     const empList = after.emp || [];
@@ -383,20 +504,25 @@ exports.notifyAssignment = onDocumentWritten(
     const messaging = getMessaging();
 
     const tokenEntries = [];
-    for (const asgn of targets) {
+    for (const target of targets) {
+      const asgn = target.asgn || target;
       const emp = empById.get(asgn.empId);
       const token = await empFcmToken(emp);
-      if (token) tokenEntries.push({ token, asgn, emp });
+      if (token) tokenEntries.push({ token, asgn, emp, kind: target.kind || "assignment" });
     }
 
     if (!tokenEntries.length) return null;
 
     const results = [];
     for (const entry of tokenEntries) {
-      const { token, asgn, emp } = entry;
+      const { token, asgn, emp, kind } = entry;
       const proj = projById.get(asgn.projId);
       try {
-        await messaging.send({ ...buildMessage(emp, asgn, proj), token });
+        const payload =
+          kind === "schedule"
+            ? buildScheduleMessage(emp, asgn, proj)
+            : buildMessage(emp, asgn, proj);
+        await messaging.send({ ...payload, token });
         results.push({ token, ok: true });
       } catch (err) {
         const code = err && err.code;
@@ -427,11 +553,12 @@ exports.notifyChatMessage = onDocumentCreated(
     if (msg.type === "broadcast") {
       const usersSnap = await db
         .collection("users")
-        .where("orgId", "==", orgId)
         .get();
       usersSnap.docs.forEach((d) => {
         if (d.id === msg.uid) return;
-        const t = d.data().fcmToken;
+        const user = d.data();
+        if (!userOrgIds(user).includes(normalizeOrgId(orgId))) return;
+        const t = user.fcmToken;
         if (t) tokenEntries.push({ token: t });
       });
     } else if (msg.type === "dm" && msg.toUid) {
@@ -497,11 +624,10 @@ exports.ackAssignment = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "Thiếu mã công việc.");
   }
 
-  const orgId =
-    String(user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(user.activeOrgId || user.orgId);
+  if (!userOrgIds(user).includes(orgId)) {
+    throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
+  }
   const wsRef = db.doc(`workspaces/${orgId}/data/main`);
   const wsSnap = await wsRef.get();
   if (!docExists(wsSnap)) {
@@ -584,11 +710,7 @@ exports.syncFcmToken = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
   }
   const user = userSnap.data();
-  const orgId =
-    String(user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(user.activeOrgId || user.orgId);
   const empId = user.empId || "";
   await userRef.set({ fcmToken: token, empId }, { merge: true });
   let synced = false;
@@ -600,11 +722,7 @@ exports.syncFcmToken = onCall(async (request) => {
 
 exports.hasDirectorInOrg = onCall(async (request) => {
   const data = request.data || {};
-  const orgId =
-    String(data.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId);
   return { hasDirector: await orgHasDirector(orgId) };
 });
 
@@ -614,16 +732,17 @@ exports.claimDirectorRole = onCall(async (request) => {
   }
   const data = request.data || {};
   const username = sanitizeUsername(data.username);
-  const orgId =
-    String(data.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId);
 
   if (!username || username.length < 2) {
     throw new HttpsError("invalid-argument", "Tên đăng nhập không hợp lệ.");
   }
-  if (await orgHasDirector(orgId)) {
+  const existingDirectors = await db
+    .collection("users")
+    .where("role", "==", "director")
+    .limit(1)
+    .get();
+  if (!existingDirectors.empty) {
     throw new HttpsError(
       "failed-precondition",
       "Đội này đã có giám đốc — không thể thiết lập lần đầu."
@@ -643,6 +762,8 @@ exports.claimDirectorRole = onCall(async (request) => {
     {
       username,
       orgId,
+      activeOrgId: orgId,
+      orgIds: ALL_ORGS,
       role: "director",
       empId: "",
       createdAt: new Date(),
@@ -659,8 +780,12 @@ async function doProvisionEmployee({
   empName,
   role,
   orgId,
+  orgIds,
+  empGroup,
 }) {
-  const email = userEmail(orgId, username);
+  const normalizedOrgIds = normalizeOrgIds(orgIds, [orgId]);
+  const activeOrgId = normalizeOrgId(orgId || normalizedOrgIds[0]);
+  const email = userEmail(activeOrgId, username);
   let uid;
   let created = false;
   let updated = false;
@@ -691,12 +816,22 @@ async function doProvisionEmployee({
     created = true;
   }
 
+  const group =
+    role === "director"
+      ? ""
+      : String(empGroup || "").trim() === "Quản lý"
+        ? "Giám sát"
+        : String(empGroup || "").trim();
+
   await db.doc(`users/${uid}`).set(
     {
       username,
-      orgId,
+      orgId: activeOrgId,
+      activeOrgId,
+      orgIds: role === "director" ? ALL_ORGS : normalizedOrgIds,
       role,
       empId: role === "director" ? "" : empId,
+      empGroup: group,
       updatedAt: new Date(),
       ...(created ? { createdAt: new Date() } : {}),
     },
@@ -723,11 +858,8 @@ exports.provisionEmployee = onCall(async (request) => {
   const empId = String(data.empId || "");
   const empName = String(data.empName || username);
   const role = data.role === "director" ? "director" : "employee";
-  const orgId =
-    String(data.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId);
+  const orgIds = normalizeOrgIds(data.orgIds, [orgId]);
 
   if (!username || username.length < 2) {
     throw new HttpsError("invalid-argument", "Tên đăng nhập không hợp lệ.");
@@ -743,6 +875,8 @@ exports.provisionEmployee = onCall(async (request) => {
     empName,
     role,
     orgId,
+    orgIds,
+    empGroup: data.empGroup || "",
   });
 });
 
@@ -750,23 +884,21 @@ exports.provisionAllEmployees = onCall(async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "Cần đăng nhập.");
   }
-  const director = await assertDirector(request.auth.uid);
+  const operator = await assertCanOperate(request.auth.uid);
 
   const data = request.data || {};
-  const orgId =
-    String(data.orgId || director.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId || operator.activeOrgId || operator.orgId);
 
   const wsRef = db.doc(`workspaces/${orgId}/data/main`);
   const wsSnap = await wsRef.get();
-  if (!docExists(wsSnap)) {
-    return { created: 0, updated: 0, linked: 0, results: [], patch: 0 };
-  }
-
-  const ws = wsSnap.data();
-  const empList = ws.emp || [];
+  const ws = docExists(wsSnap) ? wsSnap.data() : { emp: [], patch: 0 };
+  const companySnap = await db.collection("company/main/employees").get();
+  const byId = new Map((ws.emp || []).map((emp) => [emp.id, emp]));
+  companySnap.docs.forEach((doc) => {
+    const emp = { id: doc.id, ...doc.data() };
+    if (userOrgIds(emp).includes(orgId)) byId.set(emp.id, { ...byId.get(emp.id), ...emp });
+  });
+  const empList = [...byId.values()];
   let created = 0;
   let updated = 0;
   let linked = 0;
@@ -786,6 +918,10 @@ exports.provisionAllEmployees = onCall(async (request) => {
     }
     if (emp.authUid) {
       newEmpList.push(emp);
+      await db.doc(`company/main/employees/${emp.id}`).set(
+        { ...emp, orgIds: normalizeOrgIds(emp.orgIds, [orgId]), updatedAt: new Date() },
+        { merge: true }
+      );
       continue;
     }
     if (!username || username.length < 2) {
@@ -800,6 +936,8 @@ exports.provisionAllEmployees = onCall(async (request) => {
       empName: emp.name || username,
       role,
       orgId,
+      orgIds: normalizeOrgIds(emp.orgIds, [orgId]),
+      empGroup: emp.group || "",
     });
     if (result.created) created += 1;
     if (result.updated) updated += 1;
@@ -811,7 +949,12 @@ exports.provisionAllEmployees = onCall(async (request) => {
       created: result.created,
       updated: result.updated,
     });
-    newEmpList.push({ ...emp, authUid: result.uid, loginKey: username });
+    const linkedEmp = { ...emp, authUid: result.uid, loginKey: username };
+    newEmpList.push(linkedEmp);
+    await db.doc(`company/main/employees/${emp.id}`).set(
+      { ...linkedEmp, orgIds: normalizeOrgIds(emp.orgIds, [orgId]), updatedAt: new Date() },
+      { merge: true }
+    );
     changed = true;
   }
 
@@ -827,6 +970,280 @@ exports.provisionAllEmployees = onCall(async (request) => {
   }
 
   return { created, updated, linked, results, patch };
+});
+
+async function syncEmployeeToWorkspace(orgId, emp, included) {
+  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
+  const wsSnap = await wsRef.get();
+  if (!docExists(wsSnap)) return false;
+  const ws = wsSnap.data();
+  const before = ws.emp || [];
+  const index = before.findIndex((item) => item && item.id === emp.id);
+  let next = before;
+  if (included && index < 0) next = [...before, emp];
+  if (included && index >= 0) next = before.map((item, i) => i === index ? { ...item, ...emp } : item);
+  if (!included && index >= 0) next = before.filter((item) => item && item.id !== emp.id);
+  if (next === before) return false;
+  await wsRef.set(
+    { emp: next, patch: (ws.patch || 0) + 1, updatedAt: new Date() },
+    { merge: true }
+  );
+  return true;
+}
+
+exports.setEmpOrgMembership = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  await assertDirector(request.auth.uid);
+  const data = request.data || {};
+  const empId = String(data.empId || "").trim();
+  const orgIds = normalizeOrgIds(data.orgIds, []);
+  if (!empId) throw new HttpsError("invalid-argument", "Thiếu mã nhân viên.");
+
+  const empRef = db.doc(`company/main/employees/${empId}`);
+  const empSnap = await empRef.get();
+  if (!docExists(empSnap)) throw new HttpsError("not-found", "Không tìm thấy nhân viên.");
+  const emp = { id: empId, ...empSnap.data(), orgIds };
+  await empRef.set({ orgIds, updatedAt: new Date() }, { merge: true });
+  if (emp.authUid) {
+    await db.doc(`users/${emp.authUid}`).set(
+      { orgIds, orgId: orgIds[0] || "cong-trinh", activeOrgId: orgIds[0] || "cong-trinh", updatedAt: new Date() },
+      { merge: true }
+    );
+  }
+  const synced = {};
+  for (const orgId of ALL_ORGS) {
+    synced[orgId] = await syncEmployeeToWorkspace(orgId, emp, orgIds.includes(orgId));
+  }
+  return { ok: true, empId, orgIds, synced };
+});
+
+async function upsertSharedCustomers(custList) {
+  const byId = new Map();
+  (custList || []).forEach((cust) => {
+    if (!cust || !cust.id) return;
+    const id = String(cust.sharedCustId || cust.id);
+    if (!byId.has(id)) {
+      const row = { ...cust, id };
+      delete row.sharedCustId;
+      byId.set(id, row);
+    }
+  });
+  let n = 0;
+  for (const [id, cust] of byId) {
+    await db.doc(`company/main/customers/${id}`).set(
+      { ...cust, id, updatedAt: new Date() },
+      { merge: true }
+    );
+    n += 1;
+  }
+  return n;
+}
+
+async function collectWorkspaceCustomers() {
+  const refs = [
+    db.doc("workspaces/cong-trinh/data/main"),
+    db.doc("workspaces/nha-may/data/main"),
+    db.doc("workspaces/saree/data/main"),
+  ];
+  const snaps = await Promise.all(refs.map((r) => r.get()));
+  const merged = [];
+  snaps.forEach((snap) => {
+    if (!snap.exists) return;
+    (snap.data().cust || []).forEach((c) => merged.push(c));
+  });
+  return merged;
+}
+
+async function clearWorkspaceCustArrays() {
+  for (const orgId of ["cong-trinh", "nha-may", "saree"]) {
+    const ref = db.doc(`workspaces/${orgId}/data/main`);
+    const snap = await ref.get();
+    if (!snap.exists) continue;
+    const data = snap.data() || {};
+    if (!(data.cust || []).length) continue;
+    await ref.set(
+      { cust: [], patch: (data.patch || 0) + 1, updatedAt: new Date() },
+      { merge: true }
+    );
+  }
+}
+
+exports.migrateSharedCustomers = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  await assertDirector(request.auth.uid);
+  const fromWs = await collectWorkspaceCustomers();
+  const existingSnap = await db.collection("company/main/customers").get();
+  const existing = existingSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const migrated = await upsertSharedCustomers([...existing, ...fromWs]);
+  await clearWorkspaceCustArrays();
+  return {
+    ok: true,
+    customers: migrated,
+    message: "Đã đồng bộ " + migrated + " khách hàng dùng chung cả 2 đội.",
+  };
+});
+
+/** @deprecated Khách hàng đã dùng chung — gọi migrateSharedCustomers. */
+exports.copyCustomersToOrg = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  await assertDirector(request.auth.uid);
+  const fromWs = await collectWorkspaceCustomers();
+  const existingSnap = await db.collection("company/main/customers").get();
+  const existing = existingSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const migrated = await upsertSharedCustomers([...existing, ...fromWs]);
+  return {
+    ok: true,
+    copied: 0,
+    skipped: true,
+    shared: true,
+    customers: migrated,
+    message: "Khách hàng đã dùng chung cả 2 đội — không cần sao chép.",
+  };
+});
+
+async function doMigrateDualOrgs() {
+  const sareeRef = db.doc("workspaces/saree/data/main");
+  const constructionRef = db.doc("workspaces/cong-trinh/data/main");
+  const factoryRef = db.doc("workspaces/nha-may/data/main");
+  const [sareeSnap, constructionSnap, factorySnap] = await Promise.all([
+    sareeRef.get(),
+    constructionRef.get(),
+    factoryRef.get(),
+  ]);
+  let copiedWorkspace = false;
+  const constructionData = constructionSnap.exists ? constructionSnap.data() : null;
+  const constructionEmpty =
+    !constructionData ||
+    ["emp", "cust", "proj", "asgn"].every(
+      (key) => !((constructionData[key] || []).length)
+    );
+  if (sareeSnap.exists && constructionEmpty) {
+    const sareeData = sareeSnap.data() || {};
+    const emp = (sareeData.emp || [])
+      .filter((e) => e && e.id && e.accountRole !== "director")
+      .map((e) => ({ ...e, orgIds: ["cong-trinh"] }));
+    await constructionRef.set({
+      ...sareeData,
+      emp,
+      updatedAt: new Date(),
+    });
+    copiedWorkspace = true;
+  } else if (constructionSnap.exists) {
+    const ct = constructionSnap.data() || {};
+    const emp = (ct.emp || [])
+      .filter((e) => e && e.id)
+      .map((e) => ({ ...e, orgIds: ["cong-trinh"] }));
+    await constructionRef.set(
+      { ...ct, emp, patch: (ct.patch || 0) + 1, updatedAt: new Date() },
+      { merge: false }
+    );
+  }
+  if (!factorySnap.exists) {
+    const cfg =
+      sareeSnap.exists && sareeSnap.data().cfg
+        ? { ...sareeSnap.data().cfg }
+        : {};
+    await factoryRef.set({
+      emp: [],
+      cust: [],
+      proj: [],
+      asgn: [],
+      projLog: [],
+      reminders: [],
+      auditLog: [],
+      trash: [],
+      cfg,
+      patch: 0,
+      updatedAt: new Date(),
+    });
+  }
+  const currentConstruction = (await constructionRef.get()).data() || {};
+  const employees = (currentConstruction.emp || []).filter((emp) => emp && emp.id);
+  for (const emp of employees) {
+    await db.doc(`company/main/employees/${emp.id}`).set(
+      { ...emp, orgIds: ["cong-trinh"], updatedAt: new Date() },
+      { merge: true }
+    );
+  }
+  const custSources = [
+    ...(currentConstruction.cust || []),
+    ...((sareeSnap.exists && sareeSnap.data().cust) || []),
+    ...((factorySnap.exists && factorySnap.data().cust) || []),
+  ];
+  const customersMigrated = await upsertSharedCustomers(custSources);
+  await clearWorkspaceCustArrays();
+
+  const memberships = new Map();
+  employees.forEach((emp) => {
+    memberships.set(emp.id, ["cong-trinh"]);
+    if (emp.authUid) memberships.set(emp.authUid, ["cong-trinh"]);
+  });
+  const usersSnap = await db.collection("users").get();
+  let usersUpdated = 0;
+  for (const userDoc of usersSnap.docs) {
+    const user = userDoc.data();
+    const orgIds =
+      user.role === "director"
+        ? ALL_ORGS
+        : memberships.get(userDoc.id) ||
+          memberships.get(user.empId) ||
+          normalizeOrgIds(user.orgIds, [normalizeOrgId(user.orgId)]);
+    const orgId = normalizeOrgId(user.orgId);
+    await userDoc.ref.set(
+      {
+        orgId: orgId === "saree" ? "cong-trinh" : orgId,
+        activeOrgId: "cong-trinh",
+        orgIds:
+          user.role === "director" ? ALL_ORGS : ["cong-trinh"],
+        updatedAt: new Date(),
+      },
+      { merge: true }
+    );
+    usersUpdated += 1;
+  }
+  return {
+    ok: true,
+    copiedWorkspace,
+    employeesMigrated: employees.length,
+    customersMigrated,
+    usersUpdated,
+    factoryCreated: !factorySnap.exists,
+    message:
+      (copiedWorkspace ? "Đã copy saree → Công trình tỉnh. " : "") +
+      "Nhân viên: " +
+      employees.length +
+      ". Khách hàng dùng chung: " +
+      customersMigrated +
+      ". Users: " +
+      usersUpdated +
+      "." +
+      (!factorySnap.exists ? " Đã tạo Công trình HCM trống." : ""),
+  };
+}
+
+exports.migrateDualOrgs = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  await assertDirector(request.auth.uid);
+  return doMigrateDualOrgs();
+});
+
+/** One-shot HTTP migrate — disabled after successful cong-trinh bootstrap. */
+exports.bootstrapCongTrinhMigrate = onRequest({ cors: true }, async (_req, res) => {
+  res.status(410).json({
+    error: "gone",
+    message: "Migration đã chạy xong. Dùng callable migrateDualOrgs (director) nếu cần chạy lại.",
+  });
+});
+
+/**
+ * One-shot: reset ALL Firebase Auth passwords to "123456".
+ * Disabled after successful run on 2026-08-01 (secret was qlcv-reset-all-20260801).
+ */
+exports.bootstrapResetAllPasswords = onRequest({ cors: true }, async (_req, res) => {
+  res.status(410).json({
+    error: "gone",
+    message: "Password reset one-shot đã chạy xong và bị vô hiệu hóa.",
+  });
 });
 
 exports.submitDailyReport = onCall(async (request) => {
@@ -848,11 +1265,10 @@ exports.submitDailyReport = onCall(async (request) => {
   }
 
   const data = request.data || {};
-  const orgId =
-    String(data.orgId || user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
+  if (!userOrgIds(user).includes(orgId)) {
+    throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
+  }
   const asgnId = String(data.asgnId || "");
   const date = String(data.date || "").slice(0, 10);
   const prog = Math.min(100, Math.max(0, Math.round(Number(data.prog) || 0)));
@@ -1012,11 +1428,10 @@ exports.submitAttendance = onCall(async (request) => {
   }
 
   const data = request.data || {};
-  const orgId =
-    String(data.orgId || user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
+  if (!userOrgIds(user).includes(orgId)) {
+    throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
+  }
   const type = data.type === "out" ? "out" : "in";
   const date = String(data.date || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -1170,11 +1585,10 @@ exports.confirmArrival = onCall(async (request) => {
   }
 
   const data = request.data || {};
-  const orgId =
-    String(data.orgId || user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
+  if (!userOrgIds(user).includes(orgId)) {
+    throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
+  }
   const asgnId = String(data.asgnId || "");
   const reminderId = String(data.reminderId || "");
   const lat = Number(data.lat);
@@ -1419,11 +1833,7 @@ exports.updateMyProfile = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Không được phép cập nhật hồ sơ.");
   }
 
-  const orgId =
-    String(user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(user.activeOrgId || user.orgId);
 
   await userRef.set(
     { displayName, age, updatedAt: new Date() },
@@ -1432,6 +1842,11 @@ exports.updateMyProfile = onCall(async (request) => {
   await adminAuth.updateUser(uid, { displayName });
 
   const sync = await syncProfileToWorkspace(orgId, uid, user, displayName, user.username);
+  await Promise.all(
+    userOrgIds(user)
+      .filter((id) => id !== orgId)
+      .map((id) => syncProfileToWorkspace(id, uid, user, displayName, user.username))
+  );
   if (sync.empId && sync.empId !== user.empId) {
     await userRef.set({ empId: sync.empId }, { merge: true });
   }
@@ -1470,11 +1885,7 @@ exports.updateMyUsername = onCall(async (request) => {
     return { ok: true, username: newUsername };
   }
 
-  const orgId =
-    String(user.orgId || "saree")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "") || "saree";
+  const orgId = normalizeOrgId(user.activeOrgId || user.orgId);
   const newEmail = userEmail(orgId, newUsername);
 
   try {
@@ -1492,6 +1903,11 @@ exports.updateMyUsername = onCall(async (request) => {
   await adminAuth.updateUser(uid, { email: newEmail });
   await userRef.set({ username: newUsername, updatedAt: new Date() }, { merge: true });
   await syncProfileToWorkspace(orgId, uid, { ...user, username: newUsername }, user.displayName, newUsername);
+  await Promise.all(
+    userOrgIds(user)
+      .filter((id) => id !== orgId)
+      .map((id) => syncProfileToWorkspace(id, uid, { ...user, username: newUsername }, user.displayName, newUsername))
+  );
 
   return { ok: true, username: newUsername };
 });
@@ -1520,3 +1936,421 @@ exports.changeMyPassword = onCall(async (request) => {
   await adminAuth.updateUser(uid, { password: newPassword });
   return { ok: true };
 });
+
+function workspacePayloadFromSnap(snap) {
+  if (!docExists(snap)) {
+    return {
+      emp: [],
+      cust: [],
+      proj: [],
+      asgn: [],
+      projLog: [],
+      reminders: [],
+      auditLog: [],
+      trash: [],
+      cfg: {},
+      patch: 0,
+    };
+  }
+  const d = snap.data() || {};
+  return {
+    emp: d.emp || [],
+    cust: d.cust || [],
+    proj: d.proj || [],
+    asgn: d.asgn || [],
+    projLog: d.projLog || [],
+    reminders: d.reminders || [],
+    auditLog: d.auditLog || [],
+    trash: d.trash || [],
+    cfg: d.cfg || {},
+    patch: d.patch || 0,
+  };
+}
+
+exports.exportCompanyBackup = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  await assertDirector(request.auth.uid);
+
+  const [ctSnap, nmSnap, empSnap, custSnap] = await Promise.all([
+    db.doc("workspaces/cong-trinh/data/main").get(),
+    db.doc("workspaces/nha-may/data/main").get(),
+    db.collection("company").doc("main").collection("employees").get(),
+    db.collection("company").doc("main").collection("customers").get(),
+  ]);
+
+  const employees = empSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  let customers = custSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const workspaces = {
+    "cong-trinh": workspacePayloadFromSnap(ctSnap),
+    "nha-may": workspacePayloadFromSnap(nmSnap),
+  };
+
+  // Alias cũ nếu cong-trinh trống nhưng saree còn dữ liệu
+  const sareeSnap = await db.doc("workspaces/saree/data/main").get();
+  if (
+    sareeSnap.exists &&
+    !(workspaces["cong-trinh"].proj || []).length &&
+    !(workspaces["cong-trinh"].asgn || []).length
+  ) {
+    workspaces["cong-trinh"] = workspacePayloadFromSnap(sareeSnap);
+  }
+
+  // Fallback: nếu chưa migrate KH shared, lấy từ workspace (một lần)
+  if (!customers.length) {
+    const fromWs = [
+      ...(workspaces["cong-trinh"].cust || []),
+      ...(workspaces["nha-may"].cust || []),
+      ...((sareeSnap.exists && sareeSnap.data().cust) || []),
+    ];
+    const byId = new Map();
+    fromWs.forEach((c) => {
+      if (!c || !c.id) return;
+      const id = String(c.sharedCustId || c.id);
+      if (!byId.has(id)) byId.set(id, { ...c, id });
+    });
+    customers = [...byId.values()];
+  }
+
+  // Không nhân đôi KH trong từng workspace
+  Object.keys(workspaces).forEach((oid) => {
+    workspaces[oid] = { ...workspaces[oid], cust: [] };
+  });
+
+  return {
+    version: 3,
+    kind: "dual-org",
+    at: new Date().toISOString(),
+    orgs: ALL_ORGS.slice(),
+    employees,
+    customers,
+    workspaces,
+  };
+});
+
+exports.restoreCompanyBackup = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  await assertDirector(request.auth.uid);
+  const data = request.data || {};
+  const payload = data.backup || data;
+
+  let workspaces = payload.workspaces || null;
+  let employees = Array.isArray(payload.employees) ? payload.employees : [];
+  let customers = Array.isArray(payload.customers) ? payload.customers : [];
+
+  // Legacy single-org file → áp vào đội đang chọn / cong-trinh
+  if (!workspaces) {
+    const targetOrg = normalizeOrgId(data.targetOrg || payload.orgId || "cong-trinh");
+    workspaces = {
+      [targetOrg]: {
+        emp: payload.emp || [],
+        cust: [],
+        proj: payload.proj || [],
+        asgn: payload.asgn || [],
+        projLog: payload.projLog || [],
+        reminders: payload.reminders || [],
+        auditLog: payload.auditLog || [],
+        trash: payload.trash || [],
+        cfg: payload.cfg || {},
+        patch: payload.patch || 0,
+      },
+    };
+    if (!employees.length && Array.isArray(payload.emp)) {
+      employees = payload.emp.map((e) => ({
+        ...e,
+        orgIds: normalizeOrgIds(e.orgIds, [targetOrg]),
+      }));
+    }
+    if (!customers.length && Array.isArray(payload.cust)) {
+      customers = payload.cust;
+    }
+  }
+
+  // Legacy dual-org backup: KH nằm trong workspace.cust
+  if (!customers.length && workspaces) {
+    const fromWs = [];
+    Object.keys(workspaces).forEach((oid) => {
+      (workspaces[oid].cust || []).forEach((c) => fromWs.push(c));
+    });
+    customers = fromWs;
+  }
+
+  const restored = [];
+  for (const orgId of Object.keys(workspaces)) {
+    const oid = normalizeOrgId(orgId);
+    if (!ALL_ORGS.includes(oid) && oid !== "saree") continue;
+    const writeOrg = oid === "saree" ? "cong-trinh" : oid;
+    const ws = workspaces[orgId] || {};
+    const ref = db.doc(`workspaces/${writeOrg}/data/main`);
+    const prev = await ref.get();
+    const prevPatch = docExists(prev) ? prev.data().patch || 0 : 0;
+    await ref.set(
+      {
+        emp: ws.emp || [],
+        cust: [],
+        proj: ws.proj || [],
+        asgn: ws.asgn || [],
+        projLog: ws.projLog || [],
+        reminders: ws.reminders || [],
+        auditLog: ws.auditLog || [],
+        trash: ws.trash || [],
+        cfg: ws.cfg || {},
+        patch: Math.max(prevPatch, ws.patch || 0) + 1,
+        updatedAt: new Date(),
+        updatedBy: "restore",
+      },
+      { merge: false }
+    );
+    restored.push(writeOrg);
+  }
+
+  let empCount = 0;
+  for (const emp of employees) {
+    if (!emp || !emp.id) continue;
+    const orgIds = normalizeOrgIds(emp.orgIds, ["cong-trinh"]);
+    await db.doc(`company/main/employees/${emp.id}`).set(
+      { ...emp, orgIds, updatedAt: new Date() },
+      { merge: true }
+    );
+    empCount += 1;
+    for (const oid of ALL_ORGS) {
+      await syncEmployeeToWorkspace(oid, { ...emp, orgIds }, orgIds.includes(oid));
+    }
+  }
+
+  const custCount = await upsertSharedCustomers(customers);
+
+  return {
+    ok: true,
+    restoredOrgs: [...new Set(restored)],
+    employees: empCount,
+    customers: custCount,
+    message:
+      "Đã khôi phục " +
+      [...new Set(restored)].map(orgLabel).join(", ") +
+      (empCount ? " · " + empCount + " nhân viên dùng chung" : "") +
+      (custCount ? " · " + custCount + " khách hàng dùng chung" : ""),
+  };
+});
+
+// Photo retention = 31 days: delete Storage objects + clear URL fields on old docs.
+// New uploads use workspaces/{org}/{attendance|reports}/{uid}/{YYYY-MM-DD}/...
+const PHOTO_RETENTION_DAYS = 31;
+const PHOTO_RETENTION_ORGS = ["cong-trinh", "nha-may", "saree"];
+const PHOTO_STORAGE_KINDS = ["attendance", "reports"];
+
+function vietnamYmdParts(d = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (type) => Number(parts.find((p) => p.type === type).value);
+  return { y: get("year"), m: get("month"), day: get("day") };
+}
+
+function toIsoDateParts(y, m, day) {
+  return `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Calendar cutoff (Asia/Ho_Chi_Minh): docs with date < this ISO are expired. */
+function photoRetentionCutoffIso() {
+  const { y, m, day } = vietnamYmdParts();
+  const dt = new Date(Date.UTC(y, m - 1, day));
+  dt.setUTCDate(dt.getUTCDate() - PHOTO_RETENTION_DAYS);
+  return toIsoDateParts(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+}
+
+function photoRetentionCutoffMs() {
+  return Date.now() - PHOTO_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function storagePathFromDownloadUrl(url) {
+  const s = String(url || "").trim();
+  if (!s) return "";
+  const encoded = s.match(/\/o\/([^?#]+)/);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1]);
+    } catch (_e) {
+      return "";
+    }
+  }
+  const plain = s.match(/storage\.googleapis\.com\/[^/]+\/([^?#]+)/);
+  if (plain) {
+    try {
+      return decodeURIComponent(plain[1]);
+    } catch (_e) {
+      return plain[1];
+    }
+  }
+  return "";
+}
+
+async function deleteStorageByUrls(bucket, urls) {
+  let deleted = 0;
+  const seen = new Set();
+  for (const url of urls) {
+    const path = storagePathFromDownloadUrl(url);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    try {
+      await bucket.file(path).delete({ ignoreNotFound: true });
+      deleted += 1;
+    } catch (err) {
+      console.warn("photo purge url:", path, String(err));
+    }
+  }
+  return deleted;
+}
+
+/** Orphan sweep: date-folder path < cutoffIso, or legacy objects older than cutoffMs. */
+async function deleteExpiredStoragePhotos(bucket, orgId, kind, cutoffIso, cutoffMs) {
+  const prefix = `workspaces/${orgId}/${kind}/`;
+  let deleted = 0;
+  let pageToken;
+  do {
+    const [files, , apiResponse] = await bucket.getFiles({
+      prefix,
+      autoPaginate: false,
+      maxResults: 500,
+      pageToken,
+    });
+    for (const file of files) {
+      const name = String(file.name || "");
+      const dateFolder = name.match(/\/(\d{4}-\d{2}-\d{2})\//);
+      const expiredByFolder = !!(dateFolder && dateFolder[1] < cutoffIso);
+      const created =
+        file.metadata && file.metadata.timeCreated
+          ? Date.parse(file.metadata.timeCreated)
+          : NaN;
+      const expiredByAge =
+        !dateFolder && created && !Number.isNaN(created) && created < cutoffMs;
+      if (!expiredByFolder && !expiredByAge) continue;
+      try {
+        await file.delete({ ignoreNotFound: true });
+        deleted += 1;
+      } catch (err) {
+        console.warn("photo purge storage:", file.name, String(err));
+      }
+    }
+    pageToken = apiResponse && apiResponse.nextPageToken;
+  } while (pageToken);
+  return deleted;
+}
+
+async function scrubExpiredAttendancePhotos(bucket, orgId, cutoffIso) {
+  let cleared = 0;
+  let storageDeleted = 0;
+  let lastDoc = null;
+  for (;;) {
+    let q = db
+      .collection(`workspaces/${orgId}/attendance`)
+      .where("date", "<", cutoffIso)
+      .orderBy("date")
+      .limit(200);
+    if (lastDoc) q = q.startAfter(lastDoc);
+    const snap = await q.get();
+    if (snap.empty) break;
+    const batch = db.batch();
+    let ops = 0;
+    const urls = [];
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data() || {};
+      const site = String(data.sitePhoto || "").trim();
+      const work = Array.isArray(data.workPhotos)
+        ? data.workPhotos.filter((u) => typeof u === "string" && u.trim())
+        : [];
+      if (!site && !work.length) continue;
+      if (site) urls.push(site);
+      work.forEach((u) => urls.push(u));
+      batch.update(docSnap.ref, { sitePhoto: "", workPhotos: [] });
+      ops += 1;
+      cleared += 1;
+    }
+    if (urls.length) storageDeleted += await deleteStorageByUrls(bucket, urls);
+    if (ops) await batch.commit();
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (snap.size < 200) break;
+  }
+  return { cleared, storageDeleted };
+}
+
+async function scrubExpiredReportPhotos(bucket, orgId, cutoffIso) {
+  let cleared = 0;
+  let storageDeleted = 0;
+  let lastDoc = null;
+  for (;;) {
+    let q = db
+      .collection(`workspaces/${orgId}/reports`)
+      .where("date", "<", cutoffIso)
+      .orderBy("date")
+      .limit(200);
+    if (lastDoc) q = q.startAfter(lastDoc);
+    const snap = await q.get();
+    if (snap.empty) break;
+    const batch = db.batch();
+    let ops = 0;
+    const urls = [];
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data() || {};
+      const photos = Array.isArray(data.photos)
+        ? data.photos.filter((u) => typeof u === "string" && u.trim())
+        : [];
+      if (!photos.length) continue;
+      photos.forEach((u) => urls.push(u));
+      batch.update(docSnap.ref, { photos: [] });
+      ops += 1;
+      cleared += 1;
+    }
+    if (urls.length) storageDeleted += await deleteStorageByUrls(bucket, urls);
+    if (ops) await batch.commit();
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (snap.size < 200) break;
+  }
+  return { cleared, storageDeleted };
+}
+
+exports.purgeExpiredPhotos = onSchedule(
+  {
+    schedule: "every day 03:20",
+    timeZone: "Asia/Ho_Chi_Minh",
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async () => {
+    const cutoffIso = photoRetentionCutoffIso();
+    const cutoffMs = photoRetentionCutoffMs();
+    const bucket = adminStorage.bucket();
+    let storageDeleted = 0;
+    let attendanceCleared = 0;
+    let reportsCleared = 0;
+
+    for (const orgId of PHOTO_RETENTION_ORGS) {
+      const att = await scrubExpiredAttendancePhotos(bucket, orgId, cutoffIso);
+      attendanceCleared += att.cleared;
+      storageDeleted += att.storageDeleted;
+      const rpt = await scrubExpiredReportPhotos(bucket, orgId, cutoffIso);
+      reportsCleared += rpt.cleared;
+      storageDeleted += rpt.storageDeleted;
+      for (const kind of PHOTO_STORAGE_KINDS) {
+        storageDeleted += await deleteExpiredStoragePhotos(
+          bucket,
+          orgId,
+          kind,
+          cutoffIso,
+          cutoffMs
+        );
+      }
+    }
+
+    console.log("purgeExpiredPhotos", {
+      retentionDays: PHOTO_RETENTION_DAYS,
+      cutoffIso,
+      storageDeleted,
+      attendanceCleared,
+      reportsCleared,
+    });
+    return null;
+  }
+);

@@ -9,16 +9,39 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function userOrgIds() {
+      return userDoc().keys().hasAny(['orgIds']) && userDoc().orgIds is list
+        ? userDoc().orgIds
+        : (userDoc().keys().hasAny(['orgId']) ? [userDoc().orgId] : []);
+    }
+
     function sameOrg(orgId) {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && userDoc().orgId == orgId;
+        && orgId in userOrgIds();
+    }
+
+    function otherUserOrgIds(uid) {
+      let d = get(/databases/$(database)/documents/users/$(uid)).data;
+      return d.keys().hasAny(['orgIds']) && d.orgIds is list
+        ? d.orgIds
+        : (d.keys().hasAny(['orgId']) ? [d.orgId] : []);
     }
 
     function isDirector() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && userDoc().role == 'director';
+    }
+
+    function isDieuHanh() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().empGroup == 'Điều hành';
+    }
+
+    function canOperateWorkspace() {
+      return isDirector() || isDieuHanh();
     }
 
     function isBroadcastMsg(data) {
@@ -50,13 +73,13 @@ service cloud.firestore {
         && request.auth.uid in data.participants
         && data.toUid in data.participants
         && exists(/databases/$(database)/documents/users/$(data.toUid))
-        && get(/databases/$(database)/documents/users/$(data.toUid)).data.orgId == orgId;
+        && orgId in otherUserOrgIds(data.toUid);
     }
 
     function validBroadcastCreate(data) {
       return data.type == 'broadcast'
         && data.uid == request.auth.uid
-        && isDirector();
+        && canOperateWorkspace();
     }
 
     function validMsgReceiptUpdate() {
@@ -80,14 +103,19 @@ service cloud.firestore {
 
     function validSelfProfileUpdate() {
       let diff = request.resource.data.diff(resource.data).affectedKeys();
-      return diff.hasOnly(['displayName', 'age', 'updatedAt'])
+      return diff.hasOnly(['displayName', 'age', 'updatedAt', 'activeOrgId', 'orgId'])
         && (!diff.hasAny(['displayName'])
             || (request.resource.data.displayName is string
                 && request.resource.data.displayName.size() <= 100))
         && (!diff.hasAny(['age']) || validProfileAge(request.resource.data.age))
+        && (!diff.hasAny(['activeOrgId'])
+            || (request.resource.data.activeOrgId is string
+                && request.resource.data.activeOrgId in userOrgIds()))
+        && (!diff.hasAny(['orgId'])
+            || (request.resource.data.orgId is string
+                && request.resource.data.orgId in userOrgIds()))
         && request.resource.data.role == resource.data.role
         && request.resource.data.username == resource.data.username
-        && request.resource.data.orgId == resource.data.orgId
         && request.resource.data.empId == resource.data.empId;
     }
 
@@ -95,7 +123,8 @@ service cloud.firestore {
       return request.resource.data.role == resource.data.role
         && request.resource.data.username == resource.data.username
         && request.resource.data.orgId == resource.data.orgId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken', 'empId', 'updatedAt']);
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['fcmToken', 'empId', 'empGroup', 'updatedAt', 'activeOrgId', 'orgIds']);
     }
 
     match /users/{userId} {
@@ -107,9 +136,22 @@ service cloud.firestore {
         && (validSelfProfileUpdate() || validSelfFcmUpdate());
     }
 
+    match /company/{companyId}/employees/{empId} {
+      allow read: if signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow create, update, delete: if canOperateWorkspace();
+    }
+
+    // Khách hàng dùng chung cả 2 đội (Công trình tỉnh / HCM)
+    match /company/{companyId}/customers/{custId} {
+      allow read: if signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow create, update, delete: if canOperateWorkspace();
+    }
+
     match /workspaces/{orgId}/data/{docId} {
       allow read: if sameOrg(orgId);
-      allow write: if sameOrg(orgId) && isDirector();
+      allow write: if sameOrg(orgId) && canOperateWorkspace();
     }
 
     match /workspaces/{orgId}/messages/{msgId} {

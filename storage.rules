@@ -1,4 +1,7 @@
 rules_version = '2';
+// Attendance/report photos: 31-day rolling retention via Cloud Function
+// purgeExpiredPhotos + GCS lifecycle (storage.lifecycle.json). Path:
+// workspaces/{orgId}/{attendance|reports}/{userId}/{YYYY-MM-DD}/...
 service firebase.storage {
   match /b/{bucket}/o {
     match /workspaces/{orgId}/reports/{userId}/{allPaths=**} {
