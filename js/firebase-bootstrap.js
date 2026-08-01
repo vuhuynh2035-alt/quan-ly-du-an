@@ -154,6 +154,8 @@ async function resolveAccount(username, org, forSignup) {
       empId: role === "director" ? null : emp.id,
       username: u,
       empName: emp.name,
+      empGroup: emp.group || "",
+      canOperateRole: emp.group === "Điều hành",
     };
   }
   var err = new Error(
@@ -174,7 +176,9 @@ function authSame(a, b) {
     a.empId === b.empId &&
     a.username === b.username &&
     a.displayName === b.displayName &&
-    a.age === b.age
+    a.age === b.age &&
+    a.empGroup === b.empGroup &&
+    !!a.canOperateRole === !!b.canOperateRole
   );
 }
 
@@ -716,6 +720,13 @@ async function callSubmitReport(payload) {
     }
     throw new Error(msg);
   }
+}
+
+function canOperateRole() {
+  return !!(
+    window.__CV3_AUTH &&
+    (window.__CV3_AUTH.role === "director" || window.__CV3_AUTH.canOperateRole)
+  );
 }
 
 function isDirectorRole() {
@@ -1303,7 +1314,7 @@ function applyRemote(cv3, data) {
     cfg: data.cfg,
     patch: patch,
   };
-  if (!isDirectorRole()) {
+  if (!canOperateRole()) {
     cv3.applyRemote(payload);
     remotePatch = patch;
     if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
@@ -1322,13 +1333,15 @@ async function ensureUserDoc(user, org, username, preset) {
   var ref = doc(db, "users", user.uid);
   var snap = await getDoc(ref);
   var un = username || user.displayName || emailToUsername(user.email);
-  var role, empId, displayName, age;
+  var role, empId, displayName, age, empGroup, canOperate;
   if (!snap.exists()) {
     var acct = preset || (await resolveAccount(un, org));
     role = acct.role;
     empId = acct.empId;
     displayName = user.displayName || "";
     age = null;
+    empGroup = acct.empGroup || "";
+    canOperate = !!acct.canOperateRole;
     await setDoc(ref, {
       username: un,
       orgId: org,
@@ -1336,6 +1349,8 @@ async function ensureUserDoc(user, org, username, preset) {
       empId: empId || "",
       displayName: displayName,
       age: age,
+      empGroup: empGroup,
+      canOperateRole: canOperate,
       createdAt: serverTimestamp(),
     });
     orgId = org;
@@ -1345,6 +1360,8 @@ async function ensureUserDoc(user, org, username, preset) {
     empId = d.empId || null;
     displayName = d.displayName || user.displayName || "";
     age = d.age != null ? d.age : null;
+    empGroup = d.empGroup || "";
+    canOperate = !!d.canOperateRole;
     if (d.orgId) orgId = d.orgId;
     if (!d.username && un) {
       await setDoc(ref, { username: un }, { merge: true });
@@ -1352,9 +1369,15 @@ async function ensureUserDoc(user, org, username, preset) {
     if (role === "employee" && un && orgId) {
       try {
         var acct = await resolveAccount(un, orgId);
-        if (acct && acct.empId && acct.empId !== empId) {
-          empId = acct.empId;
-          await setDoc(ref, { empId: empId }, { merge: true });
+        if (acct) {
+          var rolePatch = {};
+          if (acct.empId && acct.empId !== empId) {
+            empId = acct.empId;
+            rolePatch.empId = empId;
+          }
+          empGroup = acct.empGroup || "";
+          canOperate = !!acct.canOperateRole;
+          if (Object.keys(rolePatch).length) await setDoc(ref, rolePatch, { merge: true });
         }
       } catch (e) {
         console.warn("Could not re-resolve account", e);
@@ -1368,11 +1391,13 @@ async function ensureUserDoc(user, org, username, preset) {
     uid: user.uid,
     displayName: displayName,
     age: age,
+    empGroup: empGroup || "",
+    canOperateRole: !!canOperate,
   });
   if (empId && appCv3 && appCv3.linkEmpAuth) {
     appCv3.linkEmpAuth(empId, user.uid);
   }
-  return { role: role, empId: empId, username: un, displayName: displayName, age: age };
+  return { role: role, empId: empId, username: un, displayName: displayName, age: age, empGroup: empGroup || "", canOperateRole: !!canOperate };
 }
 
 function scheduleWrite(cv3) {
@@ -1384,7 +1409,7 @@ function scheduleWrite(cv3) {
 
 async function flushWrite(cv3) {
   if (!auth || !auth.currentUser || writing) return;
-  if (!isDirectorRole()) return;
+  if (!canOperateRole()) return;
   var localPatch = cv3.getPatch();
   if (localPatch <= remotePatch) return;
   writing = true;
@@ -1517,6 +1542,24 @@ function bindForegroundMessaging(messaging, cv3) {
       }
       if (typeof cv3.showAppToast === "function") {
         cv3.showAppToast(title + (body ? " — " + body : ""), "ok");
+      }
+      return;
+    }
+    if (type === "schedule" && cv3) {
+      var titleS = d.title || "Lịch công việc đã điều chỉnh";
+      var bodyS = d.body || "";
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(titleS, {
+            body: bodyS,
+            icon: "/icon-192.png",
+            tag: "sched_" + (d.asgnId || "fg"),
+            silent: false,
+          });
+        } catch (e) {}
+      }
+      if (typeof cv3.showAppToast === "function") {
+        cv3.showAppToast(titleS + (bodyS ? " — " + bodyS : ""), "ok");
       }
     }
   });

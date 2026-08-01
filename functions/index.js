@@ -137,8 +137,27 @@ function findNotifyTargets(before, after) {
       a.status === "active" &&
       (a.handoffFrom || prev.handoffTo);
     if (isNew || reactivated || handoff) {
-      targets.push(a);
+      targets.push({ asgn: a, kind: "assignment" });
     }
+  });
+
+  return targets;
+}
+
+function findScheduleNotifyTargets(before, after) {
+  const beforeList = (before && before.asgn) || [];
+  const afterList = (after && after.asgn) || [];
+  const beforeMap = new Map(beforeList.map((a) => [a.id, a]));
+  const targets = [];
+
+  afterList.forEach((a) => {
+    if (!a || !a.schedNotify || !a.schedNotify.at) return;
+    const prev = beforeMap.get(a.id);
+    const prevAt = prev && prev.schedNotify && prev.schedNotify.at;
+    if (prevAt === a.schedNotify.at) return;
+    // New assignment with delay note is already covered by assignment push
+    if (!prev && a.status === "active") return;
+    targets.push({ asgn: a, kind: "schedule" });
   });
 
   return targets;
@@ -195,13 +214,22 @@ function buildArrivalReminderMessage(reminder) {
 }
 
 function buildMessage(emp, asgn, proj) {
-  const title = "📋 Bạn được giao việc mới";
+  const sched = asgn && asgn.schedNotify;
+  const isDelay = sched && sched.type === "delay";
+  const title = isDelay
+    ? "📅 Lịch việc mới đã điều chỉnh"
+    : "📋 Bạn được giao việc mới";
   const work =
     asgn.workContent ||
     (proj && proj.name) ||
     "Công việc mới";
   const where = proj ? proj.name : "";
-  const body = where ? `${work} · ${where}` : work;
+  let body = where ? `${work} · ${where}` : work;
+  if (isDelay && sched.msg) body = String(sched.msg).slice(0, 500);
+  else if (asgn.startDate || asgn.endDate) {
+    const range = [asgn.startDate, asgn.endDate].filter(Boolean).join(" → ");
+    if (range) body = `${body} (${range})`;
+  }
   return {
     data: {
       type: "assignment",
@@ -210,6 +238,33 @@ function buildMessage(emp, asgn, proj) {
       asgnId: asgn.id || "",
       empId: asgn.empId || "",
       projId: asgn.projId || "",
+    },
+    webpush: {
+      headers: { Urgency: "high", TTL: "86400" },
+      fcmOptions: { link: "/?tab=mywork" },
+    },
+  };
+}
+
+function buildScheduleMessage(emp, asgn, proj) {
+  const sched = (asgn && asgn.schedNotify) || {};
+  const title = "📅 Lịch công việc đã điều chỉnh";
+  const work =
+    (asgn && asgn.workContent) ||
+    (proj && proj.name) ||
+    "Công việc";
+  const body = String(sched.msg || `«${work}» đã được điều chỉnh lịch.`).slice(
+    0,
+    500
+  );
+  return {
+    data: {
+      type: "schedule",
+      title,
+      body,
+      asgnId: (asgn && asgn.id) || "",
+      empId: (asgn && asgn.empId) || "",
+      projId: (asgn && asgn.projId) || "",
     },
     webpush: {
       headers: { Urgency: "high", TTL: "86400" },
@@ -373,7 +428,9 @@ exports.notifyAssignment = onDocumentWritten(
     const after = event.data.after.exists ? event.data.after.data() : null;
     if (!after) return null;
 
-    const targets = findNotifyTargets(before, after);
+    const targets = findNotifyTargets(before, after).concat(
+      findScheduleNotifyTargets(before, after)
+    );
     if (!targets.length) return null;
 
     const empList = after.emp || [];
@@ -383,20 +440,25 @@ exports.notifyAssignment = onDocumentWritten(
     const messaging = getMessaging();
 
     const tokenEntries = [];
-    for (const asgn of targets) {
+    for (const target of targets) {
+      const asgn = target.asgn || target;
       const emp = empById.get(asgn.empId);
       const token = await empFcmToken(emp);
-      if (token) tokenEntries.push({ token, asgn, emp });
+      if (token) tokenEntries.push({ token, asgn, emp, kind: target.kind || "assignment" });
     }
 
     if (!tokenEntries.length) return null;
 
     const results = [];
     for (const entry of tokenEntries) {
-      const { token, asgn, emp } = entry;
+      const { token, asgn, emp, kind } = entry;
       const proj = projById.get(asgn.projId);
       try {
-        await messaging.send({ ...buildMessage(emp, asgn, proj), token });
+        const payload =
+          kind === "schedule"
+            ? buildScheduleMessage(emp, asgn, proj)
+            : buildMessage(emp, asgn, proj);
+        await messaging.send({ ...payload, token });
         results.push({ token, ok: true });
       } catch (err) {
         const code = err && err.code;
