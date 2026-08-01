@@ -3214,7 +3214,7 @@ function render(){
     mywork:function(){return S.selMyAsgn?vMyWorkDet(S.selMyAsgn):vMyWork()},
     chamcong:vChamCong,report:vReport,settings:vEmpSettings,
     dash:vDash,lich:vLich,chat:function(){return S.chatTo?vChatDet():vChatList()},emp:function(){return S.selEmp?vEmpDet(S.selEmp):vEmp()},cust:function(){return S.selCust?vCustDet(S.selCust):vCust()},
-    proj:function(){if(!S.giaoProj)return S.selProjDet?vProjDet(S.selProjDet):vProj();if(S.giaoMode==="team")return vTeamEdit(S.giaoProj);if(S.giaoMode==="req")return vGoiYReq(S.giaoProj);if(S.giaoMode==="goiy")return vGoiYResult(S.giaoProj);return vGiaoViec(S.giaoProj)},
+    proj:function(){if(!S.giaoProj)return S.selProjDet?vProjDet(S.selProjDet):vProj();if(S.giaoMode==="team")return vTeamEdit(S.giaoProj);return vGiaoViec(S.giaoProj)},
     disp:vDisp,
     prog:vProg,qual:vQual,hist:vHist,cfg:vCfg,map:vMap
   };
@@ -4076,7 +4076,7 @@ function vProjDet(id){
   var c=p.custId?cById(p.custId):null,pl=pLoc(p),tl=projTL(p);
   var acts=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused")});
   var pr=PRI[p.priority]||PRI.normal,ps=PST[p.status]||PST.open;
-  var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","projBack")+'<div class="row" style="gap:8px;align-items:stretch">'+(canGiao()?actBtn("btn-ghost","Chỉnh đội","teamOpen",p.id)+actBtn("btn-primary","Giao việc","giaoOpen",p.id)+actBtn("btn-accent","★ Gợi ý","goiYOpen",p.id):"")+actBtn("btn-ghost","Sửa","op",p.id)+'</div></div>';
+  var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","projBack")+'<div class="row" style="gap:8px;align-items:stretch">'+(canGiao()?actBtn("btn-ghost","Chỉnh đội","teamOpen",p.id)+actBtn("btn-primary","Giao việc","giaoOpen",p.id):"")+actBtn("btn-ghost","Sửa","op",p.id)+'</div></div>';
   h+='<div class="card card-p"><h2 style="font-size:22px;font-weight:700;margin-bottom:10px">'+esc(p.name)+'</h2>';
   h+='<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">'+bdg(p.group,groupColor(p.group))+bdg(p.type==="repair"?"Sửa chữa":"Dự án mới",p.type==="repair"?"#fbbf24":"#38bdf8")+bdg(ps[0],ps[1],ps[1]+"18")+bdg(pr[0],pr[1])+'</div>';
   h+='<div style="margin-bottom:16px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:5px">Tiến độ</div><div class="row" style="gap:10px;align-items:center"><div style="flex:1;height:9px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:'+tl.prog+'%;background:linear-gradient(90deg,#38bdf8,#60a5fa);border-radius:999px"></div></div><span style="font-family:monospace;font-weight:700;color:#38bdf8">'+tl.prog+'%</span></div></div>';
@@ -4202,7 +4202,7 @@ function vProj(){
 
 function vDisp(){
   var open=S.proj.filter(function(p){return p.status!=="done"});var proj=pById(S.selProj);
-  var h='<h2 style="font-size:20px;font-weight:700;margin-bottom:16px">Điều động &amp; Gợi ý</h2>';
+  var h='<h2 style="font-size:20px;font-weight:700;margin-bottom:16px">Điều động</h2>';
   h+=fld("Chọn dự án",'<select onchange="A.sp(this.value)"><option value="">— Chọn dự án —</option>'+open.map(function(p){return'<option value="'+p.id+'" '+(p.id===S.selProj?"selected":"")+'>'+esc(p.name)+" · "+esc(p.province)+" · "+esc(p.group)+'</option>'}).join("")+'</select>');
   if(!proj)return h+'<div class="card card-p" style="color:var(--c-muted)">Chọn dự án để xem gợi ý nhân sự phù hợp nhất.</div>';
   var pl=pLoc(proj);
@@ -5005,15 +5005,8 @@ window.A={
     S.selProjDet=id;S.giaoProj=id;S.giaoMode="";S.goiYReq={};initGiaoAssignState(id);
     render();
   },
-  goiYOpen:function(id){
-    if(!giaoGuard())return;
-    var p=pById(id);if(!p)return;
-    S.selProjDet=id;S.giaoProj=id;S.giaoMode="req";S.goiYReq=defaultGoiyReq(p);initGiaoAssignState(id);render();
-  },
-  goiYFromGiao:function(){
-    var p=pById(S.giaoProj);if(!p)return;
-    S.giaoMode="req";S.goiYReq=defaultGoiyReq(p);render();
-  },
+  goiYOpen:function(id){A.giaoOpen(id)},
+  goiYFromGiao:function(){S.giaoMode="";render()},
   goiYReqTog:function(i){
     var g=getGroups()[i];if(!g||isOversightGroup(g))return;
     S.goiYReq=S.goiYReq||defaultGoiyReq(pById(S.giaoProj));
