@@ -101,6 +101,8 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;bac
 .org-part-card{appearance:none;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);border-radius:12px;padding:10px 12px;cursor:pointer;text-align:left;color:inherit;transition:border-color .15s,background .15s,transform .15s;min-height:0}
 .org-part-card:hover{border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.08);transform:translateY(-1px)}
 .org-part-card.on{border-color:rgba(251,191,36,.65);background:linear-gradient(145deg,rgba(251,191,36,.22),rgba(251,191,36,.08));box-shadow:0 6px 18px rgba(0,0,0,.25)}
+.org-part-card:disabled,.org-part-card.is-switching{opacity:.72;cursor:wait;transform:none}
+.org-part-card.is-switching:not([aria-busy="true"]){cursor:pointer}
 .org-part-card-kicker{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--c-muted4);margin-bottom:2px}
 .org-part-card-title{font-size:15px;font-weight:800;color:#fde68a;margin:0}
 .org-part-card.on .org-part-card-title{color:#fff8c0}
@@ -845,7 +847,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-da
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="49">
+<meta name="app-build" content="51">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -3581,20 +3583,26 @@ function render(){
   document.getElementById("view").innerHTML=(views[S.tab]||function(){return""})();
   document.getElementById("modal-root").innerHTML=(S.modal||(S.attFlow?attModalHTML():"")||(S.arrivalFlow?arrivalModalHTML():""))||"";
   updateNavBtns();
-  initGantt();
+  if(S.tab==="emp"||S.tab==="proj"||S.tab==="dash"||S.tab==="prog"||S.tab==="mywork")initGantt();
   initCustPickOutside();
-  initEmpSwipe();
-  initChatScroll();
-  initReportPreview();
-  initAttPreview();
-  initArrivalPreview();
+  if(S.tab==="emp"||S.tab==="cust"||S.tab==="proj")initEmpSwipe();
+  if(S.tab==="chat")initChatScroll();
+  if(S.tab==="report")initReportPreview();
+  if(S.tab==="chamcong")initAttPreview();
+  if(S.arrivalFlow)initArrivalPreview();
   updateUndoBadge();
   if(S.tab==="settings"||S.tab==="cfg")refreshBioSettingsUI();
   if(S.tab==="lich"&&canUseLich())markRemindersSeen();
   else updateRemindBadge();
   }finally{
     render._busy=0;
-    if(render._queued)setTimeout(function(){render._queued=0;render();},0);
+    if(render._queued){
+      requestAnimationFrame(function(){
+        if(!render._queued)return;
+        render._queued=0;
+        render();
+      });
+    }
   }
 }
 function btn(cls,lbl,onclick){return'<button type="button" class="btn '+cls+'" onclick="'+onclick+'">'+lbl+'</button>'}
@@ -6711,6 +6719,7 @@ window.__CV3={
     S.modal=null;S.form=null;
     S.selProj="";S.selProjDet="";S.selEmp="";S.selCust="";S.giaoProj="";
     S.reports=[];S.attendance=[];S._reportsSig="";S._attSig="";
+    S._empMasterSig="";S._custMasterSig="";
     S.asgnOther=[];S.otherOrgId="";
     S.proj=loadWs("cv3_p",[]);
     S.asgn=loadWs("cv3_a",[]);
@@ -6756,13 +6765,23 @@ window.__CV3={
     if(data.patch!=null)ps2Ws("cv3_patch",data.patch);
   },
   applyEmpMaster:function(all,forOrg){
-    S.empAll=all||[];
-    S.emp=forOrg||[];
+    all=all||[];forOrg=forOrg||[];
+    var sig=all.length+"|"+forOrg.map(function(e){
+      return (e&&e.id||"")+":"+(e.authUid||"")+":"+(e.name||"")+":"+(e.group||"")+":"+(e.status||"")+":"+String(e.orgIds||[])+":"+(e.fcmToken||"");
+    }).join(";");
+    if(sig===S._empMasterSig){S.empAll=all;S.emp=forOrg;return;}
+    S._empMasterSig=sig;
+    S.empAll=all;
+    S.emp=forOrg;
     ps2("cv3_e",S.emp);
     render();
   },
   applyCustMaster:function(list){
-    S.cust=list||[];
+    list=list||[];
+    var sig=list.map(function(c){return (c&&c.id||"")+":"+(c.name||"")+":"+(c.shortName||"")+":"+(c.province||"")+":"+(c.lat||"")+":"+(c.lng||"");}).join(";");
+    if(sig===S._custMasterSig){S.cust=list;return;}
+    S._custMasterSig=sig;
+    S.cust=list;
     ps2("cv3_c",S.cust);
     if(S.tab==="cust"||S.selCust||S.tab==="proj"||S.tab==="disp")render();
     else if(S.modal)render();

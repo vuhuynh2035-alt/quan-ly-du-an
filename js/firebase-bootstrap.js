@@ -25,6 +25,7 @@ import {
   orderBy,
   limit,
   getDocs,
+  writeBatch,
 } from "firebase/firestore";
 import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -165,10 +166,21 @@ var liveHistorySince = "";
 var pushReady = false;
 var writeTimer = null;
 var writing = false;
+/** Promise của flushWrite đang chạy — để switchOrg chờ xong, không bỏ qua. */
+var writePromise = null;
+/** Có scheduleWrite trong lúc đang ghi → chạy lại 1 lần sau khi xong (không xếp hàng N vòng upsert). */
+var writeQueued = false;
+/** Trong lúc ghi master: cập nhật cache nhưng hoãn apply/render UI. */
+var pendingMasterUi = false;
 var remotePatch = 0;
 var booted = false;
 /** Sau đổi đội: snapshot workspace mới phải apply dù patch ≤ local. */
 var forceWorkspaceApply = false;
+/** Tăng mỗi lần đổi đội — bỏ snapshot/apply stale của đội cũ. */
+var orgSwitchGen = 0;
+var switchingToOrg = null;
+var pendingSwitchOrg = null;
+var MASTER_BATCH_LIMIT = 400;
 var appCv3 = null;
 var authEpoch = 0;
 var lastAuthUid = null;
@@ -1697,20 +1709,21 @@ function waitApp() {
   });
 }
 
-function workspaceRef() {
-  return doc(db, "workspaces", orgId, "data", "main");
+function workspaceRef(forOrg) {
+  return doc(db, "workspaces", normalizeOrgId(forOrg || orgId), "data", "main");
 }
 
-function payloadFromApp(cv3) {
+function payloadFromApp(cv3, forOrg) {
+  var active = normalizeOrgId(forOrg || orgId);
   var emps = (cv3.S.empAll && cv3.S.empAll.length ? cv3.S.empAll : cv3.S.emp) || [];
   var orgEmps = emps
     .filter(function (e) {
       if (!e || e.accountRole === "director") return false;
-      var ids = normalizeOrgIds(e.orgIds, orgId);
-      return ids.indexOf(orgId) >= 0;
+      var ids = normalizeOrgIds(e.orgIds, active);
+      return ids.indexOf(active) >= 0;
     })
     .map(function (e) {
-      return Object.assign({}, e, { orgIds: normalizeOrgIds(e.orgIds, orgId) });
+      return Object.assign({}, e, { orgIds: normalizeOrgIds(e.orgIds, active) });
     });
   return {
     emp: orgEmps,
@@ -1731,6 +1744,26 @@ function payloadFromApp(cv3) {
 
 function applyRemote(cv3, data) {
   var patch = data.patch || 0;
+  // Early-out trước khi merge emp (tránh CPU/GC trên mọi echo snapshot).
+  if (writing && !forceWorkspaceApply) {
+    if (patch > remotePatch) remotePatch = patch;
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    return false;
+  }
+  var forceApply = !booted || forceWorkspaceApply;
+  if (!forceApply && canOperateRole() && patch <= cv3.getPatch()) {
+    if (patch > remotePatch) remotePatch = patch;
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    maybeRefreshEmpGroup(cv3);
+    return false;
+  }
+  if (!forceApply && !canOperateRole() && !(patch > remotePatch)) {
+    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
+    maybeRefreshEmpGroup(cv3);
+    return false;
+  }
+  if (forceApply) forceWorkspaceApply = false;
+
   var remoteEmp = data.emp || [];
   // Merge workspace emp cache with company master (master wins on overlap).
   var mergedEmp = mergeEmpLists(remoteEmp, Object.keys(empMasterById).map(function (k) {
@@ -1753,31 +1786,12 @@ function applyRemote(cv3, data) {
   if (!custMasterReady && Array.isArray(data.cust) && data.cust.length) {
     payload.cust = data.cust;
   }
-  // Bỏ qua echo khi chính mình đang ghi — trừ khi vừa đổi đội (phải nạp workspace mới).
-  if (writing && !forceWorkspaceApply) {
-    if (patch > remotePatch) remotePatch = patch;
-    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
-    return false;
-  }
-  // Lần đầu / sau đổi đội: luôn nạp workspace đang xem (kể cả proj rỗng).
-  // Tránh giữ dự án đội cũ vì patch localStorage cao hơn workspace mới.
-  var forceApply = !booted || forceWorkspaceApply;
-  if (forceApply) forceWorkspaceApply = false;
   if (!canOperateRole()) {
-    var shouldApply = forceApply || patch > remotePatch;
-    if (shouldApply) {
-      cv3.applyRemote(payload);
-      remotePatch = patch;
-    }
+    cv3.applyRemote(payload);
+    remotePatch = patch;
     if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
     maybeRefreshEmpGroup(cv3);
-    return shouldApply;
-  }
-  if (!forceApply && patch <= cv3.getPatch()) {
-    if (patch > remotePatch) remotePatch = patch;
-    if (data.emp && cv3.mergeEmpAuthFromRemote) cv3.mergeEmpAuthFromRemote(data.emp);
-    maybeRefreshEmpGroup(cv3);
-    return false;
+    return true;
   }
   cv3.applyRemote(payload);
   remotePatch = patch;
@@ -1828,17 +1842,13 @@ function subscribeEmpMaster(cv3) {
         empMasterById[d.id] = Object.assign({ id: d.id }, d.data());
       });
       if (!cv3 || !cv3.S) return;
-      var merged = mergeEmpLists(cv3.S.emp || [], Object.keys(empMasterById).map(function (k) {
-        return empMasterById[k];
-      }), orgId);
-      if (cv3.applyEmpMaster) {
-        cv3.applyEmpMaster(merged.all, merged.forOrg);
-      } else {
-        cv3.S.empAll = merged.all;
-        cv3.S.emp = merged.forOrg;
-        if (cv3.render) cv3.render();
+      // Đang ghi master/workspace → đừng render liên tục (mỗi doc = 1 snapshot).
+      if (writing) {
+        pendingMasterUi = true;
+        return;
       }
-      refreshOrgSwitcherUI();
+      pushEmpMasterToApp(cv3);
+      // Không rebuild org switcher ở đây — innerHTML mới nuốt mất click đổi đội.
     },
     function (err) {
       console.warn("emp master:", err);
@@ -1861,17 +1871,81 @@ function subscribeCustMaster(cv3) {
       });
       custMasterReady = true;
       if (!cv3 || !cv3.S) return;
-      if (cv3.applyCustMaster) {
-        cv3.applyCustMaster(list);
-      } else {
-        cv3.S.cust = list;
-        if (cv3.render) cv3.render();
+      if (writing) {
+        pendingMasterUi = true;
+        return;
       }
+      pushCustMasterToApp(cv3, list);
     },
     function (err) {
       console.warn("cust master:", err);
     }
   );
+}
+
+function pushEmpMasterToApp(cv3) {
+  if (!cv3 || !cv3.S) return;
+  var merged = mergeEmpLists(
+    cv3.S.emp || [],
+    Object.keys(empMasterById).map(function (k) {
+      return empMasterById[k];
+    }),
+    orgId
+  );
+  if (cv3.applyEmpMaster) {
+    cv3.applyEmpMaster(merged.all, merged.forOrg);
+  } else {
+    cv3.S.empAll = merged.all;
+    cv3.S.emp = merged.forOrg;
+    if (cv3.render) cv3.render();
+  }
+}
+
+function pushCustMasterToApp(cv3, list) {
+  if (!cv3 || !cv3.S) return;
+  if (!list) {
+    list = Object.keys(custMasterById).map(function (k) {
+      return custMasterById[k];
+    });
+  }
+  if (cv3.applyCustMaster) {
+    cv3.applyCustMaster(list);
+  } else {
+    cv3.S.cust = list;
+    if (cv3.render) cv3.render();
+  }
+}
+
+function flushPendingMasterUi(cv3) {
+  if (!pendingMasterUi || !cv3) return;
+  pendingMasterUi = false;
+  pushEmpMasterToApp(cv3);
+  if (custMasterReady) pushCustMasterToApp(cv3);
+}
+
+function masterFieldSig(v) {
+  if (v == null) return "";
+  if (typeof v !== "object") return String(v);
+  // Firestore Timestamp
+  if (typeof v.toMillis === "function") return "t:" + v.toMillis();
+  if (typeof v.seconds === "number") return "t:" + v.seconds;
+  try {
+    return JSON.stringify(v);
+  } catch (e) {
+    return "?";
+  }
+}
+
+/** So khớp field local với master (bỏ updatedAt) — tránh upsert lại khi không đổi. */
+function masterDocUnchanged(local, remote) {
+  if (!local || !remote) return false;
+  var keys = Object.keys(local);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k === "updatedAt") continue;
+    if (masterFieldSig(local[k]) !== masterFieldSig(remote[k])) return false;
+  }
+  return true;
 }
 
 function subscribeOtherOrgAsgn(cv3) {
@@ -1894,6 +1968,7 @@ function subscribeOtherOrgAsgn(cv3) {
   unsubOtherSnap = onSnapshot(
     doc(db, "workspaces", other, "data", "main"),
     function (snap) {
+      if (otherOrgId(orgId) !== other) return;
       if (!snap.exists()) {
         if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other);
         return;
@@ -1919,7 +1994,7 @@ async function upsertEmpToMaster(emp) {
   await setDoc(doc(db, "company", "main", "employees", emp.id), payload, {
     merge: true,
   });
-  empMasterById[emp.id] = Object.assign({}, payload);
+  empMasterById[emp.id] = Object.assign({}, payload, { updatedAt: Date.now() });
 }
 
 async function upsertCustToMaster(cust) {
@@ -1931,7 +2006,7 @@ async function upsertCustToMaster(cust) {
   await setDoc(doc(db, "company", "main", "customers", cust.id), payload, {
     merge: true,
   });
-  custMasterById[cust.id] = Object.assign({}, payload);
+  custMasterById[cust.id] = Object.assign({}, payload, { updatedAt: Date.now() });
 }
 
 async function deleteCustFromMaster(custId) {
@@ -1940,18 +2015,77 @@ async function deleteCustFromMaster(custId) {
   delete custMasterById[custId];
 }
 
-async function syncCustMasterFromApp(cv3) {
-  if (!db || !cv3 || !cv3.S) return;
-  var list = cv3.S.cust || [];
-  for (var i = 0; i < list.length; i++) {
-    var c = list[i];
-    if (!c || !c.id) continue;
-    try {
-      await upsertCustToMaster(c);
-    } catch (err) {
-      console.warn("upsertCustToMaster:", err);
+async function commitMasterBatches(ops) {
+  if (!db || !ops || !ops.length) return;
+  for (var i = 0; i < ops.length; i += MASTER_BATCH_LIMIT) {
+    var slice = ops.slice(i, i + MASTER_BATCH_LIMIT);
+    var batch = writeBatch(db);
+    for (var j = 0; j < slice.length; j++) {
+      batch.set(slice[j].ref, slice[j].data, { merge: true });
+    }
+    await batch.commit();
+    for (var k = 0; k < slice.length; k++) {
+      var op = slice[k];
+      if (op.kind === "emp") {
+        empMasterById[op.id] = Object.assign({}, op.cache, {
+          updatedAt: Date.now(),
+        });
+      } else if (op.kind === "cust") {
+        custMasterById[op.id] = Object.assign({}, op.cache, {
+          updatedAt: Date.now(),
+        });
+      }
     }
   }
+}
+
+/** Chỉ ghi emp/cust master đã đổi — batch thay vì N+1 await tuần tự. */
+async function syncMastersFromApp(cv3) {
+  if (!db || !cv3 || !cv3.S) return;
+  var ops = [];
+  var pool =
+    (cv3.S.empAll && cv3.S.empAll.length ? cv3.S.empAll : cv3.S.emp) || [];
+  for (var i = 0; i < pool.length; i++) {
+    var e = pool[i];
+    if (!e || !e.id || e.accountRole === "director") continue;
+    var empPayload = Object.assign({}, e, {
+      orgIds: normalizeOrgIds(e.orgIds, orgId),
+    });
+    if (masterDocUnchanged(empPayload, empMasterById[e.id])) continue;
+    var empWrite = Object.assign({}, empPayload, {
+      updatedAt: serverTimestamp(),
+    });
+    ops.push({
+      kind: "emp",
+      id: e.id,
+      ref: doc(db, "company", "main", "employees", e.id),
+      data: empWrite,
+      cache: empPayload,
+    });
+  }
+  var list = cv3.S.cust || [];
+  for (var j = 0; j < list.length; j++) {
+    var c = list[j];
+    if (!c || !c.id) continue;
+    if (masterDocUnchanged(c, custMasterById[c.id])) continue;
+    var custPayload = Object.assign({}, c, { id: c.id });
+    var custWrite = Object.assign({}, custPayload, {
+      updatedAt: serverTimestamp(),
+    });
+    ops.push({
+      kind: "cust",
+      id: c.id,
+      ref: doc(db, "company", "main", "customers", c.id),
+      data: custWrite,
+      cache: custPayload,
+    });
+  }
+  if (!ops.length) return;
+  await commitMasterBatches(ops);
+}
+
+async function syncCustMasterFromApp(cv3) {
+  return syncMastersFromApp(cv3);
 }
 
 async function setEmpOrgMembership(empId, orgIds) {
@@ -2005,6 +2139,29 @@ async function restoreCompanyBackup(backup, targetOrg) {
   return res.data || {};
 }
 
+function onOrgPartCardClick(ev) {
+  var btn = ev.target && ev.target.closest ? ev.target.closest(".org-part-card") : null;
+  if (!btn) return;
+  var next = btn.getAttribute("data-org");
+  if (!next) return;
+  // Đang chuyển đúng đội này → bỏ qua; đội khác → queue trong switchOrg.
+  if (switchingToOrg) {
+    if (switchingToOrg === next) return;
+  } else if (next === orgId) {
+    return;
+  }
+  switchOrg(next).catch(function (err) {
+    alert(err.message || "Không chuyển được phần.");
+  });
+}
+
+function ensureOrgPartDelegation() {
+  var partGrid = $("org-part-grid");
+  if (!partGrid || partGrid._cv3OrgDelegated) return;
+  partGrid._cv3OrgDelegated = true;
+  partGrid.addEventListener("click", onOrgPartCardClick);
+}
+
 function refreshOrgSwitcherUI() {
   var wrap = $("hdr-org-switch");
   var partBar = $("org-part-bar");
@@ -2044,14 +2201,16 @@ function refreshOrgSwitcherUI() {
         })
       : normalizeOrgIds(a.orgIds, a.orgId || orgId);
 
-  setTitle(orgId);
+  // Optimistic: hiện đội đích ngay khi đang chuyển (chưa commit orgId).
+  var viewOrg = switchingToOrg || orgId;
+  setTitle(viewOrg);
 
   // Header: luôn hiện nhãn đội đang xem (gọn)
   if (wrap) {
     wrap.style.display = "inline-flex";
     wrap.innerHTML =
       '<span class="hdr-org-label" title="Phần đang xem">' +
-      escHtml(orgLabel(orgId)) +
+      escHtml(orgLabel(viewOrg)) +
       "</span>";
   }
 
@@ -2064,7 +2223,7 @@ function refreshOrgSwitcherUI() {
     }
     if (partSingle) {
       partSingle.classList.add("show");
-      partSingle.innerHTML = escHtml(orgLabel(orgId));
+      partSingle.innerHTML = escHtml(orgLabel(viewOrg));
     }
     return;
   }
@@ -2077,35 +2236,61 @@ function refreshOrgSwitcherUI() {
   if (!partBar || !partGrid) return;
   partBar.hidden = false;
   partBar.classList.add("show");
+  ensureOrgPartDelegation();
+  var sig =
+    allowed.slice().sort().join(",") +
+    "|" +
+    viewOrg +
+    "|" +
+    (switchingToOrg || "");
+  if (partGrid._cv3OrgSig === sig && partGrid.querySelector(".org-part-card")) {
+    // Cập nhật trạng thái chọn mà không thay innerHTML (tránh nuốt click)
+    partGrid.querySelectorAll(".org-part-card").forEach(function (btn) {
+      var id = btn.getAttribute("data-org");
+      var on = id === viewOrg;
+      var busy = switchingToOrg === id;
+      btn.classList.toggle("on", on);
+      btn.classList.toggle("is-switching", !!switchingToOrg);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      // Không dùng disabled — click không bubble → mất queue đổi đội.
+      if (busy) btn.setAttribute("aria-busy", "true");
+      else btn.removeAttribute("aria-busy");
+      var kicker = btn.querySelector(".org-part-card-kicker");
+      if (kicker) {
+        kicker.textContent = busy
+          ? "Đang chuyển…"
+          : on
+            ? "Đang xem"
+            : "Chuyển sang";
+      }
+    });
+    return;
+  }
   var h = "";
   orgs.forEach(function (o) {
     if (allowed.indexOf(o.id) < 0) return;
-    var on = o.id === orgId;
+    var on = o.id === viewOrg;
+    var busy = switchingToOrg === o.id;
     h +=
       '<button type="button" class="org-part-card' +
       (on ? " on" : "") +
+      (switchingToOrg ? " is-switching" : "") +
       '" data-org="' +
       escHtml(o.id) +
       '" aria-pressed="' +
       (on ? "true" : "false") +
-      '">' +
+      '"' +
+      (busy ? ' aria-busy="true"' : "") +
+      ">" +
       '<div class="org-part-card-kicker">' +
-      (on ? "Đang xem" : "Chuyển sang") +
+      (busy ? "Đang chuyển…" : on ? "Đang xem" : "Chuyển sang") +
       "</div>" +
       '<div class="org-part-card-title">' +
       escHtml(o.label) +
       "</div></button>";
   });
   partGrid.innerHTML = h;
-  partGrid.querySelectorAll(".org-part-card").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var next = btn.getAttribute("data-org");
-      if (!next || next === orgId) return;
-      switchOrg(next).catch(function (err) {
-        alert(err.message || "Không chuyển được phần.");
-      });
-    });
-  });
+  partGrid._cv3OrgSig = sig;
 }
 
 function escHtml(s) {
@@ -2126,77 +2311,124 @@ async function switchOrg(nextOrg) {
   if (allowed.indexOf(next) < 0) {
     throw new Error("Tài khoản không thuộc đội " + orgLabel(next) + ".");
   }
-  if (next === orgId) return;
-  if (writeTimer) {
-    clearTimeout(writeTimer);
-    writeTimer = null;
+  if (next === orgId && !switchingToOrg) return;
+  // Đang chuyển đội khác → xếp hàng mục tiêu mới nhất
+  if (switchingToOrg) {
+    pendingSwitchOrg = next;
+    return;
   }
-  if (appCv3 && canOperateRole()) {
-    try {
-      await flushWrite(appCv3);
-    } catch (e) {}
-  }
-  orgId = next;
-  remotePatch = 0;
-  booted = false;
-  forceWorkspaceApply = true;
-  try {
-    localStorage.setItem("cv3_active_org", orgId);
-  } catch (e) {}
-  if (auth && auth.currentUser && db) {
-    await setDoc(
-      doc(db, "users", auth.currentUser.uid),
-      { activeOrgId: orgId, orgId: orgId, updatedAt: serverTimestamp() },
-      { merge: true }
-    );
-  }
-  if (a.uid) {
-    publishAuth(
-      Object.assign({}, a, {
-        orgId: orgId,
-        orgIds: allowed,
-      })
-    );
-  }
-  if (appCv3 && typeof appCv3.prepareOrgWorkspace === "function") {
-    appCv3.prepareOrgWorkspace();
-  } else if (appCv3 && appCv3.S) {
-    appCv3.S.modal = null;
-    appCv3.S.form = null;
-    appCv3.S.selProj = "";
-    appCv3.S.selProjDet = "";
-    appCv3.S.selEmp = "";
-    appCv3.S.selCust = "";
-    appCv3.S.giaoProj = "";
-    appCv3.S.reports = [];
-    appCv3.S.attendance = [];
-    appCv3.S._reportsSig = "";
-    appCv3.S._attSig = "";
-    appCv3.S.proj = [];
-    appCv3.S.asgn = [];
-    appCv3.S.projLog = [];
-    appCv3.S.asgnOther = [];
-    appCv3.S.otherOrgId = "";
-    if (typeof appCv3.render === "function") appCv3.render();
-  }
-  if (appCv3) {
-    if (unsubSnap) unsubSnap();
-    unsubSnap = null;
-    unsubChatAll();
-    if (unsubReports) unsubReports();
-    unsubReports = null;
-    if (unsubAttendance) unsubAttendance();
-    unsubAttendance = null;
-    historyRangeCache = Object.create(null);
-    liveHistorySince = "";
-    subscribeWorkspace(appCv3);
-    subscribeOtherOrgAsgn(appCv3);
-    subscribeChat();
-    subscribeReports();
-    subscribeAttendance();
-  }
+  switchingToOrg = next;
+  pendingSwitchOrg = null;
+  writeQueued = false;
+  var prevOrg = orgId;
+  var gen = ++orgSwitchGen;
   refreshOrgSwitcherUI();
-  setSync("syncing", "Đang tải phần " + orgLabel(orgId) + "…");
+  setSync("syncing", "Đang chuyển sang " + orgLabel(next) + "…");
+
+  try {
+    if (writeTimer) {
+      clearTimeout(writeTimer);
+      writeTimer = null;
+    }
+    // Chờ ghi đang chạy (không bỏ qua — trước đây return sớm khi writing=true).
+    if (writePromise) {
+      try {
+        await writePromise;
+      } catch (e0) {}
+    } else if (appCv3 && canOperateRole() && booted && prevOrg !== next) {
+      // Chỉ flush workspace đội cũ — bỏ vòng upsert emp/cust (chậm, không cần khi đổi đội).
+      try {
+        await flushWrite(appCv3, {
+          workspaceOnly: true,
+          orgId: prevOrg,
+        });
+      } catch (e1) {}
+    }
+    if (gen !== orgSwitchGen) return;
+
+    // Hủy listener đội cũ TRƯỚC khi đổi orgId — tránh applyRemote stale.
+    if (appCv3) {
+      if (unsubSnap) unsubSnap();
+      unsubSnap = null;
+      unsubChatAll();
+      if (unsubReports) unsubReports();
+      unsubReports = null;
+      if (unsubAttendance) unsubAttendance();
+      unsubAttendance = null;
+      if (unsubOtherSnap) unsubOtherSnap();
+      unsubOtherSnap = null;
+    }
+
+    orgId = next;
+    remotePatch = 0;
+    booted = false;
+    forceWorkspaceApply = true;
+    try {
+      localStorage.setItem("cv3_active_org", orgId);
+    } catch (e) {}
+    if (a.uid) {
+      publishAuth(
+        Object.assign({}, a, {
+          orgId: orgId,
+          orgIds: allowed,
+        })
+      );
+    }
+    refreshOrgSwitcherUI();
+
+    if (auth && auth.currentUser && db) {
+      setDoc(
+        doc(db, "users", auth.currentUser.uid),
+        { activeOrgId: orgId, orgId: orgId, updatedAt: serverTimestamp() },
+        { merge: true }
+      ).catch(function (err) {
+        console.warn("activeOrgId:", err);
+      });
+    }
+
+    if (appCv3 && typeof appCv3.prepareOrgWorkspace === "function") {
+      appCv3.prepareOrgWorkspace();
+    } else if (appCv3 && appCv3.S) {
+      appCv3.S.modal = null;
+      appCv3.S.form = null;
+      appCv3.S.selProj = "";
+      appCv3.S.selProjDet = "";
+      appCv3.S.selEmp = "";
+      appCv3.S.selCust = "";
+      appCv3.S.giaoProj = "";
+      appCv3.S.reports = [];
+      appCv3.S.attendance = [];
+      appCv3.S._reportsSig = "";
+      appCv3.S._attSig = "";
+      appCv3.S.proj = [];
+      appCv3.S.asgn = [];
+      appCv3.S.projLog = [];
+      appCv3.S.asgnOther = [];
+      appCv3.S.otherOrgId = "";
+      if (typeof appCv3.render === "function") appCv3.render();
+    }
+    if (appCv3) {
+      historyRangeCache = Object.create(null);
+      liveHistorySince = "";
+      subscribeWorkspace(appCv3, { skipMasters: true });
+      subscribeChat();
+      subscribeReports();
+      subscribeAttendance();
+    }
+    setSync("syncing", "Đang tải phần " + orgLabel(orgId) + "…");
+  } finally {
+    if (gen === orgSwitchGen) {
+      switchingToOrg = null;
+      refreshOrgSwitcherUI();
+    }
+    if (pendingSwitchOrg && pendingSwitchOrg !== orgId) {
+      var queued = pendingSwitchOrg;
+      pendingSwitchOrg = null;
+      switchOrg(queued).catch(function (err) {
+        console.warn("queued switchOrg:", err);
+      });
+    }
+  }
 }
 
 function maybeRefreshEmpGroup(cv3) {
@@ -2355,16 +2587,38 @@ async function ensureUserDoc(user, org, username, preset) {
 function scheduleWrite(cv3) {
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(function () {
-    flushWrite(cv3);
+    writeTimer = null;
+    flushWrite(cv3).catch(function (err) {
+      console.warn("flushWrite:", err);
+    });
   }, 450);
 }
 
 async function flushWrite(cv3, opts) {
   opts = opts || {};
-  if (!auth || !auth.currentUser || writing) return;
+  if (!auth || !auth.currentUser) return;
   if (!canOperateRole()) return;
-  // Chưa boot xong workspace (sau đổi đội) thì không ghi — tránh đẩy dữ liệu đội cũ / rỗng nhầm
-  if (!booted && !opts.force) return;
+  var intendedOrg = normalizeOrgId(opts.orgId || orgId);
+  var intendedGen = orgSwitchGen;
+  // Đang ghi: switchOrg / force chờ xong; scheduleWrite thường chỉ xếp hàng 1 lần.
+  if (writing && writePromise) {
+    if (opts.orgId || opts.force || opts.onlyWait || opts.workspaceOnly) {
+      try {
+        await writePromise;
+      } catch (e0) {}
+      if (opts.onlyWait) return;
+    } else {
+      writeQueued = true;
+      return;
+    }
+  }
+  if (writing) return;
+  // Sau khi chờ: đã đổi đội → đừng ghi nhầm (trừ flush tường minh opts.orgId của đội cũ).
+  if (!opts.orgId && (orgId !== intendedOrg || orgSwitchGen !== intendedGen)) return;
+  if (switchingToOrg && !opts.orgId) return;
+  // Chưa boot xong workspace (sau đổi đội) thì không ghi — trừ force / workspaceOnly khi flush đội cũ.
+  if (!booted && !opts.force && !opts.workspaceOnly) return;
+  var writeOrg = opts.orgId ? normalizeOrgId(opts.orgId) : orgId;
   var localPatch = cv3.getPatch();
   // Patch local bị tụt (đổi đội / cache) so với cloud → bắt kịp rồi ghi, không bỏ qua thầm lặng
   if (localPatch <= remotePatch) {
@@ -2373,44 +2627,55 @@ async function flushWrite(cv3, opts) {
   }
   writing = true;
   setSync("syncing", "Đang lưu lên cloud…");
-  try {
-    var payload = payloadFromApp(cv3);
-    payload.patch = localPatch;
-    await setDoc(workspaceRef(), payload, { merge: false });
-    var pool = (cv3.S.empAll && cv3.S.empAll.length ? cv3.S.empAll : cv3.S.emp) || [];
-    for (var i = 0; i < pool.length; i++) {
-      var e = pool[i];
-      if (!e || !e.id || e.accountRole === "director") continue;
-      try {
-        await upsertEmpToMaster(e);
-      } catch (errEmp) {
-        console.warn("upsertEmpToMaster:", errEmp);
+  writePromise = (async function () {
+    try {
+      var payload = payloadFromApp(cv3, writeOrg);
+      payload.patch = localPatch;
+      await setDoc(workspaceRef(writeOrg), payload, { merge: false });
+      if (!opts.workspaceOnly) {
+        try {
+          await syncMastersFromApp(cv3);
+        } catch (errMaster) {
+          console.warn("syncMastersFromApp:", errMaster);
+        }
+      }
+      // Chỉ cập nhật remotePatch nếu vẫn đang xem đúng đội vừa ghi
+      if (writeOrg === orgId) remotePatch = localPatch;
+      setSync("online", "Đồng bộ · " + orgLabel(orgId));
+      if (!opts.workspaceOnly && countEmpNeedingAuth(cv3)) scheduleProvision(cv3);
+    } catch (err) {
+      console.error(err);
+      setSync("error", "Lỗi lưu cloud");
+    } finally {
+      writing = false;
+      writePromise = null;
+      flushPendingMasterUi(cv3);
+      if (writeQueued && !switchingToOrg) {
+        writeQueued = false;
+        scheduleWrite(cv3);
+      } else {
+        writeQueued = false;
       }
     }
-    try {
-      await syncCustMasterFromApp(cv3);
-    } catch (errCust) {
-      console.warn("syncCustMasterFromApp:", errCust);
-    }
-    remotePatch = localPatch;
-    setSync("online", "Đồng bộ · " + orgLabel(orgId));
-    if (countEmpNeedingAuth(cv3)) scheduleProvision(cv3);
-  } catch (err) {
-    console.error(err);
-    setSync("error", "Lỗi lưu cloud");
-  }
-  writing = false;
+  })();
+  await writePromise;
 }
 
-function subscribeWorkspace(cv3) {
+function subscribeWorkspace(cv3, opts) {
+  opts = opts || {};
   if (unsubSnap) unsubSnap();
-  subscribeEmpMaster(cv3);
-  subscribeCustMaster(cv3);
+  if (!opts.skipMasters) {
+    subscribeEmpMaster(cv3);
+    subscribeCustMaster(cv3);
+  }
   subscribeOtherOrgAsgn(cv3);
   setSync("syncing", "Đang tải dữ liệu…");
+  var subscribedOrg = orgId;
+  var subscribedGen = orgSwitchGen;
   unsubSnap = onSnapshot(
-    workspaceRef(),
+    workspaceRef(subscribedOrg),
     function (snap) {
+      if (orgId !== subscribedOrg || orgSwitchGen !== subscribedGen) return;
       if (!snap.exists()) {
         if (!booted) {
           booted = true;
@@ -2449,6 +2714,7 @@ function subscribeWorkspace(cv3) {
       }
     },
     function (err) {
+      if (orgId !== subscribedOrg || orgSwitchGen !== subscribedGen) return;
       console.error(err);
       setSync("error", "Mất kết nối cloud");
     }
