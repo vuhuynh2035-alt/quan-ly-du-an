@@ -495,10 +495,10 @@ textarea{min-height:60px;resize:vertical}
 .busy-green{background:#22c55e;height:100%}
 .busy-red{background:#ef4444;height:100%;box-shadow:inset 0 0 4px rgba(255,100,100,.4)}
 .busy-pct{font-family:monospace;font-size:11px;color:rgba(200,225,255,.75);flex-shrink:0;min-width:30px;text-align:right}
-.emp-cards-flow{display:grid;grid-template-columns:1fr;gap:12px;align-items:stretch;width:100%}
+.emp-cards-flow{display:grid;grid-template-columns:1fr;gap:12px;align-items:start;width:100%}
 @media(min-width:640px){.emp-cards-flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(min-width:960px){.emp-cards-flow{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.emp-cards-flow .emp-card{width:100%;min-width:0;max-width:100%;min-height:340px;height:auto;padding:12px 14px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;transition:transform .15s,border-color .15s,box-shadow .15s;cursor:default}
+.emp-cards-flow .emp-card{width:100%;min-width:0;max-width:100%;height:auto;padding:12px 14px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;transition:transform .15s,border-color .15s,box-shadow .15s;cursor:default}
 .emp-cards-flow .emp-card:hover{transform:translateY(-2px);border-color:rgba(74,174,255,.35)!important}
 .emp-card-grp{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;flex-shrink:0}
 .emp-card-grp .badge{font-size:10px;padding:2px 7px;flex-shrink:0}
@@ -519,8 +519,7 @@ textarea{min-height:60px;resize:vertical}
 .emp-card-namebar .spec-name{flex:1;min-width:0;font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .emp-card-jobcnt{flex-shrink:0;font-size:12px;font-weight:700;color:var(--c-text2);white-space:nowrap;line-height:1.2}
 .emp-card-loc{font-size:11px;line-height:1.35;color:var(--c-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;flex-shrink:0}
-.emp-card-tasks{flex:1;min-height:192px;overflow-x:hidden;overflow-y:hidden;display:flex;flex-direction:column;gap:5px;margin:2px 0;padding-right:2px;scrollbar-width:thin}
-.emp-card-tasks:has(.emp-card-task:nth-child(4)){overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:auto}
+.emp-card-tasks{flex:1 1 auto;min-height:0;max-height:min(52vh,360px);overflow-x:hidden;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin:2px 0;padding-right:2px;scrollbar-width:thin;-webkit-overflow-scrolling:touch;overscroll-behavior-y:auto}
 .emp-card-task{padding:6px 8px;border-radius:8px;flex-shrink:0;cursor:pointer;position:relative;
   background:var(--c-proj-cell);border:1px solid rgba(96,165,250,.22);
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
@@ -847,7 +846,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-da
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="51">
+<meta name="app-build" content="53">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -1125,6 +1124,8 @@ function canViewCust(){if(!window.__CV3_SKIP_SEED)return true;return isDir()||ha
 function canManageCust(){if(!window.__CV3_SKIP_SEED)return true;return isDir()}
 /** Dùng Lịch hẹn: giám đốc (chung) hoặc Điều hành/Giám sát (cá nhân theo tài khoản). */
 function canUseLich(){if(!window.__CV3_SKIP_SEED)return true;return isDir()||hasFullUI()}
+/** Tiến độ chung / Gantt dự án: Giám đốc, Điều hành (quản lý), Giám sát. Nhân viên chỉ xem công việc của mình. */
+function canViewSharedProg(){if(!window.__CV3_SKIP_SEED)return true;return hasFullUI()}
 /** Lịch hẹn cá nhân — độc lập theo uid, không đồng bộ workspace. */
 function usesPersonalReminders(){if(!window.__CV3_SKIP_SEED)return false;return hasFullUI()&&!isDir()}
 function isEmpPortal(){return isEmp()&&!hasFullUI()}
@@ -1557,6 +1558,7 @@ function ganttPx(d,tMin,weeks,wkPx){
   return Math.max(0,Math.min(weeks.length*wkPx,days/totalDays*weeks.length*wkPx));
 }
 function ganttHTML(){
+  if(!canViewSharedProg())return'<p style="color:rgba(255,255,255,.55);font-size:14px">Chỉ Giám sát / Điều hành / Giám đốc được xem biểu đồ Gantt dự án.</p>';
   var projs=S.proj.filter(function(p){return p.status!=="done"});
   if(!projs.length)return'<p style="color:rgba(255,255,255,.55);font-size:14px">Chưa có dự án đang thực hiện.</p>';
   var items=projs.map(function(p){var t=projTL(p);return {p:p,s:t.start,e:t.end,prog:t.prog,col:groupColor(p.group)}});
@@ -2732,8 +2734,8 @@ function goiyAutoPick(proj,reqs){var pick={},asd=S.asgn.filter(function(a){retur
 var DIR_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["disp","Điều động"],["prog","Tiến độ"],["qual","Đánh giá"],["hist","Lịch sử"],["help","Hướng dẫn"],["cfg","Cài đặt"]];
 /** Điều hành: giao việc, xem KPI thi công (không tự chấm công / không nằm trong bảng KPI). Có lịch sử thao tác. */
 var DH_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["disp","Điều động"],["prog","Tiến độ"],["qual","Đánh giá"],["hist","Lịch sử"],["help","Hướng dẫn"],["cfg","Cài đặt"]];
-/** Giám sát: xem KH + lịch hẹn cá nhân; chỉ xem thao tác khác. */
-var GS_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["disp","Điều động"],["prog","Tiến độ"],["qual","Đánh giá"],["help","Hướng dẫn"],["cfg","Cài đặt"]];
+/** Giám sát: xem KH + lịch hẹn cá nhân; chỉ xem thao tác khác. Không có Sơ đồ. */
+var GS_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["disp","Điều động"],["prog","Tiến độ"],["qual","Đánh giá"],["help","Hướng dẫn"],["cfg","Cài đặt"]];
 var EMP_TABS=[["mywork","Công việc"],["chamcong","Chấm công"],["report","Báo cáo tiến độ"],["chat","Thảo luận"],["help","Hướng dẫn"],["settings","Cài đặt"]];
 var EMP_TAB_IDS=["mywork","chamcong","report","chat","help","settings"];
 function getTabs(){
@@ -3564,6 +3566,8 @@ function render(){
   if(S.tab==="cust"&&!canViewCust())S.tab="dash";
   if(S.tab==="qual"&&!(canViewSensitive()||canOperate()||hasFullUI()))S.tab="dash";
   if(S.tab==="hist"&&!(canViewSensitive()||canOperate()))S.tab="dash";
+  if(S.tab==="map"&&!canOperate())S.tab=isEmpPortal()?"mywork":"dash";
+  if(S.tab==="prog"&&!canViewSharedProg())S.tab=isEmpPortal()?"mywork":"dash";
   if(hasFullUI()&&!canViewSensitive()&&S.tab==="chamcong")S.tab="dash";
   if(S.tab==="help"&&!(hasFullUI()||isEmpPortal()))S.tab="dash";
   var open=S.proj.filter(function(p){return p.status!=="done"}).length;
@@ -4368,7 +4372,8 @@ function vMyWorkDet(asgnId){
   h+='</div>';
   h+=renderReportsBlock(asgnId,5);
   h+='</div>';
-  if(p)h+='<div class="card card-p" style="margin-top:14px">'+renderProjTimeline(p.id)+'</div>';
+  /* Nhân viên không xem nhật ký / tiến độ chung của dự án — chỉ việc của mình. */
+  if(p&&canViewSharedProg())h+='<div class="card card-p" style="margin-top:14px">'+renderProjTimeline(p.id)+'</div>';
   return h+'</div>';
 }
 
@@ -4395,7 +4400,9 @@ function vDash(){
       else list.forEach(function(e){var p=busyPct(e);h+='<div class="spec-item"><div class="row" style="justify-content:space-between;align-items:center;gap:10px"><span class="spec-name" style="font-size:13px" onclick="A.empDet(\''+e.id+'\')">'+esc(e.name)+'</span><div class="row" style="gap:6px;align-items:center;flex-shrink:0">'+busyBar(p)+'<span class="busy-pct">'+p+'%</span></div></div></div>';});
       h+='</div>';}
     h+='</div>';});
-  h+='</div></div><div class="card card-p gantt-card" style="margin-top:14px"><h3 style="margin-bottom:12px;color:var(--c-accent)">Tiến độ dự án (Gantt)</h3>'+ganttHTML()+'</div>';return h}
+  h+='</div></div>';
+  if(canViewSharedProg())h+='<div class="card card-p gantt-card" style="margin-top:14px"><h3 style="margin-bottom:12px;color:var(--c-accent)">Tiến độ dự án (Gantt)</h3>'+ganttHTML()+'</div>';
+  return h}
 
 function vEmpDet(id){
   var e=eById(id);
@@ -4778,6 +4785,7 @@ function progCard(a){
 }
 
 function vProg(){
+  if(!canViewSharedProg())return'<div class="card card-p" style="color:var(--c-muted)">Chỉ Giám sát, Điều hành và Giám đốc được xem tiến độ công việc chung / Gantt dự án. Nhân viên xem công việc của mình ở tab Công việc.</div>';
   var active=S.asgn.filter(function(a){return a.status==="active"});
   var paused=S.asgn.filter(function(a){return a.status==="paused"});
   var h='<h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Tiến độ công việc</h2>';
@@ -5205,7 +5213,7 @@ window.A={
     showAppToast("Đã lưu VAPID key — có thể bật thông báo nền.","ok");
     render();
   },
-  go:function(t){if(isEmpPortal()&&!empTabOk(t))return;if(S.tab!==t){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab=t;S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;if(t==="chat")S.chatTo="";if(t==="hist")purgeExpiredTrash();render();if(t==="chat")setTimeout(initChatScroll,50);if(t==="report")setTimeout(initReportPreview,50);if(t==="chamcong")setTimeout(initAttPreview,50)},
+  go:function(t){if(isEmpPortal()&&!empTabOk(t))return;if(t==="map"&&!canOperate())return;if(t==="prog"&&!canViewSharedProg())return;if(S.tab!==t){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab=t;S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;if(t==="chat")S.chatTo="";if(t==="hist")purgeExpiredTrash();render();if(t==="chat")setTimeout(initChatScroll,50);if(t==="report")setTimeout(initReportPreview,50);if(t==="chamcong")setTimeout(initAttPreview,50)},
   histView:function(v){S.histView=v||"actions";if(v==="trash")purgeExpiredTrash();render()},
   undo:function(){openUndoList()},
   undoPick:function(id){doUndoById(id)},
@@ -5737,7 +5745,7 @@ window.A={
     applyProjLocToEmp(emp,proj,finalStart);
     S.conflictPending=null;sv();S.modal=null;S.form=null;render();
   },
-  projDet:function(id){if(S.tab!=="proj"){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab="proj";S.selProjDet=id;S.selEmp="";S.selCust="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S._roleProjId="";S.modal=null;S.form=null;var p=pById(id);if(p){S.teamToTruong=p.toTruongId||"";S.teamVatTu=p.vatTuId||"";S._roleProjId=id;}render()},
+  projDet:function(id){if(isEmpPortal())return;if(S.tab!=="proj"){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab="proj";S.selProjDet=id;S.selEmp="";S.selCust="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S._roleProjId="";S.modal=null;S.form=null;var p=pById(id);if(p){S.teamToTruong=p.toTruongId||"";S.teamVatTu=p.vatTuId||"";S._roleProjId=id;}render()},
   projBack:function(){S.selProjDet="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";if(S.hist&&S.hist.length)S.tab=S.hist.pop();render()},
   teamOpen:function(id){
     if(!staffGuard())return;
