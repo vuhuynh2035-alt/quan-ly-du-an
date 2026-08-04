@@ -9,6 +9,16 @@ npm install
 npm run dev
 ```
 
+## Quy ước version
+
+- Mỗi lần chạy `npm run dev`, `npm run build`, `npm run deploy`, `npm run deploy:hosting` sẽ tự tăng build version.
+- Build được lưu ở `public/app-version.json` và tự đồng bộ vào thẻ `<meta name="app-build">` trong `index.html`.
+- Có thể tăng version thủ công bằng:
+
+```powershell
+npm run version:bump
+```
+
 ## Đồng bộ giữa 2 máy (Git)
 
 **Máy 1 (đã push):** mỗi lần sửa code:

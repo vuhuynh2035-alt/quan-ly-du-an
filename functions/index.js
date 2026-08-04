@@ -70,6 +70,42 @@ function legacyUserEmail(org, username) {
   return `${normalizeOrgId(org)}.${u}@qlcv.local`;
 }
 
+/** Email Auth cũ trước khi đổi mã đội (vd. saree.phuong@qlcv.local). */
+function historicalLegacyEmails(username) {
+  const u = sanitizeUsername(username);
+  if (u.length < 2) return [];
+  return Object.keys(ORG_ALIAS).map((alias) => `${alias}.${u}@qlcv.local`);
+}
+
+function authEmailCandidates(username, org) {
+  const u = sanitizeUsername(username);
+  const emails = [userEmail(org, u)];
+  for (const o of ALL_ORGS) {
+    emails.push(legacyUserEmail(o, u));
+  }
+  for (const e of historicalLegacyEmails(u)) {
+    emails.push(e);
+  }
+  return [...new Set(emails)];
+}
+
+async function findAuthUserByUsername(username, org) {
+  const candidates = authEmailCandidates(username, org);
+  let lastErr = null;
+  for (const email of candidates) {
+    try {
+      return await adminAuth.getUserByEmail(email);
+    } catch (err) {
+      lastErr = err;
+      if (err.code !== "auth/user-not-found") throw err;
+    }
+  }
+  if (lastErr) throw lastErr;
+  const err = new Error("User not found");
+  err.code = "auth/user-not-found";
+  throw err;
+}
+
 function docExists(snap) {
   return !!(snap && snap.exists);
 }
@@ -226,35 +262,109 @@ function findScheduleNotifyTargets(before, after) {
   return targets;
 }
 
-async function directorFcmTokens(orgId) {
-  const snap = await db
-    .collection("users")
-    .where("role", "==", "director")
-    .get();
+/**
+ * Notification audience for a users/{uid} doc.
+ * director | operate (Điều hành) | supervise (Giám sát) | employee
+ */
+function notifyAudience(user) {
+  if (!user) return "employee";
+  if (user.role === "director") return "director";
+  const g = String(user.empGroup || "").trim();
+  if (g === "Điều hành") return "operate";
+  if (g === "Giám sát" || g === "Quản lý") return "supervise";
+  if (g === "Chỉ huy trưởng") return "chief";
+  return "employee";
+}
+
+/** Company-wide / oversight roles that may receive broadcast + company reminders. */
+function isOversightAudience(aud) {
+  return aud === "director" || aud === "operate" || aud === "supervise" || aud === "chief";
+}
+
+/**
+ * Roles that get fan-out copies of staff-targeted events (DM / giao việc),
+ * excluding the actor's own outbound (caller skips sender uid).
+ * GS: all. DH: all. GD: only all-company (not staff-targeted copies).
+ */
+function wantsStaffEventCopy(aud) {
+  return aud === "operate" || aud === "supervise";
+}
+
+async function orgUserTokenEntries(orgId) {
+  const snap = await db.collection("users").get();
+  const org = normalizeOrgId(orgId);
   const tokens = [];
   snap.docs.forEach((d) => {
-    const user = d.data();
-    if (!userOrgIds(user).includes(normalizeOrgId(orgId))) return;
+    const user = d.data() || {};
+    if (!userOrgIds(user).includes(org)) return;
     const t = user.fcmToken;
-    if (t) tokens.push({ token: t, uid: d.id });
+    if (!t) return;
+    tokens.push({
+      token: t,
+      uid: d.id,
+      audience: notifyAudience(user),
+      empId: user.empId || "",
+    });
   });
   return tokens;
+}
+
+async function directorFcmTokens(orgId) {
+  const all = await orgUserTokenEntries(orgId);
+  return all
+    .filter((e) => e.audience === "director")
+    .map((e) => ({ token: e.token, uid: e.uid }));
+}
+
+/** FCM tokens for company reminders / broadcasts: GD + Điều hành + Giám sát. */
+async function oversightFcmTokens(orgId) {
+  const all = await orgUserTokenEntries(orgId);
+  return all
+    .filter((e) => isOversightAudience(e.audience))
+    .map((e) => ({
+      token: e.token,
+      uid: e.uid,
+      audience: e.audience,
+    }));
+}
+
+/** Public hosting origin — absolute icons/links improve closed-app & iOS PWA delivery. */
+const WEB_APP_ORIGIN = "https://quan-ly-du-an-7d651.web.app";
+
+/**
+ * Web push display options + deep link. Top-level `notification` carries title/body;
+ * here we set icon/tag/link so closed-app tray notifications work reliably.
+ */
+function buildWebPush(linkPath, tag) {
+  const link = WEB_APP_ORIGIN + (linkPath || "/");
+  return {
+    headers: { Urgency: "high", TTL: "86400" },
+    notification: {
+      icon: WEB_APP_ORIGIN + "/icon-192.png",
+      badge: WEB_APP_ORIGIN + "/icon-192.png",
+      tag: String(tag || "cv3"),
+      renotify: true,
+      requireInteraction: true,
+    },
+    fcmOptions: { link },
+  };
 }
 
 function buildReminderMessage(reminder) {
   const text = String(reminder.text || "Đã đến giờ nhắc").slice(0, 500);
   const rid = String(reminder.id || "");
+  const title = "🔔 Nhắc hẹn";
+  const tag = "rem_" + (rid || "reminder");
   return {
+    notification: { title, body: text },
     data: {
       type: "reminder",
-      title: "🔔 Nhắc hẹn",
+      title,
       body: text,
       reminderId: rid,
+      badgeBump: "1",
     },
-    webpush: {
-      headers: { Urgency: "high", TTL: "86400" },
-      fcmOptions: { link: "/?tab=lich" },
-    },
+    webpush: buildWebPush("/?tab=lich", tag),
   };
 }
 
@@ -262,18 +372,21 @@ function buildArrivalReminderMessage(reminder) {
   const text = String(reminder.text || "Xác nhận đã đến vị trí mới").slice(0, 500);
   const rid = String(reminder.id || "");
   const asgnId = String(reminder.asgnId || "");
+  const empId = String(reminder.empId || "");
+  const title = "📍 Xác nhận đến vị trí";
+  const tag = "arr_" + (rid || asgnId || "arrival");
   return {
+    notification: { title, body: text },
     data: {
       type: "arrival",
-      title: "📍 Xác nhận đến vị trí",
+      title,
       body: text,
       reminderId: rid,
       asgnId,
+      empId,
+      badgeBump: "1",
     },
-    webpush: {
-      headers: { Urgency: "high", TTL: "86400" },
-      fcmOptions: { link: "/?tab=mywork" },
-    },
+    webpush: buildWebPush("/?tab=mywork", tag),
   };
 }
 
@@ -294,19 +407,21 @@ function buildMessage(emp, asgn, proj) {
     const range = [asgn.startDate, asgn.endDate].filter(Boolean).join(" → ");
     if (range) body = `${body} (${range})`;
   }
+  const asgnId = asgn.id || "";
+  const tag = "asgn_" + (asgnId || "new");
   return {
+    notification: { title, body },
     data: {
       type: "assignment",
       title,
       body,
-      asgnId: asgn.id || "",
+      asgnId,
       empId: asgn.empId || "",
       projId: asgn.projId || "",
+      assignedByUid: String(asgn.assignedByUid || ""),
+      badgeBump: "1",
     },
-    webpush: {
-      headers: { Urgency: "high", TTL: "86400" },
-      fcmOptions: { link: "/?tab=mywork" },
-    },
+    webpush: buildWebPush("/?tab=mywork", tag),
   };
 }
 
@@ -321,19 +436,21 @@ function buildScheduleMessage(emp, asgn, proj) {
     0,
     500
   );
+  const asgnId = (asgn && asgn.id) || "";
+  const tag = "sched_" + (asgnId || "adj");
   return {
+    notification: { title, body },
     data: {
       type: "schedule",
       title,
       body,
-      asgnId: (asgn && asgn.id) || "",
+      asgnId,
       empId: (asgn && asgn.empId) || "",
       projId: (asgn && asgn.projId) || "",
+      assignedByUid: String((asgn && asgn.assignedByUid) || ""),
+      badgeBump: "1",
     },
-    webpush: {
-      headers: { Urgency: "high", TTL: "86400" },
-      fcmOptions: { link: "/?tab=mywork" },
-    },
+    webpush: buildWebPush("/?tab=mywork", tag),
   };
 }
 
@@ -341,20 +458,23 @@ function buildChatMessage(msg) {
   const isBc = msg.type === "broadcast";
   const from = String(msg.fromName || msg.from || "Tin nhắn").slice(0, 80);
   const body = String(msg.text || "").slice(0, 180);
+  const title = isBc ? "📢 Thông báo đội" : "💬 " + from;
+  const msgId = String(msg.id || "");
+  const tag = "chat_" + (msgId || "new");
   return {
+    notification: { title, body },
     data: {
       type: "chat",
-      title: isBc ? "📢 Thông báo đội" : "💬 " + from,
+      title,
       body,
-      msgId: String(msg.id || ""),
+      msgId,
       threadId: String(msg.threadId || (isBc ? "broadcast" : "")),
       fromUid: String(msg.uid || ""),
+      toUid: String(msg.toUid || ""),
       chatType: isBc ? "broadcast" : "dm",
+      badgeBump: "1",
     },
-    webpush: {
-      headers: { Urgency: "high", TTL: "86400" },
-      fcmOptions: { link: "/?tab=chat" },
-    },
+    webpush: buildWebPush("/?tab=chat", tag),
   };
 }
 
@@ -411,8 +531,9 @@ exports.dispatchReminders = onSchedule(
 
       const empList = data.emp || [];
       const empById = new Map(empList.map((e) => [e.id, e]));
+      // arrival → chỉ FCM cho đúng NV; không gửi Giám đốc (kể cả thiếu empId)
       const arrivalDue = due.filter((r) => r && r.kind === "arrival" && r.empId);
-      const generalDue = due.filter((r) => !r || r.kind !== "arrival" || !r.empId);
+      const generalDue = due.filter((r) => r && r.kind !== "arrival");
 
       for (const reminder of arrivalDue) {
         const emp = empById.get(reminder.empId);
@@ -439,7 +560,8 @@ exports.dispatchReminders = onSchedule(
       if (generalDue.length) {
         let tokenEntries = tokenCache.get(orgId);
         if (!tokenEntries) {
-          tokenEntries = await directorFcmTokens(orgId);
+          // Company reminders → GD + Điều hành + Giám sát (không gửi NV thường)
+          tokenEntries = await oversightFcmTokens(orgId);
           tokenCache.set(orgId, tokenEntries);
         }
 
@@ -503,37 +625,81 @@ exports.notifyAssignment = onDocumentWritten(
     const projById = new Map(projList.map((p) => [p.id, p]));
     const messaging = getMessaging();
 
-    const tokenEntries = [];
+    const oversight = await orgUserTokenEntries(orgId);
+    const results = [];
+
     for (const target of targets) {
       const asgn = target.asgn || target;
+      const kind = target.kind || "assignment";
       const emp = empById.get(asgn.empId);
-      const token = await empFcmToken(emp);
-      if (token) tokenEntries.push({ token, asgn, emp, kind: target.kind || "assignment" });
-    }
-
-    if (!tokenEntries.length) return null;
-
-    const results = [];
-    for (const entry of tokenEntries) {
-      const { token, asgn, emp, kind } = entry;
       const proj = projById.get(asgn.projId);
-      try {
-        const payload =
-          kind === "schedule"
-            ? buildScheduleMessage(emp, asgn, proj)
-            : buildMessage(emp, asgn, proj);
-        await messaging.send({ ...payload, token });
-        results.push({ token, ok: true });
-      } catch (err) {
-        const code = err && err.code;
-        if (
-          code === "messaging/registration-token-not-registered" ||
-          code === "messaging/invalid-registration-token"
-        ) {
-          await clearUserFcmToken(token, orgId);
+      const payload =
+        kind === "schedule"
+          ? buildScheduleMessage(emp, asgn, proj)
+          : buildMessage(emp, asgn, proj);
+      const assignerUid = String(asgn.assignedByUid || "");
+      const sentTokens = new Set();
+
+      // 1) Always notify the assigned employee
+      const empToken = await empFcmToken(emp);
+      if (empToken) {
+        try {
+          await messaging.send({ ...payload, token: empToken });
+          sentTokens.add(empToken);
+          results.push({ token: empToken, ok: true, to: "assignee" });
+        } catch (err) {
+          const code = err && err.code;
+          if (
+            code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token"
+          ) {
+            await clearUserFcmToken(empToken, orgId);
+          }
+          console.warn("assignment push:", asgn.empId, String(err));
+          results.push({ token: empToken, ok: false, err: String(err) });
         }
-        console.warn("assignment push:", asgn.empId, String(err));
-        results.push({ token, ok: false, err: String(err) });
+      }
+
+      // 2) Fan-out copies:
+      //    - Giám sát: all company giao việc
+      //    - Điều hành: all except own outbound to staff
+      //    - Giám đốc: not staff-targeted copies (only all-company style elsewhere)
+      for (const entry of oversight) {
+        if (!entry.token || sentTokens.has(entry.token)) continue;
+        if (!wantsStaffEventCopy(entry.audience)) continue;
+        // Điều hành: hide own outbound-to-staff; Giám sát keeps all
+        if (
+          assignerUid &&
+          entry.uid === assignerUid &&
+          entry.audience === "operate"
+        ) {
+          continue;
+        }
+        try {
+          await messaging.send({ ...payload, token: entry.token });
+          sentTokens.add(entry.token);
+          results.push({
+            token: entry.token,
+            ok: true,
+            to: entry.audience,
+            uid: entry.uid,
+          });
+        } catch (err) {
+          const code = err && err.code;
+          if (
+            code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token"
+          ) {
+            await clearUserFcmToken(entry.token, orgId);
+          }
+          console.warn("assignment fanout:", entry.uid, String(err));
+          results.push({
+            token: entry.token,
+            ok: false,
+            err: String(err),
+            uid: entry.uid,
+          });
+        }
       }
     }
     return results;
@@ -548,45 +714,17 @@ exports.notifyChatMessage = onDocumentCreated(
     if (!snap || !snap.exists) return null;
     const msg = Object.assign({ id: snap.id }, snap.data());
     const messaging = getMessaging();
-
-    const tokenEntries = [];
-    if (msg.type === "broadcast") {
-      const usersSnap = await db
-        .collection("users")
-        .get();
-      usersSnap.docs.forEach((d) => {
-        if (d.id === msg.uid) return;
-        const user = d.data();
-        if (!userOrgIds(user).includes(normalizeOrgId(orgId))) return;
-        const t = user.fcmToken;
-        if (t) tokenEntries.push({ token: t });
-      });
-    } else if (msg.type === "dm" && msg.toUid) {
-      let token = null;
-      const toSnap = await db.doc(`users/${msg.toUid}`).get();
-      if (docExists(toSnap) && toSnap.data().fcmToken) {
-        token = toSnap.data().fcmToken;
-      }
-      if (!token) {
-        const wsSnap = await db.doc(`workspaces/${orgId}/data/main`).get();
-        if (docExists(wsSnap)) {
-          const empList = wsSnap.data().emp || [];
-          const emp = empList.find((e) => e && e.authUid === msg.toUid);
-          token = await empFcmToken(emp);
-        }
-      }
-      if (token) tokenEntries.push({ token });
-    }
-
-    if (!tokenEntries.length) return null;
-
+    const senderUid = String(msg.uid || "");
     const payload = buildChatMessage(msg);
+    const sentTokens = new Set();
     const results = [];
-    for (const entry of tokenEntries) {
-      const { token } = entry;
+
+    async function sendTo(token, meta) {
+      if (!token || sentTokens.has(token)) return;
       try {
         await messaging.send({ ...payload, token });
-        results.push({ token, ok: true });
+        sentTokens.add(token);
+        results.push({ token, ok: true, ...(meta || {}) });
       } catch (err) {
         const code = err && err.code;
         if (
@@ -596,10 +734,47 @@ exports.notifyChatMessage = onDocumentCreated(
           await clearUserFcmToken(token, orgId);
         }
         console.warn("chat push:", orgId, msg.id, String(err));
-        results.push({ token, ok: false, err: String(err) });
+        results.push({ token, ok: false, err: String(err), ...(meta || {}) });
       }
     }
-    return results;
+
+    if (msg.type === "broadcast") {
+      // All-company: GD + Điều hành + Giám sát. Skip sender. Never NV thường.
+      const entries = await oversightFcmTokens(orgId);
+      for (const entry of entries) {
+        if (entry.uid === senderUid) continue;
+        await sendTo(entry.token, { uid: entry.uid, to: entry.audience });
+      }
+    } else if (msg.type === "dm" && msg.toUid) {
+      const toUid = String(msg.toUid);
+      // 1) Direct recipient (employee or anyone)
+      let recipientToken = null;
+      const toSnap = await db.doc(`users/${toUid}`).get();
+      if (docExists(toSnap) && toSnap.data().fcmToken) {
+        recipientToken = toSnap.data().fcmToken;
+      }
+      if (!recipientToken) {
+        const wsSnap = await db.doc(`workspaces/${orgId}/data/main`).get();
+        if (docExists(wsSnap)) {
+          const empList = wsSnap.data().emp || [];
+          const emp = empList.find((e) => e && e.authUid === toUid);
+          recipientToken = await empFcmToken(emp);
+        }
+      }
+      await sendTo(recipientToken, { uid: toUid, to: "recipient" });
+
+      // 2) Fan-out: Điều hành + Giám sát see company DMs (not own outbound)
+      //    Giám đốc: only all-company → no DM copies unless they are recipient
+      const entries = await orgUserTokenEntries(orgId);
+      for (const entry of entries) {
+        if (entry.uid === senderUid) continue;
+        if (entry.uid === toUid) continue;
+        if (!wantsStaffEventCopy(entry.audience)) continue;
+        await sendTo(entry.token, { uid: entry.uid, to: entry.audience });
+      }
+    }
+
+    return results.length ? results : null;
   }
 );
 
@@ -791,16 +966,27 @@ async function doProvisionEmployee({
   let updated = false;
 
   try {
-    const existing = await adminAuth.getUserByEmail(email);
+    const existing = await findAuthUserByUsername(username, activeOrgId);
     uid = existing.uid;
+    const patch = { displayName: empName };
     if (rawPassword && rawPassword.length >= 6) {
-      await adminAuth.updateUser(uid, {
-        password: rawPassword,
-        displayName: empName,
-      });
-      updated = true;
-    } else if (empName) {
-      await adminAuth.updateUser(uid, { displayName: empName });
+      patch.password = rawPassword;
+    }
+    // Chuẩn hoá email cũ (saree.x / cong-trinh.x) → x@qlcv.local khi còn trống
+    if (existing.email && existing.email !== email) {
+      try {
+        await adminAuth.updateUser(uid, { ...patch, email });
+        updated = true;
+      } catch (emailErr) {
+        if (emailErr.code === "auth/email-already-exists") {
+          await adminAuth.updateUser(uid, patch);
+          updated = true;
+        } else {
+          throw emailErr;
+        }
+      }
+    } else {
+      await adminAuth.updateUser(uid, patch);
       updated = true;
     }
   } catch (err) {
@@ -1236,8 +1422,8 @@ exports.bootstrapCongTrinhMigrate = onRequest({ cors: true }, async (_req, res) 
 });
 
 /**
- * One-shot: reset ALL Firebase Auth passwords to "123456".
- * Disabled after successful run on 2026-08-01 (secret was qlcv-reset-all-20260801).
+ * One-shot: reset ALL @qlcv.local Auth passwords to "123456".
+ * Disabled after successful run on 2026-08-03 (secret was qlcv-reset-all-20260803).
  */
 exports.bootstrapResetAllPasswords = onRequest({ cors: true }, async (_req, res) => {
   res.status(410).json({
@@ -1257,7 +1443,8 @@ exports.submitDailyReport = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
   }
   const user = userSnap.data();
-  if (user.role !== "employee" || !user.empId) {
+  const empId = String(user.empId || "");
+  if (user.role !== "employee" || !empId) {
     throw new HttpsError(
       "permission-denied",
       "Chỉ nhân viên mới được báo cáo tiến độ."
@@ -1265,8 +1452,9 @@ exports.submitDailyReport = onCall(async (request) => {
   }
 
   const data = request.data || {};
-  const orgId = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
-  if (!userOrgIds(user).includes(orgId)) {
+  const preferredOrg = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
+  const allowedOrgs = userOrgIds(user);
+  if (!allowedOrgs.includes(preferredOrg)) {
     throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
   }
   const asgnId = String(data.asgnId || "");
@@ -1287,15 +1475,35 @@ exports.submitDailyReport = onCall(async (request) => {
     );
   }
 
-  const wsRef = db.doc(`workspaces/${orgId}/data/main`);
-  const wsSnap = await wsRef.get();
-  if (!docExists(wsSnap)) {
-    throw new HttpsError("not-found", "Chưa có dữ liệu dự án.");
+  // Tìm phân công theo org gửi lên trước, rồi mới quét các đội còn lại của NV
+  // (tránh lỗi khi activeOrg khác đội chứa công việc).
+  const searchOrgs = [preferredOrg].concat(
+    allowedOrgs.filter((o) => o !== preferredOrg)
+  );
+  let orgId = preferredOrg;
+  let wsRef = null;
+  let ws = null;
+  let asgnList = [];
+  let asgn = null;
+  for (const oid of searchOrgs) {
+    const ref = db.doc(`workspaces/${oid}/data/main`);
+    const snap = await ref.get();
+    if (!docExists(snap)) continue;
+    const dataWs = snap.data() || {};
+    const list = Array.isArray(dataWs.asgn) ? dataWs.asgn : [];
+    const found = list.find(
+      (a) => a && String(a.id) === asgnId && String(a.empId || "") === empId
+    );
+    if (found) {
+      orgId = oid;
+      wsRef = ref;
+      ws = dataWs;
+      asgnList = list;
+      asgn = found;
+      break;
+    }
   }
-  const ws = wsSnap.data();
-  const asgnList = ws.asgn || [];
-  const asgn = asgnList.find((a) => a.id === asgnId && a.empId === user.empId);
-  if (!asgn) {
+  if (!asgn || !wsRef) {
     throw new HttpsError("permission-denied", "Bạn không được báo cáo công việc này.");
   }
   if (asgn.status !== "active" && asgn.status !== "paused") {
@@ -1303,12 +1511,19 @@ exports.submitDailyReport = onCall(async (request) => {
   }
 
   const reportId = `${asgnId}_${date}`;
-  const emp = (ws.emp || []).find((e) => e.id === user.empId);
-  const fromName = emp ? emp.name : user.username || "";
+  let fromName = user.displayName || user.username || "";
+  const empLocal = (ws.emp || []).find((e) => e && String(e.id) === empId);
+  if (empLocal && empLocal.name) fromName = empLocal.name;
+  else {
+    const companyEmp = await db.doc(`company/main/employees/${empId}`).get();
+    if (docExists(companyEmp) && companyEmp.data().name) {
+      fromName = companyEmp.data().name;
+    }
+  }
 
   await db.doc(`workspaces/${orgId}/reports/${reportId}`).set({
     asgnId,
-    empId: user.empId,
+    empId,
     projId: asgn.projId || "",
     date,
     prog,
@@ -1325,7 +1540,7 @@ exports.submitDailyReport = onCall(async (request) => {
     projId: asgn.projId || "",
     at: new Date().toISOString(),
     type: "report",
-    empId: user.empId,
+    empId,
     empName: fromName,
     by: fromName,
     text: `${fromName} báo cáo tiến độ ${prog}% (${date})`,
@@ -1339,11 +1554,17 @@ exports.submitDailyReport = onCall(async (request) => {
   };
   const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
 
-  const newAsgn = asgnList.map((a) => (a.id === asgnId ? { ...a, prog } : a));
+  const newAsgn = asgnList.map((a) =>
+    a && String(a.id) === asgnId ? { ...a, prog } : a
+  );
   const patch = (ws.patch || 0) + 1;
-  await wsRef.set({ ...ws, asgn: newAsgn, projLog, patch, updatedAt: new Date() });
+  // Chỉ merge các field cần thiết — tránh ghi đè cả workspace (dễ lỗi / mất dữ liệu).
+  await wsRef.set(
+    { asgn: newAsgn, projLog, patch, updatedAt: new Date() },
+    { merge: true }
+  );
 
-  return { ok: true, reportId, prog };
+  return { ok: true, reportId, prog, orgId };
 });
 
 function vnMinsOfDay(d) {

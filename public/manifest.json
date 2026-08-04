@@ -1,12 +1,15 @@
 {
   "name": "Quản lý dự án SAREE",
   "short_name": "SAREE QLDA",
-  "description": "Điều phối đội thi công — đồng bộ realtime",
+  "description": "Điều phối đội thi công — đồng bộ realtime · thông báo đẩy",
   "start_url": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#060d1f",
   "theme_color": "#1a6fd4",
   "orientation": "any",
+  "lang": "vi",
+  "dir": "ltr",
   "icons": [
     {
       "src": "/icon-192.png",

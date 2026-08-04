@@ -16,8 +16,11 @@ fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 const htmlFile = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html");
 if (fs.existsSync(htmlFile)) {
   let html = fs.readFileSync(htmlFile, "utf8");
-  html = html.replace(/<meta name="app-build" content="\d+">/, `<meta name="app-build" content="${data.build}">`);
+  html = html.replace(
+    /<meta name="app-build" content="\d+">/,
+    `<meta name="app-build" content="${data.build}">`
+  );
   fs.writeFileSync(htmlFile, html);
 }
 
-console.log("App build:", data.build);
+console.log(`App build bumped -> v1.${String(data.build).padStart(3, "0")} (${data.at})`);

@@ -6,6 +6,7 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   updateProfile,
+  updatePassword,
   EmailAuthProvider,
   reauthenticateWithCredential,
 } from "firebase/auth";
@@ -45,6 +46,8 @@ import {
 var cfg = window.FIREBASE_CONFIG;
 var vapidKey = window.FIREBASE_VAPID_KEY;
 var ORG_ALIAS = { saree: "cong-trinh" };
+var CHIEF_GROUP = "Chỉ huy trưởng";
+var CHIEF_ORG_ID = "cong-trinh";
 var DEFAULT_ORGS = [
   { id: "cong-trinh", label: "Công trình tỉnh" },
   { id: "nha-may", label: "Công trình HCM" },
@@ -113,6 +116,17 @@ function normalizeOrgIds(list, fallback) {
   return out;
 }
 
+function forceChiefOrgIds(empGroup, orgIds, fallback) {
+  if (String(empGroup || "").trim() === CHIEF_GROUP) return [CHIEF_ORG_ID];
+  return normalizeOrgIds(orgIds, fallback);
+}
+
+function authAllowedOrgIds(a, fallback) {
+  var authInfo = a || {};
+  if (authInfo.role === "director") return allOrgIds();
+  return forceChiefOrgIds(authInfo.empGroup, authInfo.orgIds, authInfo.orgId || fallback || orgId);
+}
+
 var defaultOrg = normalizeOrgId(window.FIREBASE_DEFAULT_ORG || "cong-trinh");
 
 function isLocalDevHost() {
@@ -149,6 +163,7 @@ var unsubChatDm = null;
 var chatMsgsBc = [];
 var chatMsgsDm = [];
 var unsubReports = null;
+var unsubReportsOther = null;
 var unsubAttendance = null;
 /** Live subscribe window for reports/attendance (days). Override: window.CV3_HISTORY_DAYS */
 var HISTORY_WINDOW_DAYS = Math.max(
@@ -437,11 +452,52 @@ function bindPushDeliveredListener() {
     var payload = ev && ev.data;
     if (!payload || payload.type !== "cv3-push-delivered") return;
     var d = payload.data || {};
-    if (d.type === "chat" && d.msgId) markMessageDelivered(d.msgId);
+    var me = (auth && auth.currentUser && auth.currentUser.uid) || "";
+    var myEmp =
+      (window.__CV3_AUTH && window.__CV3_AUTH.empId) ||
+      (appCv3 && appCv3.S && appCv3.S.auth && appCv3.S.auth.empId) ||
+      "";
+    if (d.type === "chat" && d.msgId) {
+      if (
+        d.chatType !== "broadcast" &&
+        (!d.toUid || d.toUid === me)
+      ) {
+        markMessageDelivered(d.msgId);
+      }
+    }
     if (d.type === "assignment" && d.asgnId) {
-      ackAssignment(d.asgnId, "delivered");
+      if (myEmp && (!d.empId || String(d.empId) === String(myEmp))) {
+        ackAssignment(d.asgnId, "delivered");
+      }
+    }
+    if (appCv3 && typeof appCv3.syncAppBadge === "function") {
+      try {
+        appCv3.syncAppBadge();
+      } catch (e) {}
     }
   });
+}
+
+/** Sync unread count to installed PWA icon badge (and SW cache for closed-app bumps). */
+function syncServiceWorkerBadge(count) {
+  var n = Math.max(0, count | 0);
+  if (navigator.setAppBadge) {
+    if (n > 0) navigator.setAppBadge(n).catch(function () {});
+    else if (navigator.clearAppBadge) navigator.clearAppBadge().catch(function () {});
+  }
+  if (!("serviceWorker" in navigator)) return;
+  var post = function (reg) {
+    if (!reg || !reg.active) return;
+    try {
+      reg.active.postMessage({ type: "cv3-set-badge", count: n });
+    } catch (e) {}
+  };
+  navigator.serviceWorker.getRegistration("/").then(post).catch(function () {});
+  if (navigator.serviceWorker.controller) {
+    try {
+      navigator.serviceWorker.controller.postMessage({ type: "cv3-set-badge", count: n });
+    } catch (e2) {}
+  }
 }
 
 function unsubChatAll() {
@@ -467,6 +523,8 @@ function stopSubscriptions() {
   unsubChatAll();
   if (unsubReports) unsubReports();
   unsubReports = null;
+  if (unsubReportsOther) unsubReportsOther();
+  unsubReportsOther = null;
   if (unsubAttendance) unsubAttendance();
   unsubAttendance = null;
   historyRangeCache = Object.create(null);
@@ -589,12 +647,53 @@ async function sendChatMessage(text, options) {
   }
 }
 
-function reportsColRef() {
-  return collection(doc(db, "workspaces", orgId), "reports");
+function reportsColRef(forOrg) {
+  return collection(
+    doc(db, "workspaces", normalizeOrgId(forOrg || orgId)),
+    "reports"
+  );
 }
 
 function attendanceColRef() {
   return collection(doc(db, "workspaces", orgId), "attendance");
+}
+
+function canSubscribeOtherOrgReports() {
+  var a = window.__CV3_AUTH || {};
+  var other = otherOrgId(orgId);
+  if (a.role === "director") return true;
+  var allowed = authAllowedOrgIds(a, orgId);
+  return allowed.indexOf(other) >= 0 && allowed.length >= 2;
+}
+
+function buildReportsQuery(forOrg) {
+  var empId = window.__CV3_AUTH && window.__CV3_AUTH.empId;
+  var isDir = window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
+  var since = historySinceIso();
+  var col = reportsColRef(forOrg);
+  if (isDir) {
+    return query(
+      col,
+      where("date", ">=", since),
+      orderBy("date", "desc"),
+      limit(REPORTS_LIVE_LIMIT)
+    );
+  }
+  if (!empId) return null;
+  return query(
+    col,
+    where("empId", "==", empId),
+    where("date", ">=", since),
+    orderBy("date", "desc"),
+    limit(REPORTS_LIVE_LIMIT)
+  );
+}
+
+function tagReportsOrg(rows, reportOrg) {
+  var oid = normalizeOrgId(reportOrg || orgId);
+  return (rows || []).map(function (r) {
+    return Object.assign({}, r, { _orgId: oid });
+  });
 }
 
 function todayIso() {
@@ -625,25 +724,45 @@ function mapSnapDocs(snap) {
 function subscribeReports() {
   if (unsubReports) unsubReports();
   unsubReports = null;
+  if (unsubReportsOther) unsubReportsOther();
+  unsubReportsOther = null;
   if (!db) return;
   var since = historySinceIso();
   liveHistorySince = since;
-  var q = query(
-    reportsColRef(),
-    where("date", ">=", since),
-    orderBy("date", "desc"),
-    limit(REPORTS_LIVE_LIMIT)
-  );
+  var active = orgId;
+  var q = buildReportsQuery(active);
+  if (!q) return;
   unsubReports = onSnapshot(
     q,
     function (snap) {
-      var reports = mapSnapDocs(snap);
+      if (orgId !== active) return;
+      var reports = tagReportsOrg(mapSnapDocs(snap), active);
       if (appCv3 && appCv3.setReports) {
-        appCv3.setReports(reports, { liveSince: since });
+        appCv3.setReports(reports, { liveSince: since, orgId: active });
       }
     },
     function (err) {
       console.error("reports:", err);
+    }
+  );
+
+  // NV thuộc 2 đội / giám đốc: đồng bộ báo cáo đội kia (cùng cửa sổ lịch sử).
+  if (!canSubscribeOtherOrgReports()) return;
+  var other = otherOrgId(active);
+  var qOther = buildReportsQuery(other);
+  if (!qOther) return;
+  unsubReportsOther = onSnapshot(
+    qOther,
+    function (snap) {
+      if (orgId !== active) return;
+      if (otherOrgId(orgId) !== other) return;
+      var reports = tagReportsOrg(mapSnapDocs(snap), other);
+      if (appCv3 && appCv3.setReports) {
+        appCv3.setReports(reports, { liveSince: since, orgId: other });
+      }
+    },
+    function (err) {
+      console.error("reports other:", err);
     }
   );
 }
@@ -716,13 +835,15 @@ async function fetchAttendanceRange(from, to, empId) {
   return mapSnapDocs(snap);
 }
 
-async function fetchReportsRange(from, to, empId) {
+async function fetchReportsRange(from, to, empId, forOrg) {
   if (!db || !from || !to) return [];
+  var targetOrg = normalizeOrgId(forOrg || orgId);
+  var col = reportsColRef(targetOrg);
   var snap;
   if (empId) {
     snap = await getDocs(
       query(
-        reportsColRef(),
+        col,
         where("empId", "==", empId),
         where("date", ">=", from),
         where("date", "<=", to),
@@ -733,7 +854,7 @@ async function fetchReportsRange(from, to, empId) {
   } else {
     snap = await getDocs(
       query(
-        reportsColRef(),
+        col,
         where("date", ">=", from),
         where("date", "<=", to),
         orderBy("date", "desc"),
@@ -741,7 +862,7 @@ async function fetchReportsRange(from, to, empId) {
       )
     );
   }
-  return mapSnapDocs(snap);
+  return tagReportsOrg(mapSnapDocs(snap), targetOrg);
 }
 
 /**
@@ -872,12 +993,13 @@ function compressImageForUpload(file, maxEdge, quality) {
   });
 }
 
-async function uploadReportPhotos(files, asgnId, date) {
+async function uploadReportPhotos(files, asgnId, date, reportOrgId) {
   if (!files || !files.length) return [];
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
   }
   var storage = getStorage(app);
+  var targetOrg = normalizeOrgId(reportOrgId || orgId);
   var urls = [];
   var max = Math.min(files.length, 8);
   for (var i = 0; i < max; i++) {
@@ -895,7 +1017,7 @@ async function uploadReportPhotos(files, asgnId, date) {
     var day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? String(date) : todayIso();
     var path =
       "workspaces/" +
-      orgId +
+      targetOrg +
       "/reports/" +
       auth.currentUser.uid +
       "/" +
@@ -907,8 +1029,13 @@ async function uploadReportPhotos(files, asgnId, date) {
       "." +
       ext;
     var storageRef = ref(storage, path);
-    await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-    urls.push(await getDownloadURL(storageRef));
+    try {
+      await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
+      urls.push(await getDownloadURL(storageRef));
+    } catch (err) {
+      var why = (err && err.message) || String(err);
+      throw new Error("Không tải được ảnh lên máy chủ. " + why);
+    }
   }
   return urls;
 }
@@ -1071,10 +1198,16 @@ async function submitDailyReport(payload) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var date = payload.date || todayIso();
-  var photoUrls = await uploadReportPhotos(payload.photos || [], payload.asgnId, date);
-  var fn = httpsCallable(getFunctions(app), "submitDailyReport");
+  var reportOrg = normalizeOrgId(payload.orgId || orgId);
+  var photoUrls = await uploadReportPhotos(
+    payload.photos || [],
+    payload.asgnId,
+    date,
+    reportOrg
+  );
+  var fn = httpsCallable(getFunctions(app, "us-central1"), "submitDailyReport");
   var res = await fn({
-    orgId: orgId,
+    orgId: reportOrg,
     asgnId: payload.asgnId,
     date: date,
     prog: payload.prog,
@@ -1089,10 +1222,12 @@ async function callSubmitReport(payload) {
     return await submitDailyReport(payload);
   } catch (err) {
     var msg = (err && err.message) || String(err);
-    if (err && err.code === "functions/invalid-argument" && err.details) {
-      msg = String(err.details);
-    }
-    throw new Error(msg);
+    if (err && err.details) msg = String(err.details);
+    // Firebase thường gắn prefix "PERMISSION_DENIED: " — bỏ để hiện câu tiếng Việt.
+    msg = String(msg)
+      .replace(/^Firebase:\s*/i, "")
+      .replace(/^[A-Z_]+:\s*/, "");
+    throw new Error(msg || "Không gửi được báo cáo.");
   }
 }
 
@@ -1120,7 +1255,12 @@ function canOperateRole() {
 function hasFullUIRole() {
   if (isDirectorRole()) return true;
   var g = authEmpGroup();
-  return g === "Điều hành" || g === "Giám sát";
+  return g === "Điều hành" || g === "Giám sát" || g === CHIEF_GROUP;
+}
+
+/** Chỉ giám đốc / Điều hành / Giám sát mới thấy tách 2 phần Công trình. */
+function showsOrgPartition() {
+  return hasFullUIRole();
 }
 
 async function syncEmpGroupToUserDoc(empId, group) {
@@ -1301,29 +1441,61 @@ async function changeMyPassword(payload) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "changeMyPassword");
-  try {
-    var res = await fn(payload || {});
-    var data = res.data || {};
-    var newPw = payload && payload.newPassword;
-    if (newPw && isBiometricEnabled()) {
-      try {
-        var un =
-          (window.__CV3_AUTH && window.__CV3_AUTH.username) ||
-          emailToUsername((auth.currentUser && auth.currentUser.email) || "");
-        await updateBiometricPassword(newPw, un);
-      } catch (bioErr) {
-        console.warn("updateBiometricPassword:", bioErr);
-      }
-    }
-    return data;
-  } catch (err) {
-    var msg =
-      (err && err.message) ||
-      (err && err.details) ||
-      "Không đổi được mật khẩu.";
-    throw new Error(msg);
+  var user = auth.currentUser;
+  var currentPassword = String((payload && payload.currentPassword) || "");
+  var newPassword = String((payload && payload.newPassword) || "");
+  if (!currentPassword) {
+    throw new Error("Nhập mật khẩu hiện tại để xác nhận.");
   }
+  if (newPassword.length < 6) {
+    throw new Error("Mật khẩu mới cần ít nhất 6 ký tự.");
+  }
+  if (currentPassword === newPassword) {
+    throw new Error("Mật khẩu mới phải khác mật khẩu hiện tại.");
+  }
+  if (!user.email) {
+    throw new Error("Tài khoản không có email đăng nhập.");
+  }
+  try {
+    var cred = EmailAuthProvider.credential(user.email, currentPassword);
+    await reauthenticateWithCredential(user, cred);
+  } catch (err) {
+    var c = (err && err.code) || "";
+    if (
+      c === "auth/wrong-password" ||
+      c === "auth/invalid-credential" ||
+      c === "auth/invalid-login-credentials"
+    ) {
+      throw new Error("Mật khẩu hiện tại không đúng.");
+    }
+    if (c === "auth/too-many-requests") {
+      throw new Error("Thử quá nhiều lần — đợi vài phút rồi thử lại.");
+    }
+    throw new Error((err && err.message) || "Không xác minh được mật khẩu hiện tại.");
+  }
+  try {
+    await updatePassword(user, newPassword);
+  } catch (err2) {
+    var c2 = (err2 && err2.code) || "";
+    if (c2 === "auth/weak-password") {
+      throw new Error("Mật khẩu mới quá yếu — cần ít nhất 6 ký tự.");
+    }
+    if (c2 === "auth/requires-recent-login") {
+      throw new Error("Phiên đăng nhập đã cũ — nhập lại mật khẩu hiện tại rồi thử lại.");
+    }
+    throw new Error((err2 && err2.message) || "Không đổi được mật khẩu.");
+  }
+  if (isBiometricEnabled()) {
+    try {
+      var un =
+        (window.__CV3_AUTH && window.__CV3_AUTH.username) ||
+        emailToUsername((auth.currentUser && auth.currentUser.email) || "");
+      await updateBiometricPassword(newPassword, un);
+    } catch (bioErr) {
+      console.warn("updateBiometricPassword:", bioErr);
+    }
+  }
+  return { ok: true };
 }
 
 async function updateMyProfile(payload) {
@@ -1421,6 +1593,36 @@ function legacyUserToEmail(username, org) {
   return o + "." + u + "@qlcv.local";
 }
 
+/** Email Auth cũ (trước khi đổi mã đội), vd. saree.phuong@qlcv.local */
+function historicalLegacyEmails(username) {
+  var u = sanitizeUsername(username);
+  if (u.length < 2) return [];
+  var out = [];
+  Object.keys(ORG_ALIAS).forEach(function (alias) {
+    out.push(alias + "." + u + "@qlcv.local");
+  });
+  return out;
+}
+
+function authEmailCandidates(username, orgHint) {
+  var u = sanitizeUsername(username);
+  var emails = [];
+  function push(e) {
+    if (e && emails.indexOf(e) < 0) emails.push(e);
+  }
+  push(userToEmail(u));
+  var rawHint = orgHint || "";
+  try {
+    if (!rawHint) rawHint = localStorage.getItem("cv3_active_org") || "";
+  } catch (e) {}
+  if (rawHint) push(legacyUserToEmail(u, rawHint));
+  allOrgIds().forEach(function (o) {
+    push(legacyUserToEmail(u, o));
+  });
+  historicalLegacyEmails(u).forEach(push);
+  return emails;
+}
+
 function emailToUsername(email) {
   if (!email) return "";
   var raw = String(email);
@@ -1442,20 +1644,11 @@ function resolveAuthIdentity(input, orgHint) {
     };
   }
   var username = sanitizeUsername(raw);
-  var legacyEmails = [];
-  var rawHint = orgHint || "";
-  try {
-    if (!rawHint) rawHint = localStorage.getItem("cv3_active_org") || "";
-  } catch (e) {}
-  if (rawHint) {
-    legacyEmails.push(legacyUserToEmail(username, normalizeOrgId(rawHint)));
-  }
-  allOrgIds().forEach(function (o) {
-    var e = legacyUserToEmail(username, o);
-    if (legacyEmails.indexOf(e) < 0) legacyEmails.push(e);
-  });
+  var candidates = authEmailCandidates(username, orgHint);
+  var primary = candidates[0] || userToEmail(username);
+  var legacyEmails = candidates.slice(1);
   return {
-    email: userToEmail(username),
+    email: primary,
     legacyEmail: legacyEmails[0] || null,
     legacyEmails: legacyEmails,
     username: username,
@@ -1619,8 +1812,8 @@ function updateAuthHints(mode) {
     if (loginBtn) loginBtn.style.display = "inline-flex";
   } else {
     if (passHint) {
-      passHint.textContent = "";
-      passHint.style.display = "none";
+      passHint.textContent = "Mật khẩu mặc định lần đầu: 123456";
+      passHint.style.display = "block";
     }
     if (loginBtn) loginBtn.style.display = "none";
   }
@@ -1954,15 +2147,12 @@ function subscribeOtherOrgAsgn(cv3) {
   if (!db || !auth || !auth.currentUser) return;
   var other = otherOrgId(orgId);
   var a = window.__CV3_AUTH || {};
-  var allowed =
-    a.role === "director"
-      ? allOrgIds()
-      : normalizeOrgIds(a.orgIds, a.orgId || orgId);
+  var allowed = authAllowedOrgIds(a, orgId);
   // Chỉ mirror đội kia khi tài khoản được gán cả 2 đội (hoặc giám đốc)
   var canSeeOther = allowed.indexOf(other) >= 0 && allowed.length >= 2;
   if (a.role === "director") canSeeOther = true;
   if (!canSeeOther) {
-    if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other);
+    if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other, []);
     return;
   }
   unsubOtherSnap = onSnapshot(
@@ -1970,14 +2160,17 @@ function subscribeOtherOrgAsgn(cv3) {
     function (snap) {
       if (otherOrgId(orgId) !== other) return;
       if (!snap.exists()) {
-        if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other);
+        if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other, []);
         return;
       }
       var data = snap.data() || {};
       var asgn = (data.asgn || []).map(function (x) {
         return Object.assign({}, x, { _orgId: other });
       });
-      if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn(asgn, other);
+      var proj = (data.proj || []).map(function (x) {
+        return Object.assign({}, x, { _orgId: other });
+      });
+      if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn(asgn, other, proj);
     },
     function (err) {
       console.warn("other org asgn:", err);
@@ -2171,13 +2364,7 @@ function refreshOrgSwitcherUI() {
   var a = window.__CV3_AUTH;
   var orgs = listOrgs();
 
-  function setTitle(org) {
-    if (!titleEl) return;
-    var label = orgLabel(org || orgId);
-    titleEl.textContent = "QUẢN LÝ DỰ ÁN · " + label.toUpperCase();
-  }
-
-  if (!a || !a.uid) {
+  function hideOrgChrome() {
     if (wrap) {
       wrap.style.display = "none";
       wrap.innerHTML = "";
@@ -2186,20 +2373,35 @@ function refreshOrgSwitcherUI() {
       partBar.hidden = true;
       partBar.classList.remove("show");
     }
+    if (partGrid) {
+      partGrid.innerHTML = "";
+      partGrid._cv3OrgSig = "";
+    }
     if (partSingle) {
       partSingle.classList.remove("show");
       partSingle.innerHTML = "";
     }
     if (titleEl) titleEl.textContent = "QUẢN LÝ DỰ ÁN";
+  }
+
+  function setTitle(org) {
+    if (!titleEl) return;
+    var label = orgLabel(org || orgId);
+    titleEl.textContent = "QUẢN LÝ DỰ ÁN · " + label.toUpperCase();
+  }
+
+  if (!a || !a.uid) {
+    hideOrgChrome();
     return;
   }
 
-  var allowed =
-    a.role === "director"
-      ? orgs.map(function (o) {
-          return o.id;
-        })
-      : normalizeOrgIds(a.orgIds, a.orgId || orgId);
+  // Nhân viên thường: không hiện chú thích / chuyển phần Công trình tỉnh · HCM
+  if (!showsOrgPartition()) {
+    hideOrgChrome();
+    return;
+  }
+
+  var allowed = authAllowedOrgIds(a, orgId);
 
   // Optimistic: hiện đội đích ngay khi đang chuyển (chưa commit orgId).
   var viewOrg = switchingToOrg || orgId;
@@ -2304,10 +2506,7 @@ function escHtml(s) {
 async function switchOrg(nextOrg) {
   var next = normalizeOrgId(nextOrg);
   var a = window.__CV3_AUTH || {};
-  var allowed =
-    a.role === "director"
-      ? allOrgIds()
-      : normalizeOrgIds(a.orgIds, a.orgId || orgId);
+  var allowed = authAllowedOrgIds(a, orgId);
   if (allowed.indexOf(next) < 0) {
     throw new Error("Tài khoản không thuộc đội " + orgLabel(next) + ".");
   }
@@ -2353,6 +2552,8 @@ async function switchOrg(nextOrg) {
       unsubChatAll();
       if (unsubReports) unsubReports();
       unsubReports = null;
+      if (unsubReportsOther) unsubReportsOther();
+      unsubReportsOther = null;
       if (unsubAttendance) unsubAttendance();
       unsubAttendance = null;
       if (unsubOtherSnap) unsubOtherSnap();
@@ -2404,6 +2605,7 @@ async function switchOrg(nextOrg) {
       appCv3.S.asgn = [];
       appCv3.S.projLog = [];
       appCv3.S.asgnOther = [];
+      appCv3.S.projOther = [];
       appCv3.S.otherOrgId = "";
       if (typeof appCv3.render === "function") appCv3.render();
     }
@@ -2475,6 +2677,8 @@ async function ensureUserDoc(user, org, username, preset) {
         ? allOrgIds()
         : normalizeOrgIds(acct.orgIds, chosenOrg);
     empGroup = acct.empGroup || "";
+    orgIds = forceChiefOrgIds(empGroup, orgIds, chosenOrg);
+    if (empGroup === CHIEF_GROUP) chosenOrg = CHIEF_ORG_ID;
     if (orgIds.indexOf(chosenOrg) < 0) chosenOrg = orgIds[0] || chosenOrg;
     await setDoc(ref, {
       username: un,
@@ -2500,6 +2704,7 @@ async function ensureUserDoc(user, org, username, preset) {
     if (role === "director" && orgIds.length < 2) {
       orgIds = allOrgIds();
     }
+    orgIds = forceChiefOrgIds(empGroup, orgIds, chosenOrg);
     // Đội làm việc lấy từ hồ sơ (activeOrgId / orgIds), không từ form đăng nhập
     if (d.activeOrgId && orgIds.indexOf(normalizeOrgId(d.activeOrgId)) >= 0) {
       orgId = normalizeOrgId(d.activeOrgId);
@@ -2533,6 +2738,13 @@ async function ensureUserDoc(user, org, username, preset) {
         if (acct2 && acct2.empGroup) {
           empGroup = acct2.empGroup;
           patch.empGroup = empGroup;
+        }
+        orgIds = forceChiefOrgIds(empGroup, orgIds, orgId);
+        if (empGroup === CHIEF_GROUP) {
+          orgId = CHIEF_ORG_ID;
+          patch.orgId = orgId;
+          patch.activeOrgId = orgId;
+          patch.orgIds = orgIds;
         }
       } catch (e) {
         console.warn("Could not re-resolve account", e);
@@ -2749,12 +2961,74 @@ async function persistFcmToken(token, cv3) {
   }
 }
 
+function notifyAudienceRole() {
+  if (isDirectorRole()) return "director";
+  var g = authEmpGroup();
+  if (g === "Điều hành") return "operate";
+  if (g === "Giám sát" || g === "Quản lý") return "supervise";
+  if (g === CHIEF_GROUP) return "chief";
+  return "employee";
+}
+
+/**
+ * Client-side mirror of Cloud Functions role rules for foreground toast/Notification.
+ * Server remains source of truth for FCM delivery; this guards leftover/wrong payloads.
+ */
+function shouldShowPushNotification(type, d) {
+  d = d || {};
+  var aud = notifyAudienceRole();
+  var me = (auth && auth.currentUser && auth.currentUser.uid) || "";
+  var myEmp =
+    (window.__CV3_AUTH && window.__CV3_AUTH.empId) ||
+    (appCv3 && appCv3.S && appCv3.S.auth && appCv3.S.auth.empId) ||
+    "";
+
+  if (type === "arrival") {
+    if (!myEmp) return false;
+    if (d.empId && String(d.empId) !== String(myEmp)) return false;
+    return aud === "employee" || !!myEmp;
+  }
+  if (type === "reminder") {
+    return aud === "director" || aud === "operate" || aud === "supervise" || aud === "chief";
+  }
+  if (type === "chat") {
+    var isBc = d.chatType === "broadcast" || d.threadId === "broadcast";
+    if (d.fromUid && me && d.fromUid === me) return false;
+    if (isBc) return aud !== "employee";
+    // DM: recipient always; DH/GS get company copies; GD only if addressed to them
+    if (aud === "employee" || aud === "chief") {
+      return !d.toUid || d.toUid === me;
+    }
+    if (aud === "director") {
+      return !d.toUid || d.toUid === me;
+    }
+    return true;
+  }
+  if (type === "assignment" || type === "schedule") {
+    if (aud === "employee" || aud === "chief") {
+      return !d.empId || String(d.empId) === String(myEmp);
+    }
+    if (aud === "supervise") return true;
+    if (aud === "operate") {
+      if (d.assignedByUid && me && d.assignedByUid === me) return false;
+      return true;
+    }
+    // director: not staff-targeted copies
+    return false;
+  }
+  return true;
+}
+
 function bindForegroundMessaging(messaging, cv3) {
   if (!messaging || messaging.__cv3Bound) return;
   messaging.__cv3Bound = true;
   onMessage(messaging, function (payload) {
     var type = payload.data && payload.data.type;
     var d = payload.data || {};
+    if (type && !shouldShowPushNotification(type, d)) {
+      if (cv3 && typeof cv3.syncAppBadge === "function") cv3.syncAppBadge();
+      return;
+    }
     if (type === "reminder" && cv3 && typeof cv3.onReminderPush === "function") {
       cv3.onReminderPush(payload);
       return;
@@ -2764,7 +3038,14 @@ function bindForegroundMessaging(messaging, cv3) {
       return;
     }
     if (type === "chat") {
-      if (d.msgId) markMessageDelivered(d.msgId);
+      // Chỉ người nhận DM mới ghi receipt; fan-out DH/GS không đụng deliveredAt
+      if (
+        d.msgId &&
+        d.chatType !== "broadcast" &&
+        (!d.toUid || (auth && auth.currentUser && d.toUid === auth.currentUser.uid))
+      ) {
+        markMessageDelivered(d.msgId);
+      }
       var titleC = d.title || "Tin nhắn mới";
       var bodyC = d.body || "";
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -2780,10 +3061,21 @@ function bindForegroundMessaging(messaging, cv3) {
       if (cv3 && typeof cv3.showAppToast === "function") {
         cv3.showAppToast(titleC + (bodyC ? " — " + bodyC : ""), "ok");
       }
+      if (cv3 && typeof cv3.syncAppBadge === "function") cv3.syncAppBadge();
       return;
     }
     if (type === "assignment" && cv3) {
-      if (d.asgnId) ackAssignment(d.asgnId, "delivered");
+      var myEmpAck =
+        (window.__CV3_AUTH && window.__CV3_AUTH.empId) ||
+        (appCv3 && appCv3.S && appCv3.S.auth && appCv3.S.auth.empId) ||
+        "";
+      if (
+        d.asgnId &&
+        myEmpAck &&
+        (!d.empId || String(d.empId) === String(myEmpAck))
+      ) {
+        ackAssignment(d.asgnId, "delivered");
+      }
       var title = d.title || "Công việc mới";
       var body = d.body || "";
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -2799,6 +3091,7 @@ function bindForegroundMessaging(messaging, cv3) {
       if (typeof cv3.showAppToast === "function") {
         cv3.showAppToast(title + (body ? " — " + body : ""), "ok");
       }
+      if (typeof cv3.syncAppBadge === "function") cv3.syncAppBadge();
       return;
     }
     if (type === "schedule" && cv3) {
@@ -2817,6 +3110,7 @@ function bindForegroundMessaging(messaging, cv3) {
       if (typeof cv3.showAppToast === "function") {
         cv3.showAppToast(titleS + (bodyS ? " — " + bodyS : ""), "ok");
       }
+      if (typeof cv3.syncAppBadge === "function") cv3.syncAppBadge();
     }
   });
 }
@@ -2851,12 +3145,26 @@ async function registerMessaging(cv3, options) {
   if (!ok) return { ok: false, reason: "unsupported" };
   try {
     if (!("serviceWorker" in navigator)) return { ok: false, reason: "unsupported" };
-    var reg = await navigator.serviceWorker.getRegistration("/");
-    if (!reg) {
-      reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", { scope: "/" });
-    }
+    // Always re-register so SW updates (cache-bust query); scope must stay "/".
+    var reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js?v=2", {
+      scope: "/",
+      updateViaCache: "none",
+    });
+    try {
+      if (reg.update) await reg.update();
+    } catch (eUp) {}
     await navigator.serviceWorker.ready;
-    var messaging = getMessaging(app, { serviceWorkerRegistration: reg });
+    if (reg.installing) {
+      await new Promise(function (resolve) {
+        var w = reg.installing;
+        if (!w) return resolve();
+        w.addEventListener("statechange", function () {
+          if (w.state === "activated" || w.state === "redundant") resolve();
+        });
+        setTimeout(resolve, 4000);
+      });
+    }
+    var messaging = getMessaging(app);
     var perm = Notification.permission;
     if (perm !== "granted") {
       if (!opts.request) return { ok: false, reason: "denied" };
@@ -2867,6 +3175,7 @@ async function registerMessaging(cv3, options) {
     if (!token) return { ok: false, reason: "no-token" };
     pushReady = true;
     window.__CV3_FCM = { token: token, messaging: messaging };
+    localStorage.setItem("cv3_push_enabled", "1");
     await persistFcmToken(token, cv3);
     if (isDirectorRole()) localStorage.setItem("cv3_remind_push", "1");
     bindForegroundMessaging(messaging, cv3);
@@ -3190,6 +3499,7 @@ async function bootOnline(cv3) {
       registerMessaging(cv3, {
         request:
           Notification.permission === "granted" ||
+          localStorage.getItem("cv3_push_enabled") === "1" ||
           (isDirectorRole() && localStorage.getItem("cv3_remind_push") === "1"),
       });
       if (canOperateRole()) scheduleProvision(cv3, { delay: 600 });
@@ -3209,6 +3519,7 @@ async function bootOnline(cv3) {
   window.__CV3_markMsgRead = markMessageRead;
   window.__CV3_markChatThreadRead = markChatThreadRead;
   window.__CV3_ackAssignment = ackAssignment;
+  window.__CV3_syncAppBadge = syncServiceWorkerBadge;
   bindPushDeliveredListener();
   refreshBootstrapUI();
 }

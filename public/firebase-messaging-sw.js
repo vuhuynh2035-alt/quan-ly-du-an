@@ -1,4 +1,58 @@
 /* eslint-disable no-undef */
+/* cv3-fcm-sw v2 — bump this comment when changing SW so browsers refetch */
+var CV3_SW_VERSION = 2;
+var CV3_ICON = "/icon-192.png";
+var CV3_BADGE_CACHE = "cv3-badge-v1";
+var CV3_BADGE_URL = "/__cv3_badge_count";
+
+// Register click handler BEFORE importing FCM so the SDK does not overwrite it.
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  var data = (event.notification && event.notification.data) || {};
+  var tag = (event.notification && event.notification.tag) || "";
+  var url = "/";
+  if (data.type === "reminder" || tag.indexOf("rem_") === 0) url = "/?tab=lich";
+  else if (
+    data.type === "arrival" ||
+    data.type === "assignment" ||
+    data.type === "schedule" ||
+    tag.indexOf("arr_") === 0 ||
+    tag.indexOf("asgn_") === 0 ||
+    tag.indexOf("sched_") === 0
+  )
+    url = "/?tab=mywork";
+  else if (data.type === "chat" || tag.indexOf("chat_") === 0) url = "/?tab=chat";
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        if ("focus" in c) {
+          if ("navigate" in c && url !== "/") {
+            try {
+              return c.navigate(url).then(function () {
+                return c.focus();
+              });
+            } catch (e) {
+              return c.focus();
+            }
+          }
+          return c.focus();
+        }
+      }
+      if (clients.openWindow) return clients.openWindow(url);
+    })
+  );
+});
+
+self.addEventListener("install", function (event) {
+  self.skipWaiting();
+  event.waitUntil(Promise.resolve());
+});
+
+self.addEventListener("activate", function (event) {
+  event.waitUntil(self.clients.claim());
+});
+
 importScripts(
   "https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"
 );
@@ -9,6 +63,59 @@ importScripts("/firebase-config.js");
 
 firebase.initializeApp(FIREBASE_CONFIG);
 var messaging = firebase.messaging();
+
+function readBadgeCount() {
+  return caches.open(CV3_BADGE_CACHE).then(function (cache) {
+    return cache.match(CV3_BADGE_URL).then(function (res) {
+      if (!res) return 0;
+      return res.text().then(function (t) {
+        var n = parseInt(t, 10);
+        return isNaN(n) || n < 0 ? 0 : n;
+      });
+    });
+  });
+}
+
+function writeBadgeCount(n) {
+  var next = Math.max(0, Math.min(9999, n | 0));
+  return caches.open(CV3_BADGE_CACHE).then(function (cache) {
+    return cache.put(CV3_BADGE_URL, new Response(String(next), { status: 200 }));
+  }).then(function () {
+    if (self.navigator && self.navigator.setAppBadge) {
+      if (next > 0) return self.navigator.setAppBadge(next).catch(function () {});
+      if (self.navigator.clearAppBadge) return self.navigator.clearAppBadge().catch(function () {});
+    }
+    return undefined;
+  }).then(function () {
+    return next;
+  });
+}
+
+function bumpAppBadge(delta) {
+  var d = delta == null ? 1 : delta | 0;
+  if (!d) return Promise.resolve(0);
+  return readBadgeCount().then(function (n) {
+    return writeBadgeCount(n + d);
+  });
+}
+
+function setAppBadgeExact(n) {
+  return writeBadgeCount(n);
+}
+
+self.addEventListener("message", function (event) {
+  var msg = event && event.data;
+  if (!msg || !msg.type) return;
+  if (msg.type === "cv3-set-badge") {
+    event.waitUntil(setAppBadgeExact(msg.count == null ? 0 : msg.count));
+  } else if (msg.type === "cv3-clear-badge") {
+    event.waitUntil(setAppBadgeExact(0));
+  } else if (msg.type === "cv3-sw-ping") {
+    if (event.ports && event.ports[0]) {
+      event.ports[0].postMessage({ type: "cv3-sw-pong", version: CV3_SW_VERSION });
+    }
+  }
+});
 
 function showPushNotification(payload) {
   var data = (payload && payload.data) || {};
@@ -43,15 +150,20 @@ function showPushNotification(payload) {
     ? [0, 250, 120, 250, 120, 350, 120, 350]
     : [0, 280, 140, 280, 140, 280, 140, 400];
 
+  // Attach routing data onto the displayed notification (needed when we show it ourselves).
+  var notifData = Object.assign({}, data);
+  if (!notifData.type && n.title) {
+    // Best-effort: keep empty type so click opens home.
+  }
+
   return self.registration
     .showNotification(title, {
       body: body,
-      icon: "/icon-192.png",
-      badge: "/icon-192.png",
-      data: data,
+      icon: CV3_ICON,
+      badge: CV3_ICON,
+      data: notifData,
       tag: tag,
       vibrate: vibrate,
-      sound: isRem || isArr ? "/remind.wav" : "/noti.wav",
       silent: false,
       renotify: true,
       requireInteraction: true,
@@ -70,34 +182,33 @@ function showPushNotification(payload) {
 }
 
 messaging.onBackgroundMessage(function (payload) {
-  return showPushNotification(payload);
-});
+  var data = (payload && payload.data) || {};
+  var hasDisplay =
+    (payload && payload.notification && (payload.notification.title || payload.notification.body)) ||
+    false;
+  var jobs = [];
 
-self.addEventListener("notificationclick", function (event) {
-  event.notification.close();
-  var data = (event.notification && event.notification.data) || {};
-  var url = "/";
-  if (data.type === "reminder") url = "/?tab=lich";
-  else if (data.type === "arrival" || data.type === "assignment" || data.type === "schedule") url = "/?tab=mywork";
-  else if (data.type === "chat") url = "/?tab=chat";
-  event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
-      for (var i = 0; i < list.length; i++) {
-        var c = list[i];
-        if ("focus" in c) {
-          if ("navigate" in c && url !== "/") {
-            try {
-              return c.navigate(url).then(function () {
-                return c.focus();
-              });
-            } catch (e) {
-              return c.focus();
-            }
-          }
-          return c.focus();
-        }
-      }
-      if (clients.openWindow) return clients.openWindow(url);
-    })
-  );
+  if (data.badgeBump === "1" || data.type === "chat" || data.type === "assignment" ||
+      data.type === "schedule" || data.type === "reminder" || data.type === "arrival") {
+    jobs.push(bumpAppBadge(1));
+  }
+
+  // If FCM/webpush already included a display notification, the browser shows it.
+  // Still show our own when data-only, or when we need custom `data` for click routing.
+  // Prefer a single notification: skip duplicate when a notification payload is present
+  // AND we already have fcmOptions.link for navigation.
+  if (!hasDisplay) {
+    jobs.push(showPushNotification(payload));
+  } else if ((data.type === "chat" && data.msgId) || (data.type === "assignment" && data.asgnId)) {
+    // Ack delivery even when OS showed the tray notification.
+    jobs.push(
+      clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+        list.forEach(function (c) {
+          c.postMessage({ type: "cv3-push-delivered", data: data });
+        });
+      })
+    );
+  }
+
+  return Promise.all(jobs);
 });
