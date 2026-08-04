@@ -356,11 +356,16 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;bac
   overflow-x:auto;box-shadow:var(--chrome-tabs-shadow)}
 .tab{border:none;background:transparent;cursor:pointer;font-family:'Inter',sans-serif;font-size:13px;font-weight:600;
   padding:9px 14px;white-space:nowrap;color:var(--chrome-tab);border-radius:11px;
-  transition:all .2s ease;letter-spacing:.01em}
+  transition:all .2s ease;letter-spacing:.01em;display:inline-flex;align-items:center;gap:6px}
 .tab:hover{color:var(--chrome-tab-hover);background:rgba(255,255,255,.08)}
 .tab.active{color:#fff;background:linear-gradient(135deg,rgba(74,174,255,.35),rgba(26,111,212,.45));
   box-shadow:0 2px 12px rgba(26,111,212,.4),inset 0 1px 0 rgba(255,255,255,.25);border:1px solid rgba(74,174,255,.4)}
 html[data-theme="light"] .tab.active{color:#fff}
+.tab-badge{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:999px;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;line-height:1;color:#fff;background:#dc2626;box-shadow:0 0 0 2px rgba(15,23,42,.35)}
+.chat-unread-dot{display:inline-flex;min-width:18px;height:18px;padding:0 5px;border-radius:999px;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;line-height:1;color:#fff;background:#dc2626;margin-left:4px}
+.chat-peer-unread .chat-peer-name{font-weight:800}
 
 .card{background:var(--c-card);
   border:1px solid var(--c-border);border-radius:18px;
@@ -778,6 +783,7 @@ input[type=range]{padding:0}
 .app-toast{padding:14px 16px;border-radius:12px;font-size:14px;font-weight:600;line-height:1.4;box-shadow:0 8px 28px rgba(0,0,0,.45);pointer-events:auto;animation:toastIn .25s ease}
 .app-toast.ok{background:#166534;color:#fff;border:1px solid #4ade80}
 .app-toast.err{background:#7f1d1d;color:#fff;border:1px solid #f87171}
+.app-toast.info{background:#1e3a5f;color:#fff;border:1px solid #60a5fa}
 .emp-push-status{margin-top:8px;padding:10px 12px;border-radius:8px;font-size:13px;font-weight:600;line-height:1.45}
 .emp-push-status.ok{background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.35);color:#4ade80}
 .emp-push-status.err{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.35);color:#f87171}
@@ -1961,7 +1967,7 @@ function themeModeBody(){
 }
 var S={tab:"dash",selProj:"",selProjDet:"",selEmp:"",selCust:"",giaoProj:"",giaoMode:"",goiYReq:{},giaoPick:{},teamToTruong:"",teamVatTu:"",modal:null,form:null,helpOpen:0,helpMode:"annotate",hist:[],histView:"actions",expGrp:{},empPushBusy:0,empPushMsg:"",remindPushBusy:0,remindPushMsg:"",
   kpiPeriod:"month",kpiMonth:"",
-  emp:load("cv3_e",[]),empAll:load("cv3_e",[]),asgnOther:[],projOther:[],otherOrgId:"",cust:load("cv3_c",[]),proj:loadWs("cv3_p",[]),asgn:loadWs("cv3_a",[]),projLog:loadWs("cv3_pl",[]),cfg:Object.assign({},DS,load("cv3_s",{})),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null,orgId:"",orgIds:[]},chat:[],chatTo:null,reports:[],attendance:[],attFlow:null,arrivalFlow:null,selMyAsgn:"",selMyAsgnOrg:"",reportAsgn:"",reminders:loadWs("cv3_r",null)||(function(){var c=load("cv3_s",{});return c&&Array.isArray(c.reminders)?c.reminders.slice():[]})(),
+  emp:load("cv3_e",[]),empAll:load("cv3_e",[]),asgnOther:[],projOther:[],otherOrgId:"",cust:load("cv3_c",[]),proj:loadWs("cv3_p",[]),asgn:loadWs("cv3_a",[]),projLog:loadWs("cv3_pl",[]),cfg:Object.assign({},DS,load("cv3_s",{})),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null,orgId:"",orgIds:[]},chat:[],chatTo:null,pendingChatDm:"",reports:[],attendance:[],attFlow:null,arrivalFlow:null,selMyAsgn:"",selMyAsgnOrg:"",reportAsgn:"",reminders:loadWs("cv3_r",null)||(function(){var c=load("cv3_s",{});return c&&Array.isArray(c.reminders)?c.reminders.slice():[]})(),
   personalReminders:[],
   auditLog:loadWs("cv3_audit",[]),trash:loadWs("cv3_trash",[])};
 try{if(LS)LS.removeItem("cv3_undo")}catch(e){}
@@ -3427,16 +3433,27 @@ function empPushBlockHTML(empId,opts){
 }
 function showAppToast(text,type){
   if(!text)return;
-  // Chỉ hiện lỗi — bỏ toast xanh «✓ Đã…» sau mỗi thao tác (đổi đội, lưu, …)
-  if(type!=="err")return;
+  // Chỉ hiện lỗi + tin chat (info). Bỏ toast xanh «✓ Đã…» sau mỗi thao tác.
+  if(type!=="err"&&type!=="info")return;
   var root=document.getElementById("app-toast-root");
   if(!root){root=document.createElement("div");root.id="app-toast-root";root.className="app-toast-root";document.body.appendChild(root);}
   root.innerHTML="";
   var el=document.createElement("div");
-  el.className="app-toast err";
-  el.textContent="✗ "+text;
+  el.className="app-toast "+(type==="info"?"info":"err");
+  el.textContent=(type==="err"?"✗ ":"")+text;
   root.appendChild(el);
-  setTimeout(function(){if(el.parentElement)el.remove()},5000);
+  setTimeout(function(){if(el.parentElement)el.remove()},type==="info"?4500:5000);
+}
+var _chatToastAt=0,_chatToastId="";
+function toastIncomingChat(m){
+  if(!m)return;
+  var id=m.id?String(m.id):"";
+  var now=Date.now();
+  if(id&&id===_chatToastId&&now-_chatToastAt<4500)return;
+  _chatToastId=id;_chatToastAt=now;
+  var who=m.fromName||m.from||"Tin nhắn";
+  var body=String(m.text||"").slice(0,80);
+  showAppToast(who+(body?": "+body:""),"info");
 }
 function empPushNotifyTest(){
   if(typeof Notification==="undefined"||Notification.permission!=="granted")return;
@@ -3559,6 +3576,46 @@ function unreadChatCount(){
   }
   return n;
 }
+function unreadChatCountForTo(chatTo){
+  var me=S.auth&&S.auth.uid;
+  if(!me||!chatTo||chatTo==="broadcast")return 0;
+  var msgs=chatMsgsForTo(chatTo),n=0,i,m;
+  for(i=0;i<msgs.length;i++){
+    m=msgs[i];
+    if(!m||m.type!=="dm")continue;
+    if(m.uid===me)continue;
+    if(m.toUid&&m.toUid!==me)continue;
+    if(m.readAt)continue;
+    n++;
+  }
+  return n;
+}
+function resolveChatDmTarget(authUid){
+  authUid=authUid?String(authUid):"";
+  if(!authUid)return"";
+  if(authUid==="broadcast")return"broadcast";
+  var dir=directorChatRecipient();
+  if(dir&&dir.uid&&dir.uid===authUid)return dir.empId;
+  var e=(S.emp||[]).find(function(x){return x.authUid===authUid});
+  if(e)return e.id;
+  var r=chatRecipients().find(function(x){return x.uid===authUid});
+  return r?r.empId:"";
+}
+function applyPendingChatDm(){
+  var dm=S.pendingChatDm;
+  if(!dm)return false;
+  var to=resolveChatDmTarget(dm);
+  if(!to)return false;
+  S.chatTo=to;
+  S.pendingChatDm="";
+  return true;
+}
+function tryApplyChatDeepLink(){
+  if(!S.pendingChatDm||S.tab!=="chat")return false;
+  if(!applyPendingChatDm())return false;
+  setTimeout(markOpenChatRead,80);
+  return true;
+}
 function unreadAsgnCount(){
   var empId=S.auth&&S.auth.empId;
   if(!empId||!isEmp())return 0;
@@ -3586,12 +3643,18 @@ function applyAppIconBadge(n){
 function updateRemindBadge(){
   var rn=unreadRemindCount();
   var n=totalAppBadgeCount();
+  var cn=unreadChatCount();
   var btn=document.getElementById("hdr-remind-btn");
   var el=document.getElementById("hdr-remind-badge");
   if(btn)btn.style.display=canUseLich()?"flex":"none";
   if(el){
     if(rn>0){el.textContent=rn>99?"99+":String(rn);el.style.display="flex";}
     else el.style.display="none";
+  }
+  var chatBadge=document.getElementById("tab-chat-badge");
+  if(chatBadge){
+    if(cn>0){chatBadge.textContent=cn>99?"99+":String(cn);chatBadge.style.display="inline-flex";}
+    else{chatBadge.textContent="";chatBadge.style.display="none";}
   }
   document.title=n>0?"("+n+") Quản lý dự án":"Quản lý dự án";
   applyAppIconBadge(n);
@@ -3855,7 +3918,16 @@ function render(){
   var open=S.proj.filter(function(p){return p.status!=="done"}).length;
   var act=S.asgn.filter(function(a){return a.status==="active"}).length;
   var tabs=getTabs();
-  document.getElementById("tabs").innerHTML=tabs.map(function(t){return'<button class="tab'+(S.tab===t[0]?" active":"")+'" onclick="A.go(\''+t[0]+'\')">'+(t[1])+'</button>'}).join("");
+  document.getElementById("tabs").innerHTML=tabs.map(function(t){
+    var label=t[1];
+    if(t[0]==="chat"){
+      var cn=unreadChatCount();
+      label+=cn>0
+        ?'<span class="tab-badge" id="tab-chat-badge" style="display:inline-flex">'+(cn>99?"99+":cn)+'</span>'
+        :'<span class="tab-badge" id="tab-chat-badge"></span>';
+    }
+    return'<button type="button" class="tab'+(S.tab===t[0]?" active":"")+'" data-tab="'+t[0]+'" onclick="A.go(\''+t[0]+'\')">'+label+'</button>';
+  }).join("");
   updateDateTime();
   updateHdrVer();
   var views={
@@ -4199,8 +4271,11 @@ function vChatList(){
   var rec=chatRecipients();
   var cards=[];
   
-  function renderCard(id, label, desc, isDir, col, lastMsgText) {
-    var inner = '<div class="card card-p" style="cursor:pointer;padding:14px;margin:0;border:none;box-shadow:none" onclick="A.selectChatTo(\''+id+'\')"><div class="row" style="gap:8px;margin-bottom:6px;align-items:center"><span style="font-weight:700;font-size:15px;color:'+(isDir?"#f87171":"#e8f0fe")+'">'+label+'</span>'+bdg(desc,col)+'</div><div style="font-size:13px;color:var(--c-muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(lastMsgText)+'</div></div>';
+  function renderCard(id, label, desc, isDir, col, lastMsgText, unread) {
+    unread=unread|0;
+    var nameCls="chat-peer-name"+(unread?" chat-peer-unread":"");
+    var unreadHtml=unread?'<span class="chat-unread-dot">'+(unread>99?"99+":unread)+'</span>':"";
+    var inner = '<div class="card card-p'+(unread?" chat-peer-unread":"")+'" style="cursor:pointer;padding:14px;margin:0;border:none;box-shadow:none" onclick="A.selectChatTo(\''+id+'\')"><div class="row" style="gap:8px;margin-bottom:6px;align-items:center"><span class="'+nameCls+'" style="font-weight:'+(unread?800:700)+';font-size:15px;color:'+(isDir?"#f87171":"#e8f0fe")+'">'+label+'</span>'+unreadHtml+bdg(desc,col)+'</div><div style="font-size:13px;color:var(--c-muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:'+(unread?700:400)+'">'+esc(lastMsgText)+'</div></div>';
     return '<div class="swipe-wrap list-swipe" style="margin:0;border-radius:18px;background:linear-gradient(145deg,rgba(255,255,255,.09) 0%,rgba(255,255,255,.04) 100%);border:1px solid rgba(255,255,255,.15);box-shadow:0 8px 32px rgba(0,0,0,.35)"><div class="swipe-actions" style="right:-1px;border-radius:0 18px 18px 0;overflow:hidden;opacity:0;transition:opacity 0.2s"><button type="button" class="swipe-btn" onclick="event.stopPropagation();A.hideChat(\''+id+'\')">Xoá</button></div><div class="swipe-front" style="padding:0;background:transparent;border-radius:18px;box-shadow:none">'+inner+'</div></div>';
   }
 
@@ -4234,7 +4309,8 @@ function vChatList(){
     }
     var col=r.isDir ? "#f87171" : groupColor(r.group);
     var prefix = (lastM.uid === S.auth.uid) ? "Bạn: " : (lastM.fromName ? lastM.fromName+": " : "");
-    cards.push({sortAt:firstTime||mTime,html:renderCard(r.empId, label, desc, r.isDir, col, prefix + (lastM.text || "..."))});
+    var unread = unreadChatCountForTo(r.empId);
+    cards.push({sortAt:firstTime||mTime,html:renderCard(r.empId, label, desc, r.isDir, col, prefix + (lastM.text || "..."), unread)});
   });
 
   cards.sort(function(a,b){return (a.sortAt||0)-(b.sortAt||0);});
@@ -5553,7 +5629,7 @@ window.A={
     showAppToast("Đã lưu VAPID key — có thể bật thông báo nền.","ok");
     render();
   },
-  go:function(t){if(isEmpPortal()&&!empTabOk(t))return;if(!tabAllowed(t))return;if(S.tab!==t){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab=t;S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.selMyAsgnOrg="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;if(t==="chat")S.chatTo="";if(t==="hist")purgeExpiredTrash();render();if(t==="chat")setTimeout(initChatScroll,50);if(t==="report")setTimeout(initReportPreview,50);if(t==="chamcong")setTimeout(initAttPreview,50)},
+  go:function(t){if(isEmpPortal()&&!empTabOk(t))return;if(!tabAllowed(t))return;if(S.tab!==t){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab=t;S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.selMyAsgnOrg="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;if(t==="chat"){if(S.pendingChatDm){if(!applyPendingChatDm())S.chatTo="";}else S.chatTo="";}if(t==="hist")purgeExpiredTrash();render();if(t==="chat"){setTimeout(initChatScroll,50);setTimeout(markOpenChatRead,80);}if(t==="report")setTimeout(initReportPreview,50);if(t==="chamcong")setTimeout(initAttPreview,50)},
   histView:function(v){if(!canViewHist())return;S.histView=v||"actions";if(v==="trash")purgeExpiredTrash();render()},
   undo:function(){openUndoList()},
   undoPick:function(id){doUndoById(id)},
@@ -7122,7 +7198,7 @@ function checkAutoBackup(){
 checkAutoBackup();
 initViewActions();
 window.__CV3={
-  S:S,render:render,seedDemo:seedDemo,seedE:seedE,DS:DS,getVapidKey:getVapidKey,applyVapidFromCfg:applyVapidFromCfg,showAppToast:showAppToast,
+  S:S,render:render,seedDemo:seedDemo,seedE:seedE,DS:DS,getVapidKey:getVapidKey,applyVapidFromCfg:applyVapidFromCfg,showAppToast:showAppToast,toastIncomingChat:toastIncomingChat,
   getPatch:function(){return loadPatch();},
   setPatch:function(p){ps2Ws("cv3_patch",p||0);},
   /** Đổi đội: nạp cache local của đội đó (hoặc rỗng), không giữ dự án đội trước. */
@@ -7180,11 +7256,16 @@ window.__CV3={
     var sig=all.length+"|"+forOrg.map(function(e){
       return (e&&e.id||"")+":"+(e.authUid||"")+":"+(e.name||"")+":"+(e.group||"")+":"+(e.status||"")+":"+String(e.orgIds||[])+":"+(e.fcmToken||"");
     }).join(";");
-    if(sig===S._empMasterSig){S.empAll=all;S.emp=forOrg;return;}
+    if(sig===S._empMasterSig){
+      S.empAll=all;S.emp=forOrg;
+      if(tryApplyChatDeepLink())render();
+      return;
+    }
     S._empMasterSig=sig;
     S.empAll=all;
     S.emp=forOrg;
     ps2("cv3_e",S.emp);
+    tryApplyChatDeepLink();
     render();
   },
   applyCustMaster:function(list){
@@ -7287,15 +7368,38 @@ window.__CV3={
     if(!same&&a.role&&a.uid&&(!prev.role||!prev.uid||prev.uid!==a.uid)){
       clearUndo();
     }
-    if(!same)render();
+    var openedDm=tryApplyChatDeepLink();
+    if(!same||openedDm)render();
   },
   setChatMsgs:function(msgs){
     msgs=msgs||[];
+    var prev=S.chat||[];
+    var prevIds={};
+    prev.forEach(function(m){if(m&&m.id)prevIds[m.id]=1;});
     var sig=msgs.map(function(m){return (m.id||"")+":"+(m.readAt||"")+":"+(m.deliveredAt||"")}).join("|");
     if(sig===S._chatSig){S.chat=msgs;updateRemindBadge();return;}
+    var me=S.auth&&S.auth.uid;
+    if(me&&prev.length){
+      var openTid="",key;
+      if(S.tab==="chat"&&S.chatTo&&S.chatTo!=="broadcast"){
+        key=chatToThreadKey(S.chatTo);
+        if(key&&key.indexOf("dm:")===0)openTid=dmThreadId(me,key.slice(3));
+      }
+      var i,m;
+      for(i=0;i<msgs.length;i++){
+        m=msgs[i];
+        if(!m||!m.id||prevIds[m.id])continue;
+        if(m.type!=="dm")continue;
+        if(m.uid===me)continue;
+        if(m.toUid&&m.toUid!==me)continue;
+        if(openTid&&m.threadId===openTid)continue;
+        toastIncomingChat(m);
+        break;
+      }
+    }
     S._chatSig=sig;S.chat=msgs;
     updateRemindBadge();
-    if(S.tab==="chat"){render();setTimeout(initChatScroll,30);}
+    if(S.tab==="chat"){render();setTimeout(initChatScroll,30);setTimeout(markOpenChatRead,60);}
   },
   syncAppBadge:function(){updateRemindBadge();},
   setReports:function(reports,opts){
@@ -7385,18 +7489,33 @@ window.__CV3={
   },
   finishBoot:function(){
     try{
-      var q=new URLSearchParams(location.search).get("tab");
+      var params=new URLSearchParams(location.search);
+      var q=params.get("tab");
+      var dm=params.get("dm");
+      if(dm)S.pendingChatDm=String(dm);
       if(q==="help")q="";
       if(q==="lich"&&hasFullUI())S.tab="lich";
       else if(q&&isEmpPortal()&&empTabOk(q))S.tab=q;
       else if(q&&tabIds().indexOf(q)>=0&&hasFullUI())S.tab=q;
+      if(S.tab==="chat")tryApplyChatDeepLink();
     }catch(e){}
     if(S.tab==="help")S.tab=isEmpPortal()?"mywork":"dash";
     purgeExpiredTrash();
     render();
+    if(S.tab==="chat"&&S.chatTo)setTimeout(markOpenChatRead,80);
   }
 };
 window.__CV3.finishBoot();
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.addEventListener("message",function(ev){
+    var p=ev&&ev.data;
+    if(!p||p.type!=="cv3-open-chat")return;
+    if(p.dm)S.pendingChatDm=String(p.dm);
+    else if(p.chatType==="broadcast")S.pendingChatDm="broadcast";
+    if(typeof A!=="undefined"&&A.go)A.go("chat");
+    else{S.tab="chat";applyPendingChatDm();render();}
+  });
+}
 document.addEventListener("keydown",function(ev){
   if(ev.key!=="Escape"&&ev.key!=="Esc")return;
   if(S.helpOpen){A.closeHelp();ev.preventDefault();return;}
