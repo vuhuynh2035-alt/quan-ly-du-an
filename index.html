@@ -3205,14 +3205,17 @@ function readArriveAtInput(inputId){
   if(!v)return "";
   var ms=remindAtMs(v);
   if(!ms||isNaN(ms))return "invalid";
-  if(ms<=Date.now())return "past";
   return v;
+}
+function arriveAtIsFuture(arriveAt){
+  var ms=remindAtMs(arriveAt);
+  return !!(ms&&!isNaN(ms)&&ms>Date.now());
 }
 function mkArrivalReminder(empId,asgnId,arriveAt,locName){
   return{id:uid(),kind:"arrival",empId:empId,asgnId:asgnId,at:arriveAt,text:"Xác nhận đã đến «"+(locName||"vị trí mới")+"» chưa?",fired:false,done:false,createdAt:new Date().toISOString()};
 }
 function addArrivalReminder(empId,asgnId,arriveAt,locName){
-  if(!arriveAt)return null;
+  if(!arriveAt||!arriveAtIsFuture(arriveAt))return null;
   S.reminders=S.reminders||[];
   S.reminders=S.reminders.filter(function(r){return!(r.kind==="arrival"&&r.asgnId===asgnId&&!r.done)});
   var r=mkArrivalReminder(empId,asgnId,arriveAt,locName);
@@ -6049,7 +6052,7 @@ window.A={
     var custName=document.getElementById("egcn").value.trim(),contact=document.getElementById("egct").value.trim();
     var c=custId?cById(custId):null,prov=c&&c.province?c.province:emp.province;
     var arriveRaw=readArriveAtInput("eg-arrive");
-    if(arriveRaw==="invalid"||arriveRaw==="past")return alert("Giờ có mặt phải ở tương lai.");
+    if(arriveRaw==="invalid")return alert("Giờ có mặt không hợp lệ.");
     var conflictObj = checkAssignmentConflict(emp.id, custId, arriveRaw, prov, startDate, endDate);
     if(conflictObj.hasWarning){
       S.conflictPending={
@@ -6083,7 +6086,7 @@ window.A={
       contact=document.getElementById("egct").value.trim();
       var c0=custId?cById(custId):null;prov=c0&&c0.province?c0.province:emp.province;
       arriveRaw=readArriveAtInput("eg-arrive");
-      if(arriveRaw==="invalid"||arriveRaw==="past")arriveRaw="";
+      if(arriveRaw==="invalid")arriveRaw="";
     }
     var c=custId?cById(custId):null;
     var finalStart=startDate,finalEnd=endDate,scheduleAdj=null,schedNotify=null;
@@ -6244,8 +6247,8 @@ window.A={
     var p=pById(S.giaoProj);if(!p)return;
     var dates=asgnDates(p);
     var arriveRaw=readArriveAtInput("giao-arrive");
-    if(arriveRaw==="invalid"||arriveRaw==="past")return alert("Giờ có mặt phải ở tương lai.");
-    if(arriveRaw&&arriveRaw!=="invalid"&&arriveRaw!=="past")S.giaoArriveAt=arriveRaw;
+    if(arriveRaw==="invalid")return alert("Giờ có mặt không hợp lệ.");
+    if(arriveRaw&&arriveRaw!=="invalid")S.giaoArriveAt=arriveRaw;
     else S.giaoArriveAt="";
     var asd={};S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused")}).forEach(function(a){asd[a.empId]=a});
     var pickIds=[],reasonLines=[],travelLines=[],allOverlapIds=[],perEmp={},suggestStart="",suggestTravelDays=0,perSched={};
@@ -6296,7 +6299,7 @@ window.A={
       p=pById(S.giaoProj);if(!p)return;
       dates=asgnDates(p);
       arriveRaw=readArriveAtInput("giao-arrive");
-      if(arriveRaw==="invalid"||arriveRaw==="past")arriveRaw="";
+      if(arriveRaw==="invalid")arriveRaw="";
       pickIds=Object.keys(S.giaoPick).filter(function(eid){return S.giaoPick[eid]&&!isOversightEmp(eById(eid));});
       perEmp={};
       perSched={};
@@ -6815,7 +6818,7 @@ window.A={
       logProjEvent(src.projId,"transfer",{empId:emp.id,empName:emp.name,text:emp.name+" tạm chuyển sang «"+tgt.name+"»",meta:{asgnId:src.id,toProjId:tgtId,fromProjId:src.projId,note:pauseTxt}});
       var dates=asgnDates(tgt);
       var arriveRaw=readArriveAtInput("sxp-arrive");
-      if(arriveRaw==="invalid"||arriveRaw==="past")return alert("Giờ có mặt phải ở tương lai.");
+      if(arriveRaw==="invalid")return alert("Giờ có mặt không hợp lệ.");
       var na=mkAsgn(emp.id,tgt.id,0,{startDate:td(),endDate:dates.end,workContent:"Chuyển từ: "+asgnInfo(src).title});
       if(arriveRaw){na.arriveAt=arriveRaw;addArrivalReminder(emp.id,na.id,arriveRaw,asgnLocLabel(na));}
       S.asgn.push(na);
