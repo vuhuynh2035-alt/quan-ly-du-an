@@ -6,6 +6,35 @@ function Test-CommandExists {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+# Git/npm/firebase viet nhieu thong bao ra stderr — PS coi la loi neu ErrorAction=Stop.
+# Ham nay chi that bai khi exit code != 0.
+function Invoke-NativeCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Command,
+    [string]$FailMessage = "Lenh that bai",
+    [switch]$AllowFail
+  )
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & $Command 2>&1 | ForEach-Object {
+      if ($_ -is [System.Management.Automation.ErrorRecord]) {
+        Write-Host $_.ToString()
+      } else {
+        Write-Host $_
+      }
+    }
+    $code = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+  if (-not $AllowFail -and $null -ne $code -and $code -ne 0) {
+    throw "$FailMessage (exit $code)"
+  }
+  return $code
+}
+
 function Test-DeployPrerequisites {
   $missing = @()
   foreach ($cmd in @("git", "node", "npm", "firebase")) {
@@ -480,24 +509,73 @@ function Invoke-FirebaseAccount {
   }
 
   Write-Host "Chuyen Firebase account -> $email" -ForegroundColor DarkCyan
-  firebase login:use $email 2>&1 | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "Chua dang nhap account nay. Chay: firebase login:add" -ForegroundColor Yellow
-    throw "firebase login:use that bai"
+  Invoke-NativeCommand -FailMessage "firebase login:use that bai — chay: firebase login:add" -Command {
+    firebase login:use $email
+  } | Out-Null
+}
+
+function Test-FirebaseProjectAccess {
+  param([string]$ProjectId)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = firebase use $ProjectId 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host $out.TrimEnd()
+      return $true
+    }
+    Write-Host $out.TrimEnd()
+    return $false
+  } finally {
+    $ErrorActionPreference = $prev
   }
 }
 
 function Invoke-FirebaseProject {
-  param([string]$ProjectId)
+  param(
+    [string]$ProjectId,
+    [object]$Config = $null,
+    [object]$App = $null,
+    [switch]$Interactive
+  )
   if (-not $ProjectId -or $ProjectId.Trim() -eq "") {
     throw "Chua biet Firebase project ID (.firebaserc thieu). Them firebaseProject vao config."
   }
   Write-Host "Firebase project: $ProjectId" -ForegroundColor DarkCyan
-  firebase use $ProjectId 2>&1 | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    firebase use --add $ProjectId 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "firebase use that bai" }
+
+  if (Test-FirebaseProjectAccess $ProjectId) { return }
+
+  # Thu cac tai khoan Firebase khac da login
+  $emails = @(Get-FirebaseLoggedInEmails)
+  $current = if ($App -and $App.accountEmail) { [string]$App.accountEmail } else { "" }
+  foreach ($email in $emails) {
+    if ($email -eq $current) { continue }
+    Write-Host "Thu account khac: $email" -ForegroundColor Yellow
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { firebase login:use $email 2>&1 | Out-Host } finally { $ErrorActionPreference = $prev }
+    if ($LASTEXITCODE -ne 0) { continue }
+    if (Test-FirebaseProjectAccess $ProjectId) {
+      if ($Config -and $App) {
+        Set-AppAccountMapping -Config $Config -App $App -Email $email
+        Write-Host "Da gan lai account $email cho $($App.label)" -ForegroundColor Green
+      }
+      return
+    }
   }
+
+  if ($Interactive) {
+    Write-Host ""
+    Write-Host "Khong account nao truy cap duoc project '$ProjectId'." -ForegroundColor Red
+    Write-Host "Chay: firebase login:add  (dung Google co quyen project do)" -ForegroundColor Yellow
+    $again = Read-Host "Da login:add xong? Nhan Enter de thu lai, hoac Q de bo qua"
+    if ($again -notmatch '^[Qq]$') {
+      Invoke-FirebaseProject -ProjectId $ProjectId -Config $Config -App $App
+      return
+    }
+  }
+
+  throw "firebase use that bai — sai tai khoan hoac khong co quyen project '$ProjectId'"
 }
 
 function Sync-GitBranch {
@@ -513,10 +591,16 @@ function Sync-GitBranch {
   Push-Location $RepoRoot
   try {
     Write-Host "Git fetch + pull origin $Branch..." -ForegroundColor Yellow
-    git fetch origin $Branch 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "git fetch that bai" }
-    git pull origin $Branch 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "git pull that bai — commit local hoac xung dot?" }
+    $fetchCode = Invoke-NativeCommand -AllowFail -Command { git fetch origin $Branch }
+    if ($fetchCode -ne 0) {
+      Write-Host "git fetch that bai — van deploy code local hien co" -ForegroundColor Yellow
+      return
+    }
+    $pullCode = Invoke-NativeCommand -AllowFail -Command { git pull origin $Branch }
+    if ($pullCode -ne 0) {
+      Write-Host "git pull that bai (co the do thay doi local) — van deploy code local" -ForegroundColor Yellow
+      Write-Host "  Tip: git stash  hoac commit truoc khi deploy" -ForegroundColor DarkGray
+    }
   } finally {
     Pop-Location
   }
@@ -560,8 +644,7 @@ function Ensure-AppReady {
     Write-Host "Chua co node_modules — npm install..." -ForegroundColor Yellow
     Push-Location $RepoRoot
     try {
-      npm install 2>&1 | Out-Host
-      if ($LASTEXITCODE -ne 0) { throw "npm install that bai" }
+      Invoke-NativeCommand -FailMessage "npm install that bai" -Command { npm install } | Out-Null
     } finally {
       Pop-Location
     }
@@ -583,26 +666,29 @@ function Invoke-NpmDeploy {
     if ($FullDeploy -or $DeployKind -eq "all") {
       if ($scripts -contains "deploy") {
         Write-Host "npm run deploy (full)..." -ForegroundColor Yellow
-        npm run deploy 2>&1 | Out-Host
+        Invoke-NativeCommand -FailMessage "npm run deploy that bai" -Command { npm run deploy } | Out-Null
       } else {
         Write-Host "npm run build + firebase deploy..." -ForegroundColor Yellow
-        if ($scripts -contains "build") { npm run build 2>&1 | Out-Host; if ($LASTEXITCODE -ne 0) { throw "build that bai" } }
-        firebase deploy 2>&1 | Out-Host
+        if ($scripts -contains "build") {
+          Invoke-NativeCommand -FailMessage "build that bai" -Command { npm run build } | Out-Null
+        }
+        Invoke-NativeCommand -FailMessage "firebase deploy that bai" -Command { firebase deploy } | Out-Null
       }
     } else {
       if ($scripts -contains "deploy:hosting") {
         Write-Host "npm run deploy:hosting..." -ForegroundColor Yellow
-        npm run deploy:hosting 2>&1 | Out-Host
+        Invoke-NativeCommand -FailMessage "npm run deploy:hosting that bai" -Command { npm run deploy:hosting } | Out-Null
       } elseif ($scripts -contains "deploy") {
         Write-Host "npm run deploy..." -ForegroundColor Yellow
-        npm run deploy 2>&1 | Out-Host
+        Invoke-NativeCommand -FailMessage "npm run deploy that bai" -Command { npm run deploy } | Out-Null
       } else {
         Write-Host "npm run build + firebase deploy --only hosting..." -ForegroundColor Yellow
-        if ($scripts -contains "build") { npm run build 2>&1 | Out-Host; if ($LASTEXITCODE -ne 0) { throw "build that bai" } }
-        firebase deploy --only hosting 2>&1 | Out-Host
+        if ($scripts -contains "build") {
+          Invoke-NativeCommand -FailMessage "build that bai" -Command { npm run build } | Out-Null
+        }
+        Invoke-NativeCommand -FailMessage "firebase deploy that bai" -Command { firebase deploy --only hosting } | Out-Null
       }
     }
-    if ($LASTEXITCODE -ne 0) { throw "npm/firebase deploy that bai" }
   } finally {
     Pop-Location
   }
@@ -647,7 +733,7 @@ function Invoke-AppDeploy {
   Ensure-AppReady $repoRoot
 
   Invoke-FirebaseAccount $account
-  Invoke-FirebaseProject $App.firebaseProject
+  Invoke-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -Interactive:$Interactive
   Invoke-NpmDeploy -RepoRoot $repoRoot -DeployKind ([string]$App.deploy) -FullDeploy:$FullDeploy
 
   $verAfter = Get-AppVersionLabel $repoRoot
