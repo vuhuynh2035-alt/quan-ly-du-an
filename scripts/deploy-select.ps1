@@ -43,13 +43,14 @@ function Show-Menu {
 
   Write-Host ""
   Write-Host "   A  Deploy TAT CA app trong danh sach" -ForegroundColor Yellow
+  Write-Host "   X  An app khoi danh sach (khong dung nua)" -ForegroundColor DarkGray
   Write-Host "   R  Quet lai thu muc Cursor" -ForegroundColor DarkGray
   Write-Host "   L  Xem tai khoan Firebase da dang nhap" -ForegroundColor DarkGray
-  Write-Host "   E  Mo file cau hinh (account / scanRoots)" -ForegroundColor DarkGray
+  Write-Host "   E  Mo file cau hinh (account / exclude)" -ForegroundColor DarkGray
   Write-Host "   S  Huong dan cau hinh lan dau" -ForegroundColor DarkGray
   Write-Host "   Q  Thoat" -ForegroundColor DarkGray
   Write-Host ""
-  Write-Host "  Tip: chon SO app can deploy (vd: 1). Tranh bam A neu chua gan dung TK." -ForegroundColor DarkGray
+  Write-Host "  Tip: chon SO app can deploy. App cu van hien vi Cursor con nho — bam X de an." -ForegroundColor DarkGray
   Write-Host ""
 }
 
@@ -79,6 +80,10 @@ function Show-SetupGuide {
   Write-Host "  Lan dau: chon tai khoan Firebase (se nho lai)"
   Write-Host "  Sau do tu dong: doi TK -> git pull -> build -> hosting"
   Write-Host ""
+  Write-Host "An app khong dung:" -ForegroundColor Yellow
+  Write-Host "  Bam X trong menu, hoac them vao exclude trong config"
+  Write-Host "  (Cursor van nho project cu nen tool van quet ra neu khong exclude)"
+  Write-Host ""
   Write-Host "Tuy chon: them scanRoots trong config de quet them thu muc." -ForegroundColor DarkGray
   Write-Host ""
   Show-FirebaseAccounts
@@ -106,6 +111,7 @@ function Resolve-Choice {
   if ($c -match '^[Ll]$') { return @{ action = "list" } }
   if ($c -match '^[Ss]$') { return @{ action = "setup" } }
   if ($c -match '^[Rr]$') { return @{ action = "refresh" } }
+  if ($c -match '^[Xx]$') { return @{ action = "exclude" } }
 
   if ($c -match '^\d+$') {
     $idx = [int]$c - 1
@@ -142,6 +148,31 @@ function Deploy-All {
   Write-Host "Deploy tat ca app: THANH CONG" -ForegroundColor Green
 }
 
+function Hide-AppInteractive {
+  param([object[]]$Apps, [object]$Config)
+  if (-not $Apps -or $Apps.Count -eq 0) {
+    Write-Host "Khong co app de an." -ForegroundColor Yellow
+    return
+  }
+  Write-Host ""
+  Write-Host "Chon so app muon AN khoi danh sach:" -ForegroundColor Cyan
+  for ($i = 0; $i -lt $Apps.Count; $i++) {
+    Write-Host ("  {0,2}. {1}" -f ($i + 1), $Apps[$i].label)
+  }
+  $pick = Read-Host "So (hoac Enter huy)"
+  if ($pick -notmatch '^\d+$') { return }
+  $idx = [int]$pick - 1
+  if ($idx -lt 0 -or $idx -ge $Apps.Count) {
+    Write-Host "So khong hop le." -ForegroundColor Red
+    return
+  }
+  $app = $Apps[$idx]
+  $rule = if ($app.path) { [string]$app.path } else { [string]$app.label }
+  Add-DeployExclude -Config $Config -Rule $rule
+  Write-Host "Da an: $($app.label)" -ForegroundColor Green
+  Write-Host "  (luu trong exclude — Cursor van con project cu nhung menu khong hien)" -ForegroundColor DarkGray
+}
+
 try {
   Test-DeployPrerequisites
   $config = Read-DeployConfig ""
@@ -159,6 +190,10 @@ try {
       "edit" { Open-ConfigEditor; exit 0 }
       "list" { Show-FirebaseAccounts; exit 0 }
       "setup" { Show-SetupGuide; exit 0 }
+      "exclude" {
+        Hide-AppInteractive -Apps $apps -Config $config
+        exit 0
+      }
       "refresh" {
         $apps = @(Get-MergedDeployApps (Read-DeployConfig ""))
         Write-Host "Da quet lai: $($apps.Count) app" -ForegroundColor Green
@@ -170,7 +205,7 @@ try {
 
   while ($true) {
     Show-Menu $apps $config
-    $input = Read-Host "Chon so / A / R / L / E / S / Q"
+    $input = Read-Host "Chon so / A / X / R / L / E / S / Q"
     $resolved = Resolve-Choice $apps $input
 
     if (-not $resolved) {
@@ -187,6 +222,11 @@ try {
       }
       "list" { Show-FirebaseAccounts; Read-Host "Enter de tiep tuc" | Out-Null }
       "setup" { Show-SetupGuide; Read-Host "Enter de tiep tuc" | Out-Null }
+      "exclude" {
+        Hide-AppInteractive -Apps $apps -Config $config
+        $config = Read-DeployConfig ""
+        $apps = @(Get-MergedDeployApps $config)
+      }
       "refresh" {
         $config = Read-DeployConfig ""
         $apps = @(Get-MergedDeployApps $config)

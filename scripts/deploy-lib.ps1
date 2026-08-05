@@ -112,6 +112,27 @@ function Read-DeployConfig {
   if (-not $cfg.PSObject.Properties["scanRoots"]) {
     $cfg | Add-Member -NotePropertyName scanRoots -NotePropertyValue @() -Force
   }
+  if (-not $cfg.PSObject.Properties["exclude"]) {
+    $cfg | Add-Member -NotePropertyName exclude -NotePropertyValue @() -Force
+  }
+
+  # Neu dang dung local.json, gop them exclude mac dinh tu config.json
+  $shared = Join-Path $PSScriptRoot "deploy-apps.config.json"
+  if ((Test-Path $shared) -and ($path -ne $shared)) {
+    try {
+      $base = Get-Content $shared -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($base.exclude) {
+        $merged = @()
+        if ($cfg.exclude) { $merged = @($cfg.exclude) }
+        foreach ($r in @($base.exclude)) {
+          if ($r -and -not ($merged | Where-Object { [string]$_ -eq [string]$r })) {
+            $merged += $r
+          }
+        }
+        $cfg | Add-Member -NotePropertyName exclude -NotePropertyValue $merged -Force
+      }
+    } catch {}
+  }
   return $cfg
 }
 
@@ -310,6 +331,51 @@ function New-AppFromPath {
   }
 }
 
+function Test-AppExcluded {
+  param(
+    [object]$App,
+    [object]$Config
+  )
+  $rules = @()
+  if ($Config.exclude) { $rules = @($Config.exclude) }
+  if ($rules.Count -eq 0) { return $false }
+
+  $path = if ($App.path) { [string]$App.path } else { "" }
+  $id = if ($App.id) { [string]$App.id } else { "" }
+  $label = if ($App.label) { [string]$App.label } else { "" }
+  $leaf = if ($path) { Split-Path $path -Leaf } else { "" }
+  $project = if ($App.firebaseProject) { [string]$App.firebaseProject } else { "" }
+  $haystack = @($path, $id, $label, $leaf, $project) | Where-Object { $_ }
+
+  foreach ($rule in $rules) {
+    $r = [string]$rule
+    if (-not $r) { continue }
+    foreach ($h in $haystack) {
+      if ($h -like "*$r*" -or $h -eq $r) { return $true }
+      # so khop khong phan biet hoa thuong
+      if ($h.ToLowerInvariant().Contains($r.ToLowerInvariant())) { return $true }
+    }
+  }
+  return $false
+}
+
+function Add-DeployExclude {
+  param(
+    [object]$Config,
+    [string]$Rule
+  )
+  $rule = [string]$Rule
+  if (-not $rule) { return }
+  $list = @()
+  if ($Config.exclude) { $list = @($Config.exclude) }
+  $exists = $list | Where-Object { [string]$_ -eq $rule } | Select-Object -First 1
+  if (-not $exists) {
+    $list += $rule
+    $Config | Add-Member -NotePropertyName exclude -NotePropertyValue $list -Force
+    [void](Save-DeployConfig $Config)
+  }
+}
+
 function Get-MergedDeployApps {
   param([object]$Config)
 
@@ -319,6 +385,9 @@ function Get-MergedDeployApps {
   $register = {
     param($app)
     $p = Resolve-AppPath $app
+    if (Test-AppExcluded -App ([pscustomobject]@{ path = $p; id = $app.id; label = $app.label; firebaseProject = $app.firebaseProject }) -Config $Config) {
+      return
+    }
     if (-not $byPath.ContainsKey($p)) {
       $app.path = $p
       $byPath[$p] = $app
@@ -364,6 +433,7 @@ function Get-MergedDeployApps {
   $list = @()
   foreach ($p in $order) {
     $app = $byPath[$p]
+    if (Test-AppExcluded -App $app -Config $Config) { continue }
     if (-not $app.firebaseProject) {
       $app.firebaseProject = Get-FirebaseProjectId $p
     }

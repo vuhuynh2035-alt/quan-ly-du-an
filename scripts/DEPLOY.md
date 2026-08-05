@@ -56,6 +56,17 @@ firebase login:list
 | `S` | Hướng dẫn |
 | `Q` | Thoát |
 
+### An app khong dung
+
+Tool quet ca project **cu** ma Cursor van nho (`workspaceStorage`), nen app hotel van hien du ban khong dung.
+
+- Bam **`X`** trong menu → chon so app → an khoi danh sach
+- Hoac them vao `"exclude"` trong config:
+
+```json
+"exclude": ["hotel", "hotel_app_firebase", "XUANQUYNH_HOTEL"]
+```
+
 ## Cấu hình tùy chọn
 
 ```json

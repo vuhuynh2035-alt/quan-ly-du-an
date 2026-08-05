@@ -4,6 +4,12 @@
     "D:\\projects",
     "C:\\Users\\BAN_TEN\\Documents\\GitHub"
   ],
+  "exclude": [
+    "hotel",
+    "hotel_app_firebase",
+    "XUANQUYNH_HOTEL",
+    "hotel-xuan-quynh"
+  ],
   "accounts": [
     {
       "id": "saree",
