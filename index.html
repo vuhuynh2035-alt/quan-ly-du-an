@@ -558,9 +558,9 @@ textarea{min-height:60px;resize:vertical}
 .emp-card-gantt-bar-wrap{position:relative;height:15px;border-radius:999px;overflow:hidden}
 .emp-card-gantt-bar-bg{position:absolute;inset:0;border-radius:999px}
 .emp-card-gantt-bar{position:absolute;left:0;top:0;height:100%;border-radius:999px;min-width:2px;z-index:1;transition:width .2s}
-.emp-card-gantt-inner{position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;padding:0 5px;z-index:2;pointer-events:none;gap:2px}
-.emp-card-gantt-date{flex:0 0 auto;font-size:9px;font-weight:700;font-family:monospace;color:rgba(255,255,255,.95);text-shadow:0 1px 2px rgba(0,0,0,.9);line-height:1;white-space:nowrap}
-.emp-card-gantt-days{flex:1;min-width:0;text-align:center;font-size:9px;font-weight:700;font-family:monospace;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.9);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1}
+.emp-card-gantt-inner{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:0 5px;z-index:2;pointer-events:none;gap:2px}
+.emp-card-gantt-date{display:none}
+.emp-card-gantt-days{flex:0 1 auto;min-width:0;text-align:center;font-size:9px;font-weight:700;font-family:monospace;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.9);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1}
 .emp-card-gantt-bar-wrap.sched-ok .emp-card-gantt-bar-bg{background:rgba(190,242,100,.14);border:1px solid rgba(190,242,100,.32)}
 .emp-card-gantt-bar-wrap.sched-ok .emp-card-gantt-bar{background:linear-gradient(90deg,#84cc16,#bef264)}
 .emp-card-gantt-bar-wrap.sched-risk .emp-card-gantt-bar-bg{background:rgba(251,146,60,.14);border:1px solid rgba(251,146,60,.32)}
@@ -615,6 +615,10 @@ textarea{min-height:60px;resize:vertical}
 .gantt-bar-wrap{position:absolute;top:50%;transform:translateY(-50%);height:20px;z-index:4}
 .gantt-bar-bg{position:absolute;inset:0;border-radius:999px;border:1px solid}
 .gantt-bar{position:absolute;left:0;top:0;height:100%;border-radius:999px;min-width:3px;z-index:1}
+.gantt-bar-inner{position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:0 6px;z-index:5;pointer-events:none;overflow:hidden;min-width:0}
+.gantt-bar-inner-compact{justify-content:center;padding:0 4px}
+.gantt-bar-inner .gantt-bar-label{position:static;flex:1 1 auto;min-width:0;padding:0;font-size:10px;font-weight:600;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.85);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt-bar-meta{flex:0 0 auto;font-size:9px;font-family:monospace;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.9);white-space:nowrap}
 .gantt-bar-label{position:absolute;inset:0;display:flex;align-items:center;padding:0 32px 0 7px;font-size:10px;font-weight:600;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.85);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:5;pointer-events:none}
 .gantt-bar-days{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:9px;font-family:monospace;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.9);z-index:7;pointer-events:none;white-space:nowrap}
 .gantt-pct{position:absolute;top:50%;right:4px;transform:translateY(-50%);padding:0 4px;font-size:9px;font-family:monospace;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.9);z-index:6;pointer-events:none}
@@ -1515,6 +1519,21 @@ function projDays(start,end){
   if(!s||!e)return "—";
   return Math.max(1,Math.round((e.getTime()-s.getTime())/86400000)+1)+" ngày";
 }
+function ganttBarInnerHTML(w,opts){
+  opts=opts||{};
+  var label=String(opts.label||""),days=opts.days||"",pct=opts.pct!=null?opts.pct+"%":"",tip=opts.tip||label;
+  var dShort=days?String(days).replace(/\s*ngày$/,"d"):"";
+  var fullTip=tip+(days?" · "+days:"")+(pct?" · "+pct:"");
+  if(w<28)return "";
+  if(w<48){
+    var meta=[dShort,pct].filter(Boolean).join(" · ");
+    return '<div class="gantt-bar-inner gantt-bar-inner-compact" title="'+esc(fullTip)+'"><span class="gantt-bar-meta">'+esc(meta||shortGanttText(label,8))+'</span></div>';
+  }
+  if(w<78){
+    return '<div class="gantt-bar-inner" title="'+esc(fullTip)+'"><span class="gantt-bar-label">'+esc(shortGanttText(label,Math.max(4,Math.floor(w/7))))+'</span><span class="gantt-bar-meta">'+esc(pct||dShort)+'</span></div>';
+  }
+  return '<div class="gantt-bar-inner" title="'+esc(fullTip)+'"><span class="gantt-bar-label">'+esc(shortGanttText(label,Math.max(8,Math.floor(w/7))))+'</span><span class="gantt-bar-meta">'+esc(dShort)+'</span><span class="gantt-bar-meta">'+esc(pct)+'</span></div>';
+}
 function defaultProjStart(){return dAdd(td(),1)}
 function dateParts(iso){
   var d=dParse(iso||defaultProjStart())||dParse(td());
@@ -1714,14 +1733,13 @@ function ganttHTML(){
   h+='</div></div></div></div>';
   items.forEach(function(it){
     var l=px(it.s),w=Math.max(4,px(it.e)-l),pw=Math.max(2,w*it.prog/100),bt=ganttBarText(it.p),days=projDays(it.s,it.e);
+    var barTip=(it.p.name||"")+" · "+days+" · "+it.prog+"%";
     h+='<div class="gantt-body-row"><div class="gantt-lbl" title="'+esc((projCompanyName(it.p)||it.p.name||"")+" · "+dFmtCard(it.s)+" – "+dFmtCard(it.e))+'">'+ganttLblHTML(it.p,it.s,it.e)+'</div>';
     h+='<div class="gantt-scroll gantt-sync"><div class="gantt-track-px" style="width:'+trackW+'px">';
-    h+='<div class="gantt-bar-wrap" style="left:'+l+'px;width:'+w+'px">';
+    h+='<div class="gantt-bar-wrap" style="left:'+l+'px;width:'+w+'px" title="'+esc(barTip)+'">';
     h+='<div class="gantt-bar-bg" style="background:'+it.col+'28;border-color:'+it.col+'55"></div>';
     h+='<div class="gantt-bar" style="width:'+pw+'px;background:linear-gradient(90deg,'+it.col+','+it.col+'bb)"></div>';
-    if(w>28)h+='<span class="gantt-bar-days">'+days+'</span>';
-    if(w>24)h+='<span class="gantt-bar-label" title="'+esc(it.p.name)+'">'+esc(bt)+'</span>';
-    if(w>52)h+='<span class="gantt-pct">'+it.prog+'%</span>';
+    h+=ganttBarInnerHTML(w,{label:bt,days:days,pct:it.prog,tip:it.p.name});
     h+='</div></div></div></div>';
   });
   return h+'</div>';
@@ -1820,8 +1838,7 @@ function empGanttHTML(empId,opts){
       h+='<div class="gantt-bar-wrap'+(a.status==="paused"?" emp-gantt-paused":"")+'" style="left:'+l+'px;width:'+wbar+'px'+(opts.clickable?";cursor:pointer":"")+'" title="'+esc(tip)+'"'+(opts.clickable?' onclick="event.stopPropagation();A.empAsgnCard(\''+a.id+'\',\''+(a._orgId||currentOrgId())+'\')"':"")+'>';
       h+='<div class="gantt-bar-bg" style="background:'+col+'28;border-color:'+col+'66"></div>';
       h+='<div class="gantt-bar" style="width:'+pw+'px;background:linear-gradient(90deg,'+col+','+col+'bb)"></div>';
-      if(wbar>36)h+='<span class="gantt-bar-label">'+esc(shortGanttText(info.title,14))+'</span>';
-      if(wbar>52)h+='<span class="gantt-pct">'+prog+'%</span>';
+      h+=ganttBarInnerHTML(wbar,{label:info.title,pct:prog,tip:info.title});
       h+='</div>';
     });
     h+='</div></div></div>';
@@ -2580,7 +2597,7 @@ function asgnFactoryName(a){
 }
 function empJobCnt(eid){return empActs(eid).length}
 function asgnLiveDotHTML(a){var on=a.status==="active";return'<span class="emp-card-task-live '+(on?"on":"off")+'" title="'+(on?"Đang làm":"Tạm dừng")+'"></span>'}
-function empCardGanttHTML(a){var prog=Math.max(0,Math.min(100,a.prog||0)),timePct=asgnTimePct(a),sched=asgnSchedStatus(a),days=asgnDays(a),start=dFmtCard(a.startDate),end=dFmtCard(asgnEndDate(a)),tip="Tiến độ "+prog+"% · Thời gian "+timePct+"% · "+asgnSchedLabel(sched);return'<div class="emp-card-gantt" title="'+esc(tip)+'"><div class="emp-card-gantt-bar-wrap sched-'+sched+'"><div class="emp-card-gantt-bar-bg"></div><div class="emp-card-gantt-bar" style="width:'+prog+'%"></div><div class="emp-card-gantt-inner"><span class="emp-card-gantt-date">'+start+'</span><span class="emp-card-gantt-days">'+days+'</span><span class="emp-card-gantt-date">'+end+'</span></div></div></div>'}
+function empCardGanttHTML(a){var prog=Math.max(0,Math.min(100,a.prog||0)),timePct=asgnTimePct(a),sched=asgnSchedStatus(a),days=asgnDays(a),start=dFmtCard(a.startDate),end=dFmtCard(asgnEndDate(a)),tip=start+" → "+end+" · Tiến độ "+prog+"% · Thời gian "+timePct+"% · "+asgnSchedLabel(sched);return'<div class="emp-card-gantt" title="'+esc(tip)+'"><div class="emp-card-gantt-bar-wrap sched-'+sched+'"><div class="emp-card-gantt-bar-bg"></div><div class="emp-card-gantt-bar" style="width:'+prog+'%"></div><div class="emp-card-gantt-inner"><span class="emp-card-gantt-days">'+days+' · '+prog+'%</span></div></div></div>'}
 function empCardTasksHTML(e){var acts=empActs(e.id).sort(function(a,b){return (b.startDate||"").localeCompare(a.startDate||"")});if(!acts.length)return'<div class="emp-card-tasks-empty">Chưa có việc</div>';var h="";acts.forEach(function(x){var factory=asgnFactoryName(x),work=asgnInfo(x).title,paused=x.status==="paused";h+='<div class="emp-card-task'+(paused?" emp-card-task-paused":"")+'" onclick="event.stopPropagation();A.empAsgnCard(\''+x.id+'\',\''+(x._orgId||currentOrgId())+'\')">'+asgnLiveDotHTML(x)+'<div class="emp-card-task-factory">'+esc(factory)+'</div><div class="emp-card-task-work">'+esc(work)+'</div>'+empCardGanttHTML(x)+'</div>'});return h}
 function empNamebarClick(eid){return'event.stopPropagation();var w=this.closest(\'.swipe-wrap\');if(w&&w._swiping)return;A.empDet(\''+eid+'\')'}
 function empNameColor(e){if(e.status==="leave")return"#f87171";if(busyPct(e)>=100)return"#fb923c";return document.documentElement.getAttribute("data-theme")==="light"?"#0d2137":"#fff"}
