@@ -4,16 +4,17 @@ cd /d "%~dp0"
 
 echo.
 echo  ========================================
-echo   Cong cu deploy Firebase (chon chuong trinh)
+echo   DEPLOY FIREBASE — nhieu app / nhieu TK
 echo  ========================================
 echo   Thu muc: %~dp0
-echo   Menu:    %~dp0scripts\deploy-select.ps1
-echo   Config:  %~dp0scripts\deploy-apps.config.json
 echo.
-echo   Lenh nhanh: deploy.bat quan-ly-du-an
-echo               deploy.bat A
-echo               deploy.bat S   (huong dan cau hinh)
-echo               deploy.bat quan-ly-du-an -SkipPull
+echo   Tu dong liet ke project Firebase trong Cursor.
+echo   Chon so -^> doi tai khoan Firebase -^> git pull -^> deploy.
+echo.
+echo   Lenh: deploy.bat          (menu)
+echo         deploy.bat 1        (app so 1)
+echo         deploy.bat S        (huong dan)
+echo         deploy.bat L        (list tai khoan)
 echo.
 
 where powershell >nul 2>&1

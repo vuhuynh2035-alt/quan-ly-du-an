@@ -1,4 +1,4 @@
-# Deploy tat ca app trong deploy-apps.config.json
+# Deploy tat ca app Firebase (Cursor + config)
 # PowerShell: .\scripts\deploy-all.ps1
 
 param(
@@ -11,14 +11,15 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "deploy-lib.ps1")
 
 $config = Read-DeployConfig $ConfigPath
+$apps = @(Get-MergedDeployApps $config)
 $failed = @()
 
 Write-Host ""
-Write-Host "Deploy $($config.apps.Count) app..." -ForegroundColor Cyan
+Write-Host "Deploy $($apps.Count) app..." -ForegroundColor Cyan
 
-foreach ($app in $config.apps) {
+foreach ($app in $apps) {
   try {
-    Invoke-AppDeploy -App $app -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy
+    Invoke-AppDeploy -App $app -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy -Interactive
   } catch {
     Write-Host "[LOI] $($app.label): $($_.Exception.Message)" -ForegroundColor Red
     $failed += $app.id

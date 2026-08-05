@@ -1,91 +1,94 @@
-# Deploy Firebase — nhiều app / nhiều tài khoản
+# Deploy Firebase — nhiều app Cursor / nhiều tài khoản
 
-## Vị trí công cụ (trong repo)
+## Mục tiêu
+
+Một lần double-click **`deploy.bat`**:
+
+1. **Liệt kê** các project Firebase đã mở trong Cursor (và thư mục sibling / `scanRoots`)
+2. Bạn **chọn số** app
+3. Tool **tự đổi tài khoản Firebase** → `git pull` → build → deploy Hosting
+
+## Vị trí
 
 | File | Vai trò |
 |------|---------|
-| **`deploy.bat`** | Double-click trên Windows — mở menu |
-| `scripts/deploy-select.ps1` | Menu chọn app |
-| `scripts/deploy-lib.ps1` | Logic chung (git pull, Firebase, npm) |
-| `scripts/deploy-app.ps1` | Deploy 1 app |
-| `scripts/deploy-all.ps1` | Deploy tất cả app trong config |
-| **`scripts/deploy-apps.config.json`** | Danh sách app + tài khoản Firebase |
-| `scripts/deploy-apps.config.example.json` | Mẫu để thêm app / account |
-| `scripts/deploy-apps.local.json` | Ghi đè riêng trên máy (không commit) |
+| **`deploy.bat`** | Double-click trên Windows |
+| `scripts/deploy-select.ps1` | Menu |
+| `scripts/deploy-lib.ps1` | Quét Cursor + logic deploy |
+| `scripts/deploy-apps.config.json` | Config mẫu trong repo |
+| **`scripts/deploy-apps.local.json`** | Config máy bạn (email, mapping) — **không commit** |
 
-> Sau khi `git pull`, các file trên nằm **ở thư mục gốc repo** (cùng cấp với `package.json`).
+## Cách hoạt động
 
-## Cách dùng (Windows)
+### Tự tìm app từ Cursor
 
-1. **Cài một lần:** Node.js + `npm install -g firebase-tools`
-2. **Đăng nhập Firebase:** `firebase login:add` (lặp lại nếu có nhiều tài khoản Google)
-3. Double-click **`deploy.bat`** hoặc chạy `deploy.bat S` để xem hướng dẫn cấu hình
-4. Chọn số app → script sẽ:
-   - **`git pull origin main`** (luôn lấy code mới — tránh deploy bản cũ như v1.068)
-   - Kiểm tra `public/firebase-config.js`, cài `node_modules` nếu thiếu
-   - `firebase login:use` theo email trong config (hoặc tài khoản duy nhất đã login)
-   - `firebase use <project>`
-   - `npm run deploy:hosting` (tự bump version + build + đẩy Hosting)
+Tool đọc:
+
+- `%APPDATA%\Cursor\User\workspaceStorage\*\workspace.json`
+- `%APPDATA%\Cursor\User\globalStorage\storage.json`
+- Thư mục **cùng cấp** với repo này
+- `scanRoots` trong config (nếu bạn khai báo)
+
+Chỉ hiện folder có **`firebase.json`** hoặc **`.firebaserc`** + `package.json`.
+
+### Nhiều tài khoản Firebase
+
+1. Đăng nhập từng tài khoản Google (một lần):
+
+```powershell
+firebase login:add
+firebase login:add
+firebase login:list
+```
+
+2. Lần đầu chọn app → menu hỏi **email nào** gắn với app đó → lưu vào `accountByPath` trong `deploy-apps.local.json`
+3. Lần sau: tự `firebase login:use <email>` rồi deploy
 
 ## Menu
 
 | Phím | Chức năng |
 |------|-----------|
-| `1`, `2`, … | Deploy app tương ứng |
-| `A` | Deploy **tất cả** app |
-| `L` | Liệt kê tài khoản Firebase đã `login:add` |
-| `E` | Mở `deploy-apps.config.json` bằng Notepad |
-| `S` | Hướng dẫn cấu hình lần đầu |
+| `1`, `2`… | Deploy app đó (đổi TK + pull + build + hosting) |
+| `A` | Deploy tất cả |
+| `R` | Quét lại Cursor |
+| `L` | Liệt kê tài khoản Firebase đã login |
+| `E` | Sửa config |
+| `S` | Hướng dẫn |
 | `Q` | Thoát |
 
-## Cấu hình `deploy-apps.config.json`
+## Cấu hình tùy chọn
+
+```json
+{
+  "discoverCursor": true,
+  "scanRoots": ["D:\\projects"],
+  "accounts": [
+    { "id": "saree", "label": "SAREE", "email": "a@gmail.com" }
+  ],
+  "accountByPath": {
+    "D:\\projects\\quan-ly-du-an": "a@gmail.com"
+  },
+  "apps": []
+}
+```
 
 | Trường | Ý nghĩa |
 |--------|---------|
-| `accounts[].id` | Mã tài khoản (tự đặt) |
-| `accounts[].email` | Email đã `firebase login:add` trên máy này |
-| `apps[].id` | Mã app (dùng lệnh nhanh: `deploy.bat quan-ly-du-an`) |
-| `apps[].path` | Để trống = repo hiện tại; hoặc `..\ten-thu-muc-app` |
-| `apps[].branch` | Nhánh git pull trước deploy (thường `main`) |
-| `apps[].firebaseProject` | Project ID trên Firebase Console |
-| `apps[].accountId` | Khớp `accounts[].id` |
-| `apps[].deploy` | `hosting` (chỉ web) hoặc `all` (rules + functions + hosting) |
-| `apps[].siteUrl` | URL hiển thị sau deploy (tùy chọn) |
+| `discoverCursor` | `true` = tự quét Cursor |
+| `scanRoots` | Thêm thư mục cha để quét app con |
+| `accountByPath` | Gắn đường dẫn tuyệt đối → email Firebase |
+| `apps` | Ghi đè thủ công (label, branch, deploy full…) |
 
-**Ghi đè riêng trên máy:** copy thành `scripts/deploy-apps.local.json` — script ưu tiên file này.
-
-## Thêm app mới
-
-1. Clone repo app vào máy (ví dụ cạnh repo này: `..\family-medical-record`).
-2. Thêm block vào `apps[]` trong config (xem `deploy-apps.config.example.json`).
-3. `firebase login:add` với email tài khoản Firebase của app đó.
-4. Điền `email` vào `accounts[]` tương ứng.
-
-## Lệnh nhanh (không cần menu)
+## Lệnh nhanh
 
 ```powershell
-.\scripts\deploy-app.ps1 -AppId quan-ly-du-an
+deploy.bat
+deploy.bat 1
 deploy.bat quan-ly-du-an
 deploy.bat A
 deploy.bat S
-deploy.bat L
-
-# Bo qua git pull (deploy code dang co tren may):
-.\scripts\deploy-app.ps1 -AppId quan-ly-du-an -SkipPull
-
-# Deploy full (rules + functions + hosting):
-.\scripts\deploy-app.ps1 -AppId quan-ly-du-an -FullDeploy
 ```
 
-## Linux / macOS
+## Vì sao trước đây ra version cũ?
 
-```bash
-./scripts/deploy-app.sh quan-ly-du-an
-```
-
-(Script bash hỗ trợ app trong repo hiện tại; menu đa app dùng PowerShell trên Windows.)
-
-## Vì sao trước đây ra v1.068?
-
-Tool cũ **không `git pull`** trước deploy → build từ `public/app-version.json` cũ trên máy (67 → bump 68).  
-GitHub `main` đã v1.072 nhưng Hosting vẫn bản cũ. Luồng mới **luôn pull trước** nên version khớp code mới.
+Tool cũ không `git pull` → deploy code local cũ. Luồng mới **luôn pull** trước khi build.

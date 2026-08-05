@@ -1,4 +1,6 @@
 {
+  "discoverCursor": true,
+  "scanRoots": [],
   "accounts": [
     {
       "id": "saree",
@@ -6,6 +8,7 @@
       "email": ""
     }
   ],
+  "accountByPath": {},
   "apps": [
     {
       "id": "quan-ly-du-an",

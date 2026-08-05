@@ -54,14 +54,14 @@ Xem [FIREBASE_SETUP.md](./FIREBASE_SETUP.md) — deploy cloud sync realtime + th
 
 ### Deploy lên Hosting (Windows)
 
-Công cụ deploy **nằm ngay thư mục gốc repo**:
+Double-click **`deploy.bat`** ở thư mục gốc repo:
 
-- **`deploy.bat`** — double-click để mở menu
-- **`scripts/deploy-apps.config.json`** — danh sách app + tài khoản Firebase
+- Tự **liệt kê project Firebase** đã mở trong Cursor (nhiều app)
+- Mỗi app gắn **một tài khoản Firebase** (đổi TK tự động khi chọn)
+- Luồng: đổi account → `git pull` → build → Hosting
 
-Lần đầu: chạy `deploy.bat S` (hướng dẫn) hoặc xem [scripts/DEPLOY.md](./scripts/DEPLOY.md).
-
-Luồng deploy: `git pull` → build → Firebase Hosting (tự tăng version).
+Lần đầu: `firebase login:add` (lặp lại cho mỗi Google account), rồi `deploy.bat S`.  
+Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
 
 ## File không commit (bí mật)
 

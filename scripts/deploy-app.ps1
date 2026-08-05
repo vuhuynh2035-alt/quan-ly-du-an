@@ -13,13 +13,21 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "deploy-lib.ps1")
 
 $config = Read-DeployConfig $ConfigPath
-$app = $config.apps | Where-Object { $_.id -eq $AppId } | Select-Object -First 1
+$apps = @(Get-MergedDeployApps $config)
+$app = $apps | Where-Object { $_.id -eq $AppId } | Select-Object -First 1
 if (-not $app) {
-  throw "Khong tim thay app '$AppId'. Sua scripts\deploy-apps.config.json"
+  # fallback: so thu tu 1-based
+  if ($AppId -match '^\d+$') {
+    $idx = [int]$AppId - 1
+    if ($idx -ge 0 -and $idx -lt $apps.Count) { $app = $apps[$idx] }
+  }
+}
+if (-not $app) {
+  throw "Khong tim thay app '$AppId'. Chay deploy.bat de xem danh sach."
 }
 
 try {
-  Invoke-AppDeploy -App $app -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy
+  Invoke-AppDeploy -App $app -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy -Interactive
 } catch {
   Write-Host ""
   Write-Host "[LOI] $($_.Exception.Message)" -ForegroundColor Red
