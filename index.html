@@ -1153,7 +1153,7 @@ function canOperate(){return staffLevel()==="operate"}
 function isSuperviseOnly(){return staffLevel()==="supervise"}
 function isChiefOnly(){return staffLevel()==="chief"}
 function hasOversightView(){var lv=staffLevel();return lv==="operate"||lv==="supervise"||lv==="chief"}
-/** Chỉ giám đốc: hồ sơ nhân sự, tổ/nhóm, trưởng nhóm/thủ kho, đánh giá chất lượng, chấm công công ty. */
+/** Chỉ giám đốc: hồ sơ nhân sự, tổ/nhóm, trưởng nhóm/thủ kho dự án, đánh giá chất lượng, chấm công công ty. */
 function canManageStaff(){if(!window.__CV3_SKIP_SEED)return true;return isDir()}
 /** Dữ liệu nhạy cảm công ty (sửa KH, đánh giá sao, thùng rác…). */
 function canViewSensitive(){if(!window.__CV3_SKIP_SEED)return true;return isDir()}
@@ -1195,7 +1195,7 @@ function dirGuard(){
 }
 function staffGuard(){
   if(canManageStaff())return true;
-  if(canOperate())alert("Chỉ giám đốc được tạo/sửa hồ sơ nhân sự, tổ nhóm và phân chức vụ (trưởng nhóm / thủ kho).");
+  if(canOperate())alert("Chỉ giám đốc được tạo/sửa hồ sơ nhân sự, tổ nhóm và phân chức vụ dự án (trưởng nhóm / thủ kho).");
   else if(isSuperviseOnly())alert("Nhóm Giám sát không có quyền quản lý nhân sự.");
   else alert("Chỉ giám đốc mới được thực hiện thao tác này.");
   return false;
@@ -1445,7 +1445,17 @@ function giaoAlertsSummaryHTML(p){
   return h;
 }
 function curGiaoPartIds(){return Object.keys(S.giaoPick).filter(function(eid){return S.giaoPick[eid]})}
-function canAssignProjRoles(count){return count>3}
+function canAssignProjRoles(count){return (count|0)>=2}
+function projRolePickMin(){return 2}
+function projRolePickHint(){
+  return "Chọn ít nhất "+projRolePickMin()+" nhân viên trong đội để phân Trưởng nhóm / Thủ kho.";
+}
+function projRolePartIds(p){
+  return projPartIds(p).slice().sort(function(a,b){
+    var ea=eById(a),eb=eById(b);
+    return (ea?ea.name:"").localeCompare(eb?eb.name:"","vi");
+  });
+}
 function rolePickPartIds(){
   return curGiaoPartIds().slice().sort(function(a,b){
     var ea=eById(a),eb=eById(b);
@@ -1456,14 +1466,30 @@ function empRoleOptLabel(e){return e?esc(e.name)+(e.group?" · "+esc(e.group):""
 function teamRolePickHTML(title,partIds){
   if(!canManageStaff())return "";
   partIds=partIds||curGiaoPartIds();
-  if(!canAssignProjRoles(partIds.length))return "";
   partIds=partIds.slice().sort(function(a,b){var ea=eById(a),eb=eById(b);return (ea?ea.name:"").localeCompare(eb?eb.name:"","vi")});
   var hdr=title?'<div style="font-size:13px;font-weight:700;color:#fbbf24;margin:12px 0 8px">'+esc(title)+'</div>':"";
+  if(!canAssignProjRoles(partIds.length)){
+    return hdr+'<div style="font-size:13px;color:var(--c-muted4);margin-top:8px">'+esc(projRolePickHint())+'</div>';
+  }
   var opts=function(sel){var h='<option value="">— Không chọn —</option>';partIds.forEach(function(eid){var e=eById(eid);if(e)h+='<option value="'+eid+'"'+(sel===eid?" selected":"")+'>'+empRoleOptLabel(e)+'</option>'});return h};
-  if(!partIds.length)return hdr;
   return hdr+'<div class="grid2" style="gap:14px;margin-top:4px"><div>'+fld("Trưởng nhóm",'<select onchange="A.teamTT(this.value)">'+opts(S.teamToTruong||"")+'</select>')+'</div><div>'+fld("Thủ kho",'<select onchange="A.teamVT(this.value)">'+opts(S.teamVatTu||"")+'</select>')+'</div></div>';
 }
 function teamRolePickBlock(title,partIds){var html=teamRolePickHTML(title,partIds);return html?'<div class="giao-grp giao-grp-main" style="margin-bottom:18px">'+html+'</div>':"";}
+function projRoleEditCardHTML(p){
+  if(!p||!canManageStaff())return "";
+  var partIds=projRolePartIds(p);
+  var opts=function(sel){var h='<option value="">— Không chọn —</option>';partIds.forEach(function(eid){var e=eById(eid);if(e)h+='<option value="'+eid+'"'+(sel===eid?" selected":"")+'>'+empRoleOptLabel(e)+'</option>'});return h};
+  var body;
+  if(!partIds.length){
+    body='<div style="font-size:13px;color:var(--c-muted);margin-bottom:12px">Chưa có nhân viên tham gia dự án. Bấm <b>Giao việc</b> để thêm người, rồi phân chức vụ tại đây.</div>'+btn("btn-accent btn-sm","Giao việc","A.giaoOpen('"+p.id+"')");
+  }else if(!canAssignProjRoles(partIds.length)){
+    body='<div style="font-size:13px;color:var(--c-muted4);margin-bottom:8px">'+esc(projRolePickHint())+'</div>'+btn("btn-accent btn-sm","Giao việc","A.giaoOpen('"+p.id+"')");
+  }else{
+    if(S._roleProjId!==p.id){S.teamToTruong=p.toTruongId||"";S.teamVatTu=p.vatTuId||"";S._roleProjId=p.id;}
+    body='<div class="grid2" style="gap:14px"><div>'+fld("Trưởng nhóm",'<select id="proj-role-tt" onchange="A.teamTT(this.value)">'+opts(S.teamToTruong||"")+'</select>')+'</div><div>'+fld("Thủ kho",'<select id="proj-role-vt" onchange="A.teamVT(this.value)">'+opts(S.teamVatTu||"")+'</select>')+'</div></div><div style="margin-top:14px">'+btn("btn-primary btn-sm","Lưu chức vụ","A.saveProjRoles()")+'</div>';
+  }
+  return'<div class="card card-p proj-role-card" style="margin-top:14px;border-color:rgba(251,191,36,.35);background:linear-gradient(135deg,rgba(251,191,36,.08),rgba(255,255,255,.03))"><div style="font-size:14px;font-weight:700;color:#fbbf24;margin-bottom:8px">Phân chức vụ — Đội dự án</div>'+body+'</div>';
+}
 function projTeamListHTML(p,opts){
   opts=opts||{};
   var partIds=projPartIds(p).slice();
@@ -4933,6 +4959,7 @@ function vProjDet(id){
   h+='<div class="grid2" style="gap:14px;margin-bottom:14px"><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Khách hàng</div><div style="font-size:14px">'+(cn?esc(cn):"—")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Địa điểm</div><div style="font-size:14px">📍 '+esc(pl?pl.name:p.province)+(c&&c.lat!=null?' <span style="font-family:monospace;font-size:12px;color:var(--c-muted4)">('+c.lat.toFixed(4)+", "+c.lng.toFixed(4)+')</span>':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Thời gian</div><div style="font-family:monospace;font-size:13px">'+dFmtG(tl.start)+' → '+dFmtG(tl.end)+(p.durationDays?' · '+p.durationDays+' ngày':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Đội tham gia</div><div style="font-family:monospace;font-size:13px">'+projPartIds(p).length+' người'+(p.toTruongId||p.vatTuId?" · đã phân chức vụ":"")+'</div></div></div>';
   if(p.note)h+='<div style="margin-bottom:14px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Mô tả</div><div style="font-size:14px;color:rgba(200,220,255,.8)">'+esc(p.note)+'</div></div>';
   h+=projOversightNoteHTML();
+  h+=projRoleEditCardHTML(p);
   h+='<div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px;margin-top:4px">Đội dự án (thi công)</div>';
   h+=projTeamListHTML(p,{link:canViewEmpTab(),acts:acts});
   h+='</div>';
@@ -6207,6 +6234,21 @@ window.A={
   },
   teamTT:function(v){S.teamToTruong=v||"";render()},
   teamVT:function(v){S.teamVatTu=v||"";render()},
+  saveProjRoles:function(){
+    if(!canManageStaff())return alert("Chỉ giám đốc được phân chức vụ dự án (trưởng nhóm / thủ kho).");
+    var p=pById(S.selProjDet);if(!p)return;
+    var oldTT=p.toTruongId||"",oldVT=p.vatTuId||"";
+    var parts=projPartIds(p);
+    var tt=S.teamToTruong||"",vt=S.teamVatTu||"";
+    if(!canAssignProjRoles(parts.length))tt=vt="";
+    if(tt&&parts.indexOf(tt)<0)tt="";
+    if(vt&&parts.indexOf(vt)<0)vt="";
+    applyProjTeam(p,parts,tt,vt);
+    ensureRoleHoldersHaveAsgn(p);
+    logTeamRoleChanges(p,oldTT,oldVT);
+    S.proj=S.proj.map(function(x){return x.id===p.id?p:x});
+    sv();render();
+  },
   giaoSchedChange:function(eid){
     var p=pById(S.giaoProj);if(!p||!S.giaoPick[eid])return;
     var sEl=document.getElementById("gsd_"+eid),eEl=document.getElementById("ged_"+eid);
