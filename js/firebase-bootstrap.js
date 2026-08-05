@@ -206,6 +206,64 @@ var provisionDone = false;
 var provisionRetryTimer = null;
 var provisionRetryCount = 0;
 var PROVISION_RETRY_MAX = 4;
+var secondarySubsReady = false;
+var secondarySubsTimer = null;
+
+function paintCv3(cv3) {
+  if (!cv3) return;
+  if (typeof cv3.scheduleRender === "function") cv3.scheduleRender();
+  else if (typeof cv3.render === "function") cv3.render();
+}
+
+/** Chat / báo cáo / chấm công sau paint workspace — giảm tranh CPU lúc mở app. */
+function scheduleSecondarySubs(cv3) {
+  if (secondarySubsReady) return;
+  if (secondarySubsTimer) return;
+  secondarySubsTimer = setTimeout(function () {
+    secondarySubsTimer = null;
+    if (secondarySubsReady) return;
+    if (!auth || !auth.currentUser) return;
+    secondarySubsReady = true;
+    try {
+      subscribeChat();
+    } catch (e1) {
+      console.warn("subscribeChat:", e1);
+    }
+    try {
+      subscribeReports();
+    } catch (e2) {
+      console.warn("subscribeReports:", e2);
+    }
+    try {
+      subscribeAttendance();
+    } catch (e3) {
+      console.warn("subscribeAttendance:", e3);
+    }
+    var wantPush =
+      typeof Notification !== "undefined" &&
+      (Notification.permission === "granted" ||
+        localStorage.getItem("cv3_push_enabled") === "1" ||
+        (isDirectorRole() && localStorage.getItem("cv3_remind_push") === "1"));
+    if (wantPush) {
+      var startPush = function () {
+        registerMessaging(cv3, { request: true }).catch(function () {});
+      };
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(startPush, { timeout: 4000 });
+      } else {
+        setTimeout(startPush, 1200);
+      }
+    }
+  }, 350);
+}
+
+function resetSecondarySubs() {
+  secondarySubsReady = false;
+  if (secondarySubsTimer) {
+    clearTimeout(secondarySubsTimer);
+    secondarySubsTimer = null;
+  }
+}
 
 function callableErrMsg(err, fallback) {
   if (!err) return fallback || "Lỗi không xác định";
@@ -241,7 +299,7 @@ function mergeProvisionIntoApp(cv3, data) {
       loginKey: u.loginKey || e.loginKey,
     });
   });
-  if (cv3.render) cv3.render();
+  if (cv3.render) paintCv3(cv3);
 }
 
 async function resolveAccount(username, org, forSignup) {
@@ -537,6 +595,7 @@ function stopSubscriptions() {
   booted = false;
   lastAuthUid = null;
   subsUid = null;
+  resetSecondarySubs();
 }
 
 function subscribeChat() {
@@ -2090,7 +2149,7 @@ function pushEmpMasterToApp(cv3) {
   } else {
     cv3.S.empAll = merged.all;
     cv3.S.emp = merged.forOrg;
-    if (cv3.render) cv3.render();
+    if (cv3.render) paintCv3(cv3);
   }
 }
 
@@ -2105,7 +2164,7 @@ function pushCustMasterToApp(cv3, list) {
     cv3.applyCustMaster(list);
   } else {
     cv3.S.cust = list;
-    if (cv3.render) cv3.render();
+    if (cv3.render) paintCv3(cv3);
   }
 }
 
@@ -2558,6 +2617,7 @@ async function switchOrg(nextOrg) {
       unsubAttendance = null;
       if (unsubOtherSnap) unsubOtherSnap();
       unsubOtherSnap = null;
+      resetSecondarySubs();
     }
 
     orgId = next;
@@ -2612,10 +2672,8 @@ async function switchOrg(nextOrg) {
     if (appCv3) {
       historyRangeCache = Object.create(null);
       liveHistorySince = "";
+      // Chat/reports/att được gắn lại sau first workspace paint (scheduleSecondarySubs).
       subscribeWorkspace(appCv3, { skipMasters: true });
-      subscribeChat();
-      subscribeReports();
-      subscribeAttendance();
     }
     setSync("syncing", "Đang tải phần " + orgLabel(orgId) + "…");
   } finally {
@@ -2901,7 +2959,8 @@ function subscribeWorkspace(cv3, opts) {
             cv3.S.trash = [];
           }
           if (cv3.setPatch) cv3.setPatch(0);
-          cv3.render();
+          paintCv3(cv3);
+          scheduleSecondarySubs(cv3);
           flushWrite(cv3, { force: true }).then(function () {
             if (canOperateRole()) scheduleProvision(cv3);
           });
@@ -2913,9 +2972,10 @@ function subscribeWorkspace(cv3, opts) {
       var changed = applyRemote(cv3, data);
       if (!booted) {
         booted = true;
-        cv3.render();
+        paintCv3(cv3);
+        scheduleSecondarySubs(cv3);
       } else if (changed) {
-        cv3.render();
+        paintCv3(cv3);
       }
       if (data.patch != null && data.patch > remotePatch) remotePatch = data.patch;
       var who = auth && auth.currentUser ? userLabel(auth.currentUser) : "";
@@ -3457,6 +3517,7 @@ async function bootOnline(cv3) {
     updateAuthButtons(user);
     if (!user) {
       stopSubscriptions();
+      resetSecondarySubs();
       publishAuth(null);
       refreshOrgSwitcherUI();
       if (authOverlayVisible !== true) switchToLoginMode();
@@ -3492,16 +3553,9 @@ async function bootOnline(cv3) {
     lastAuthUid = uid;
     if (subsUid !== uid) {
       subsUid = uid;
+      resetSecondarySubs();
+      // Workspace + masters trước; chat/reports/att/FCM sau first paint (scheduleSecondarySubs).
       subscribeWorkspace(cv3);
-      subscribeChat();
-      subscribeReports();
-      subscribeAttendance();
-      registerMessaging(cv3, {
-        request:
-          Notification.permission === "granted" ||
-          localStorage.getItem("cv3_push_enabled") === "1" ||
-          (isDirectorRole() && localStorage.getItem("cv3_remind_push") === "1"),
-      });
       if (canOperateRole()) scheduleProvision(cv3, { delay: 600 });
       if (isDirectorRole()) {
         setTimeout(function () {
