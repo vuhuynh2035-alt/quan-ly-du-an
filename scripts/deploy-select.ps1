@@ -49,6 +49,8 @@ function Show-Menu {
   Write-Host "   S  Huong dan cau hinh lan dau" -ForegroundColor DarkGray
   Write-Host "   Q  Thoat" -ForegroundColor DarkGray
   Write-Host ""
+  Write-Host "  Tip: chon SO app can deploy (vd: 1). Tranh bam A neu chua gan dung TK." -ForegroundColor DarkGray
+  Write-Host ""
 }
 
 function Show-SetupGuide {
