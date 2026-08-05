@@ -1,5 +1,59 @@
 # Ham dung chung cho deploy nhieu app Firebase
 
+function Test-CommandExists {
+  param([string]$Name)
+  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Test-DeployPrerequisites {
+  $missing = @()
+  foreach ($cmd in @("git", "node", "npm", "firebase")) {
+    if (-not (Test-CommandExists $cmd)) { $missing += $cmd }
+  }
+  if ($missing.Count -gt 0) {
+    throw ("Thieu lenh tren PATH: {0}. Cai Node.js + Firebase CLI (npm i -g firebase-tools)." -f ($missing -join ", "))
+  }
+}
+
+function Get-FirebaseLoggedInEmails {
+  $lines = firebase login:list 2>&1
+  if ($LASTEXITCODE -ne 0) { return @() }
+  $emails = @()
+  foreach ($line in $lines) {
+    if ($line -match '^\s*-\s+(.+@.+\..+)\s*(\(current\))?\s*$') {
+      $emails += $Matches[1].Trim()
+    }
+  }
+  return $emails
+}
+
+function Show-FirebaseAccounts {
+  Write-Host ""
+  Write-Host "Tai khoan Firebase da dang nhap tren may nay:" -ForegroundColor Cyan
+  $emails = Get-FirebaseLoggedInEmails
+  if ($emails.Count -eq 0) {
+    Write-Host "  (chua co — chay: firebase login:add)" -ForegroundColor Yellow
+    return
+  }
+  foreach ($e in $emails) { Write-Host "  - $e" }
+  Write-Host ""
+  Write-Host "Them tai khoan: firebase login:add" -ForegroundColor DarkGray
+}
+
+function Ensure-DeployConfig {
+  param([string]$ConfigPath)
+  $path = Get-DeployConfigPath $ConfigPath
+  if (Test-Path $path) { return $path }
+  $example = Join-Path $PSScriptRoot "deploy-apps.config.example.json"
+  if (-not (Test-Path $example)) {
+    throw "Khong tim thay config deploy: $path"
+  }
+  Copy-Item $example $path
+  Write-Host "Da tao $path tu file mau." -ForegroundColor Green
+  Write-Host "Sua email Firebase trong file nay (hoac chon E trong menu)." -ForegroundColor Yellow
+  return $path
+}
+
 function Get-DeployRoot {
   return (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
@@ -14,12 +68,16 @@ function Get-DeployConfigPath {
 
 function Read-DeployConfig {
   param([string]$ConfigPath)
-  $path = Get-DeployConfigPath $ConfigPath
-  if (-not (Test-Path $path)) {
-    throw "Khong tim thay config deploy: $path`nCopy deploy-apps.config.example.json -> deploy-apps.config.json"
-  }
+  $path = Ensure-DeployConfig $ConfigPath
   $raw = Get-Content $path -Raw -Encoding UTF8
   return ($raw | ConvertFrom-Json)
+}
+
+function Save-DeployConfig {
+  param([object]$Config, [string]$ConfigPath)
+  $path = Get-DeployConfigPath $ConfigPath
+  $json = $Config | ConvertTo-Json -Depth 6
+  [System.IO.File]::WriteAllText($path, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Resolve-AppPath {
@@ -44,9 +102,24 @@ function Get-DeployAccount {
 
 function Invoke-FirebaseAccount {
   param([object]$Account)
-  if (-not $Account -or -not $Account.email -or [string]$Account.email.Trim() -eq "") { return }
-  Write-Host "Firebase account: $($Account.label) <$($Account.email)>" -ForegroundColor DarkCyan
-  firebase login:use $Account.email 2>&1 | Out-Host
+  if (-not $Account) { return }
+
+  $email = if ($Account.email) { [string]$Account.email.Trim() } else { "" }
+  if ($email -eq "") {
+    $loggedIn = Get-FirebaseLoggedInEmails
+    if ($loggedIn.Count -eq 1) {
+      $email = $loggedIn[0]
+      Write-Host "Chua cau hinh email — dung tai khoan dang nhap: $email" -ForegroundColor Yellow
+    } else {
+      Write-Host "Chua cau hinh email cho account '$($Account.id)'." -ForegroundColor Yellow
+      Write-Host "  Chon E trong menu deploy de sua deploy-apps.config.json" -ForegroundColor Yellow
+      Write-Host "  Hoac chay: firebase login:add" -ForegroundColor Yellow
+      return
+    }
+  }
+
+  Write-Host "Firebase account: $($Account.label) <$email>" -ForegroundColor DarkCyan
+  firebase login:use $email 2>&1 | Out-Host
   if ($LASTEXITCODE -ne 0) {
     Write-Host "Chua dang nhap account nay. Chay: firebase login:add" -ForegroundColor Yellow
     throw "firebase login:use that bai"
@@ -130,6 +203,8 @@ function Invoke-AppDeploy {
     [switch]$SkipPull,
     [switch]$FullDeploy
   )
+
+  Test-DeployPrerequisites
 
   $repoRoot = Resolve-AppPath $App
   $branch = if ($App.branch) { $App.branch } else { "main" }

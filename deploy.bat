@@ -6,6 +6,14 @@ echo.
 echo  ========================================
 echo   Cong cu deploy Firebase (chon chuong trinh)
 echo  ========================================
+echo   Thu muc: %~dp0
+echo   Menu:    %~dp0scripts\deploy-select.ps1
+echo   Config:  %~dp0scripts\deploy-apps.config.json
+echo.
+echo   Lenh nhanh: deploy.bat quan-ly-du-an
+echo               deploy.bat A
+echo               deploy.bat S   (huong dan cau hinh)
+echo               deploy.bat quan-ly-du-an -SkipPull
 echo.
 
 where powershell >nul 2>&1
