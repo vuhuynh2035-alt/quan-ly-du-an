@@ -8,9 +8,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Quản lý dự án</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 :root{color-scheme:dark;
   --c-bg:#06101e;--c-bg-grad:linear-gradient(135deg,#06101e 0%,#091a30 30%,#0d223c 60%,#071428 100%);
   --c-glow:radial-gradient(ellipse 600px 500px at 15% 10%,rgba(56,132,255,.18) 0%,transparent 65%),radial-gradient(ellipse 700px 600px at 85% 5%,rgba(100,180,255,.12) 0%,transparent 65%),radial-gradient(ellipse 500px 400px at 80% 90%,rgba(56,100,200,.14) 0%,transparent 60%),radial-gradient(ellipse 400px 350px at 5% 80%,rgba(30,80,180,.10) 0%,transparent 60%);
@@ -878,12 +878,9 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-da
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="67">
+<meta name="app-build" content="70">
 <script src="/firebase-config.js"></script>
-<script src="./js/contextual-help.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 </head>
 <body>
 <script>
@@ -1911,6 +1908,27 @@ var LS=null;try{localStorage.setItem("_t","1");localStorage.removeItem("_t");LS=
 var mem={};
 function load(k,fb){if(!LS)return mem.hasOwnProperty(k)?mem[k]:fb;try{var v=LS.getItem(k);return v?JSON.parse(v):fb}catch(e){return fb}}
 function ps2(k,v){if(!LS){mem[k]=v;return}try{LS.setItem(k,JSON.stringify(v))}catch(e){}}
+var _persistCacheTimer=null,_persistCachePending=0;
+function flushPersistCache(){
+  if(_persistCacheTimer){clearTimeout(_persistCacheTimer);_persistCacheTimer=null;}
+  if(!_persistCachePending)return;
+  _persistCachePending=0;
+  try{
+    ps2("cv3_e",S.emp);ps2("cv3_c",S.cust);ps2Ws("cv3_p",S.proj);ps2Ws("cv3_a",S.asgn);ps2Ws("cv3_pl",S.projLog);ps2("cv3_s",S.cfg);ps2Ws("cv3_r",S.reminders||[]);ps2Ws("cv3_audit",S.auditLog||[]);ps2Ws("cv3_trash",S.trash||[]);
+  }catch(e){}
+}
+function schedulePersistCache(){
+  _persistCachePending=1;
+  if(_persistCacheTimer)return;
+  _persistCacheTimer=setTimeout(function(){
+    _persistCacheTimer=null;
+    flushPersistCache();
+  },280);
+}
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="hidden")flushPersistCache();
+});
+window.addEventListener("pagehide",flushPersistCache);
 /** Org đang xem — dùng cho cache local theo đội (tránh lẫn dự án 2 phần). */
 function storageOrgId(){
   try{
@@ -3964,6 +3982,17 @@ function render(){
     }
   }
 }
+/** Gom nhiều cập nhật cloud (auth/emp/workspace) thành 1 lần vẽ — giảm giật lúc mở app. */
+function scheduleRender(){
+  render._schedPending=1;
+  if(render._schedTimer)return;
+  render._schedTimer=setTimeout(function(){
+    render._schedTimer=null;
+    if(!render._schedPending)return;
+    render._schedPending=0;
+    render();
+  },90);
+}
 function btn(cls,lbl,onclick){return'<button type="button" class="btn '+cls+'" onclick="'+onclick+'">'+lbl+'</button>'}
 function actBtn(cls,lbl,act,id){return'<button type="button" class="btn '+cls+'" data-act="'+act+'"'+(id!=null&&id!==""?' data-id="'+esc(String(id))+'"':"")+'>'+lbl+'</button>'}
 function bdg(t,c,bg){return'<span class="badge" style="color:'+c+';background:'+(bg||"transparent")+';border-color:'+c+'44">'+t+'</span>'}
@@ -4867,12 +4896,43 @@ function vMap(){
   h+='<span class="row" style="gap:6px;align-items:center"><span style="display:inline-flex;width:12px;height:12px;border-radius:50%;overflow:hidden;border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.15)"><span style="width:50%;background:'+MAP_ORG_COL_HCM+'"></span><span style="width:50%;background:'+MAP_ORG_COL_TINH+'"></span></span> Cả 2 đội</span>';
   h+='</div>';
   h+='<div id="map-container" style="width: 100%; height: calc(100vh - 160px); min-height: 500px; border-radius: 12px; overflow: hidden; background: #e5e5e5; z-index: 1; position: relative; border: 1px solid var(--c-border);"></div>';
-  setTimeout(initMapLeaflet, 50);
+  setTimeout(function(){ensureLeaflet().then(function(){initMapLeaflet();});}, 50);
   return h;
+}
+var _leafletPromise=null;
+function ensureLeaflet(){
+  if(typeof L!=="undefined"&&L&&L.map)return Promise.resolve(L);
+  if(_leafletPromise)return _leafletPromise;
+  _leafletPromise=new Promise(function(resolve,reject){
+    var cssId="leaflet-css";
+    if(!document.getElementById(cssId)){
+      var link=document.createElement("link");
+      link.id=cssId;
+      link.rel="stylesheet";
+      link.href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      link.integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
+      link.crossOrigin="";
+      document.head.appendChild(link);
+    }
+    var s=document.createElement("script");
+    s.src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    s.integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+    s.crossOrigin="";
+    s.onload=function(){resolve(L);};
+    s.onerror=function(){_leafletPromise=null;reject(new Error("Không tải được Leaflet"));};
+    document.head.appendChild(s);
+  });
+  return _leafletPromise;
 }
 function initMapLeaflet(force) {
   var el = document.getElementById("map-container");
   if(!el) return;
+  if(typeof L==="undefined"||!L||!L.map){
+    ensureLeaflet().then(function(){initMapLeaflet(force);}).catch(function(){
+      el.innerHTML='<div style="padding:20px;color:#b91c1c">Không tải được bản đồ. Kiểm tra mạng rồi bấm Làm mới.</div>';
+    });
+    return;
+  }
   if(mapInstance) {
     mapInstance.remove();
     mapInstance = null;
@@ -6532,7 +6592,19 @@ window.A={
     if(S.form&&S.form.type==="egiao"){A.egiaoExit();return;}
     S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;S._grpParent=null;S.conflictPending=null;render();
   },
-  openHelp:function(){S.helpOpen=1;if(!S.helpMode)S.helpMode="annotate";render()},
+  openHelp:function(){
+    function show(){S.helpOpen=1;if(!S.helpMode)S.helpMode="annotate";render();}
+    if(window.CV3_HELP){show();return;}
+    if(window.__CV3_HELP_LOADING){window.__CV3_HELP_LOADING.then(show);return;}
+    window.__CV3_HELP_LOADING=new Promise(function(resolve,reject){
+      var s=document.createElement("script");
+      s.src="/js/contextual-help.js";
+      s.onload=function(){resolve();};
+      s.onerror=function(){reject(new Error("help"));};
+      document.head.appendChild(s);
+    }).catch(function(){window.__CV3_HELP_LOADING=null;});
+    window.__CV3_HELP_LOADING.then(show);
+  },
   closeHelp:function(ev){if(ev&&ev.type==="click"&&ev.target!==ev.currentTarget)return;S.helpOpen=0;render()},
   helpMode:function(mode){S.helpMode=mode==="process"?"process":"annotate";if(!S.helpOpen)S.helpOpen=1;render()},
   grpSel:function(val){
@@ -6552,7 +6624,7 @@ window.A={
     }
   },
   grpCancel:function(ev){if(ev&&ev.type==="click"&&ev.target!==ev.currentTarget)return;if(S.form){if(S._grpParent==="emp")syncEmpFormFromDom();S.modal=S._grpParent==="proj"?projM(S.form):empM(S.form)}else{S.modal=null}render()},
-  mapRefresh:function(){initMapLeaflet(true)},
+  mapRefresh:function(){ensureLeaflet().then(function(){initMapLeaflet(true);});},
   saveNewGroup:function(){
     if(!staffGuard())return;
     var name=(document.getElementById("fgn")||{}).value.trim();
@@ -7195,10 +7267,9 @@ function checkAutoBackup(){
   }
   if(lastDay!==td()){setTimeout(function(){doBackup(true);},1200);}
 }
-checkAutoBackup();
 initViewActions();
 window.__CV3={
-  S:S,render:render,seedDemo:seedDemo,seedE:seedE,DS:DS,getVapidKey:getVapidKey,applyVapidFromCfg:applyVapidFromCfg,showAppToast:showAppToast,toastIncomingChat:toastIncomingChat,
+  S:S,render:render,scheduleRender:scheduleRender,seedDemo:seedDemo,seedE:seedE,DS:DS,getVapidKey:getVapidKey,applyVapidFromCfg:applyVapidFromCfg,showAppToast:showAppToast,toastIncomingChat:toastIncomingChat,
   getPatch:function(){return loadPatch();},
   setPatch:function(p){ps2Ws("cv3_patch",p||0);},
   /** Đổi đội: nạp cache local của đội đó (hoặc rỗng), không giữ dự án đội trước. */
@@ -7248,7 +7319,7 @@ window.__CV3={
     if(Array.isArray(data.trash))S.trash=data.trash;
     if(data.cfg){S.cfg=Object.assign({},DS,data.cfg);ensureCfgGroups();ensureCompanyInfo();applyVapidFromCfg();applyTheme(S.cfg.theme);}
     purgeExpiredTrash();
-    ps2("cv3_e",S.emp);ps2("cv3_c",S.cust);ps2Ws("cv3_p",S.proj);ps2Ws("cv3_a",S.asgn);ps2Ws("cv3_pl",S.projLog);ps2("cv3_s",S.cfg);ps2Ws("cv3_r",S.reminders||[]);ps2Ws("cv3_audit",S.auditLog||[]);ps2Ws("cv3_trash",S.trash||[]);
+    schedulePersistCache();
     if(data.patch!=null)ps2Ws("cv3_patch",data.patch);
   },
   applyEmpMaster:function(all,forOrg){
@@ -7264,9 +7335,9 @@ window.__CV3={
     S._empMasterSig=sig;
     S.empAll=all;
     S.emp=forOrg;
-    ps2("cv3_e",S.emp);
+    schedulePersistCache();
     tryApplyChatDeepLink();
-    render();
+    scheduleRender();
   },
   applyCustMaster:function(list){
     list=list||[];
@@ -7274,15 +7345,15 @@ window.__CV3={
     if(sig===S._custMasterSig){S.cust=list;return;}
     S._custMasterSig=sig;
     S.cust=list;
-    ps2("cv3_c",S.cust);
-    if(S.tab==="cust"||S.selCust||S.tab==="proj")render();
-    else if(S.modal)render();
+    schedulePersistCache();
+    if(S.tab==="cust"||S.selCust||S.tab==="proj")scheduleRender();
+    else if(S.modal)scheduleRender();
   },
   setOtherOrgAsgn:function(asgn,otherId,proj){
     S.asgnOther=asgn||[];
     S.projOther=proj||[];
     S.otherOrgId=otherId||"";
-    if(S.tab==="emp"||S.selEmp||S.tab==="kpi"||S.tab==="mywork"||S.tab==="report"||S.tab==="prog"||S.tab==="dash")render();
+    if(S.tab==="emp"||S.selEmp||S.tab==="kpi"||S.tab==="mywork"||S.tab==="report"||S.tab==="prog"||S.tab==="dash")scheduleRender();
   },
   mergeEmpAuthFromRemote:function(remoteEmp){
     if(!remoteEmp||!remoteEmp.length)return false;
@@ -7295,7 +7366,7 @@ window.__CV3={
       changed=true;
       return Object.assign({},e,{authUid:r.authUid,loginKey:r.loginKey||e.loginKey||nameToLoginKey(e.name)});
     });
-    if(changed){ps2("cv3_e",S.emp);render();}
+    if(changed){schedulePersistCache();scheduleRender();}
     return changed;
   },
   mergeProvisionResults:function(data){
@@ -7308,9 +7379,9 @@ window.__CV3={
       if(!u)return e;
       return Object.assign({},e,{authUid:u.authUid,loginKey:u.loginKey||e.loginKey||nameToLoginKey(e.name)});
     });
-    ps2("cv3_e",S.emp);
+    schedulePersistCache();
     if(patch!=null){var cur=loadPatch();if(patch>cur)ps2Ws("cv3_patch",patch);}
-    render();
+    scheduleRender();
   },
   linkFcmToEmp:function(empId,token){
     var cur=eById(empId);
@@ -7369,7 +7440,7 @@ window.__CV3={
       clearUndo();
     }
     var openedDm=tryApplyChatDeepLink();
-    if(!same||openedDm)render();
+    if(!same||openedDm)scheduleRender();
   },
   setChatMsgs:function(msgs){
     msgs=msgs||[];
@@ -7501,11 +7572,17 @@ window.__CV3={
     }catch(e){}
     if(S.tab==="help")S.tab=isEmpPortal()?"mywork":"dash";
     purgeExpiredTrash();
+    // Cloud: paint từ cache local ngay; các snapshot sau dùng scheduleRender.
     render();
     if(S.tab==="chat"&&S.chatTo)setTimeout(markOpenChatRead,80);
   }
 };
-window.__CV3.finishBoot();
+// Offline hoặc lần đầu: paint sớm. Cloud sẽ finishBoot lại từ bootOffline; online dựa vào cache + auth.
+if(!window.__CV3_SKIP_SEED)window.__CV3.finishBoot();
+else{
+  // Hiện UI từ localStorage ngay, không chờ Firebase module parse xong.
+  try{window.__CV3.finishBoot();}catch(eBoot){}
+}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.addEventListener("message",function(ev){
     var p=ev&&ev.data;
@@ -7520,7 +7597,8 @@ document.addEventListener("keydown",function(ev){
   if(ev.key!=="Escape"&&ev.key!=="Esc")return;
   if(S.helpOpen){A.closeHelp();ev.preventDefault();return;}
 });
-checkAppUpdate();
+setTimeout(function(){try{checkAppUpdate();}catch(e){}},1800);
+setTimeout(function(){try{checkAutoBackup();}catch(e){}},2500);
 if(isLocalDev()&&!document.getElementById("dev-local-bar")){
   var devBar=document.createElement("div");
   devBar.id="dev-local-bar";
