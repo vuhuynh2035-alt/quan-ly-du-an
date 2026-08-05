@@ -1,6 +1,6 @@
 /* eslint-disable no-undef */
-/* cv3-fcm-sw v2 — bump this comment when changing SW so browsers refetch */
-var CV3_SW_VERSION = 2;
+/* cv3-fcm-sw v3 — bump this comment when changing SW so browsers refetch */
+var CV3_SW_VERSION = 3;
 var CV3_ICON = "/icon-192.png";
 var CV3_BADGE_CACHE = "cv3-badge-v1";
 var CV3_BADGE_URL = "/__cv3_badge_count";
@@ -21,7 +21,12 @@ self.addEventListener("notificationclick", function (event) {
     tag.indexOf("sched_") === 0
   )
     url = "/?tab=mywork";
-  else if (data.type === "chat" || tag.indexOf("chat_") === 0) url = "/?tab=chat";
+  else if (data.type === "chat" || tag.indexOf("chat_") === 0) {
+    url = "/?tab=chat";
+    if (data.chatType !== "broadcast" && data.fromUid) {
+      url += "&dm=" + encodeURIComponent(String(data.fromUid));
+    }
+  }
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
       for (var i = 0; i < list.length; i++) {
@@ -33,9 +38,17 @@ self.addEventListener("notificationclick", function (event) {
                 return c.focus();
               });
             } catch (e) {
-              return c.focus();
+              /* fall through to postMessage */
             }
           }
+          try {
+            c.postMessage({
+              type: "cv3-open-chat",
+              dm: data.chatType === "broadcast" ? "" : String(data.fromUid || ""),
+              tab: "chat",
+              chatType: String(data.chatType || ""),
+            });
+          } catch (e2) {}
           return c.focus();
         }
       }

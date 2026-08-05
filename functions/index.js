@@ -461,6 +461,10 @@ function buildChatMessage(msg) {
   const title = isBc ? "📢 Thông báo đội" : "💬 " + from;
   const msgId = String(msg.id || "");
   const tag = "chat_" + (msgId || "new");
+  const fromUid = String(msg.uid || "");
+  const chatLink = isBc
+    ? "/?tab=chat"
+    : "/?tab=chat&dm=" + encodeURIComponent(fromUid);
   return {
     notification: { title, body },
     data: {
@@ -469,12 +473,12 @@ function buildChatMessage(msg) {
       body,
       msgId,
       threadId: String(msg.threadId || (isBc ? "broadcast" : "")),
-      fromUid: String(msg.uid || ""),
+      fromUid,
       toUid: String(msg.toUid || ""),
       chatType: isBc ? "broadcast" : "dm",
       badgeBump: "1",
     },
-    webpush: buildWebPush("/?tab=chat", tag),
+    webpush: buildWebPush(chatLink, tag),
   };
 }
 
