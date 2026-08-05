@@ -1,0 +1,21 @@
+{
+  "accounts": [
+    {
+      "id": "saree",
+      "label": "SAREE (tài khoản chính)",
+      "email": ""
+    }
+  ],
+  "apps": [
+    {
+      "id": "quan-ly-du-an",
+      "label": "Quản lý dự án SAREE",
+      "path": "",
+      "branch": "main",
+      "firebaseProject": "quan-ly-du-an-7d651",
+      "accountId": "saree",
+      "deploy": "hosting",
+      "siteUrl": "https://quan-ly-du-an-7d651.web.app"
+    }
+  ]
+}

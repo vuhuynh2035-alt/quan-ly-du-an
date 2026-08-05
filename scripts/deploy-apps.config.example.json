@@ -1,0 +1,36 @@
+{
+  "accounts": [
+    {
+      "id": "saree",
+      "label": "SAREE — tài khoản Firebase chính",
+      "email": "email-cua-ban@gmail.com"
+    },
+    {
+      "id": "ca-nhan",
+      "label": "Tài khoản Firebase khác",
+      "email": "email-khac@gmail.com"
+    }
+  ],
+  "apps": [
+    {
+      "id": "quan-ly-du-an",
+      "label": "Quản lý dự án SAREE",
+      "path": "",
+      "branch": "main",
+      "firebaseProject": "quan-ly-du-an-7d651",
+      "accountId": "saree",
+      "deploy": "hosting",
+      "siteUrl": "https://quan-ly-du-an-7d651.web.app"
+    },
+    {
+      "id": "family-medical",
+      "label": "Hồ sơ sức khỏe gia đình",
+      "path": "..\\family-medical-record",
+      "branch": "main",
+      "firebaseProject": "YOUR_FIREBASE_PROJECT_ID",
+      "accountId": "ca-nhan",
+      "deploy": "hosting",
+      "siteUrl": "https://YOUR_PROJECT.web.app"
+    }
+  ]
+}

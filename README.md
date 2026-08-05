@@ -52,6 +52,10 @@ npm install
 
 Xem [FIREBASE_SETUP.md](./FIREBASE_SETUP.md) — deploy cloud sync realtime + thông báo điện thoại.
 
+### Deploy lên Hosting (Windows)
+
+Double-click **`deploy.bat`** hoặc xem [scripts/DEPLOY.md](./scripts/DEPLOY.md) — công cụ deploy nhiều app, tự `git pull` rồi đẩy Firebase.
+
 ## File không commit (bí mật)
 
 - `public/firebase-config.js` — copy từ `firebase-config.example.js` trên mỗi máy

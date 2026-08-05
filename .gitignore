@@ -3,6 +3,7 @@ dist
 .DS_Store
 *.local
 public/firebase-config.js
+scripts/deploy-apps.local.json
 .firebase
 firebase-debug.log
 firebase-debug.*.log
