@@ -2207,9 +2207,10 @@ function subscribeOtherOrgAsgn(cv3) {
   var other = otherOrgId(orgId);
   var a = window.__CV3_AUTH || {};
   var allowed = authAllowedOrgIds(a, orgId);
-  // Chỉ mirror đội kia khi tài khoản được gán cả 2 đội (hoặc giám đốc)
+  // Sơ đồ luôn cần snapshot đội kia (giám đốc / Điều hành / Chỉ huy trưởng).
   var canSeeOther = allowed.indexOf(other) >= 0 && allowed.length >= 2;
   if (a.role === "director") canSeeOther = true;
+  if (a.empGroup === "Điều hành" || a.empGroup === "Chỉ huy trưởng") canSeeOther = true;
   if (!canSeeOther) {
     if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other, []);
     return;
