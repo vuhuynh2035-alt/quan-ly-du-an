@@ -3055,12 +3055,18 @@ function bindForegroundMessaging(messaging, cv3) {
             icon: "/icon-192.png",
             tag: "chat_" + (d.msgId || "fg"),
             silent: false,
+            data: {
+              type: "chat",
+              msgId: d.msgId || "",
+              fromUid: d.fromUid || "",
+              toUid: d.toUid || "",
+              chatType: d.chatType || "",
+              threadId: d.threadId || "",
+            },
           });
         } catch (e) {}
       }
-      if (cv3 && typeof cv3.showAppToast === "function") {
-        cv3.showAppToast(titleC + (bodyC ? " — " + bodyC : ""), "ok");
-      }
+      // Toast in-app do setChatMsgs (Firestore) đảm nhiệm — tránh trùng với FCM foreground.
       if (cv3 && typeof cv3.syncAppBadge === "function") cv3.syncAppBadge();
       return;
     }
@@ -3146,7 +3152,7 @@ async function registerMessaging(cv3, options) {
   try {
     if (!("serviceWorker" in navigator)) return { ok: false, reason: "unsupported" };
     // Always re-register so SW updates (cache-bust query); scope must stay "/".
-    var reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js?v=2", {
+    var reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js?v=3", {
       scope: "/",
       updateViaCache: "none",
     });
