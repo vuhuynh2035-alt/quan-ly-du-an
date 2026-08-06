@@ -1,32 +1,26 @@
 # Deploy Firebase — huong dan
 
-## Hang ngay
+## Cach dung (khong can go lenh)
 
-1. Double-click **`deploy.bat`** (hoac shortcut Desktop)
-2. Go **so** app → Enter
-3. Cho tool tu lam:
-   - Doi tai khoan Firebase (neu can)
-   - git pull
-   - build
-   - `firebase deploy --only hosting --project <dung-id>`
+1. Vao thu muc `C:\Quan ly du an` (File Explorer)
+2. Double-click **`Tao-Shortcut-Desktop.bat`** (1 lan)
+3. Tren Desktop xuat hien **Deploy App** / **Chay Deploy**
+4. Lan sau: double-click icon Desktop → go so app → Enter
 
-Lan dau moi app: hoi chon email **1 lan** (nho trong `deploy-apps.local.json`).
-Cung 1 Google account (vd vuhuynh2035) thi khong can login lai tung app.
+Hoac double-click **`Chay-Deploy.bat`** ngay trong thu muc du an.
 
-## Lan dau tren may
+## Tool tu lam khi chon so
 
-- Cai Node.js
-- Tool tu huong dan firebase login neu thieu
-- `tao-shortcut-desktop.bat` — icon Desktop
-- `sua-config-deploy.bat` — neu config bi hong
+- Doi tai khoan Firebase dung app
+- git pull
+- build
+- firebase deploy --project dung-id
 
-## Tuy chon (M)
+## File
 
-| Phim | Viec |
+| File | Viec |
 |------|------|
-| A | Deploy tat ca |
-| X | An app |
-| R | Quet lai Cursor |
-| T | Them tai khoan Firebase |
-| E | Sua config |
-| D | Shortcut Desktop |
+| `Chay-Deploy.bat` | Bam chay menu deploy |
+| `Tao-Shortcut-Desktop.bat` | Tao icon tren Desktop |
+| `sua-config-deploy.bat` | Sua config bi hong |
+| `deploy.bat` | Goi Chay-Deploy.bat |

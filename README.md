@@ -54,12 +54,15 @@ Xem [FIREBASE_SETUP.md](./FIREBASE_SETUP.md) — deploy cloud sync realtime + th
 
 ### Deploy lên Hosting (Windows)
 
-1. Double-click **`deploy.bat`**
-2. Gõ số app → Enter
-3. Tự động: đổi TK Firebase → pull → build → deploy
+**Cách dễ nhất (không cần gõ lệnh):**
 
-Lần đầu có thể hỏi login / chọn email (nhớ lại).  
-Shortcut Desktop: `tao-shortcut-desktop.bat`. Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
+1. Vào thư mục `C:\Quan ly du an`
+2. Double-click **`Tao-Shortcut-Desktop.bat`** (một lần) → có icon trên Desktop
+3. Lần sau: double-click **`Deploy App`** trên Desktop → chọn số app → xong
+
+Hoặc double-click luôn **`Chay-Deploy.bat`** / **`deploy.bat`** trong thư mục dự án.
+
+Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
 
 ## File không commit (bí mật)
 
