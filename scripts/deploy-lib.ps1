@@ -660,26 +660,33 @@ function Test-FirebaseProjectAccess {
   $pushed = $false
   try {
     if ($RepoRoot -and (Test-Path -LiteralPath $RepoRoot)) {
-      Push-Location $RepoRoot
+      Push-Location -LiteralPath $RepoRoot
       $pushed = $true
     }
+
+    # Ghi .firebaserc truoc khi use (tranh file cu chi dinh project khac)
+    if ($RepoRoot -and $ProjectId) {
+      try { Set-AppFirebaseRc -RepoRoot $RepoRoot -ProjectId $ProjectId } catch {}
+    }
+
     $out = firebase use $ProjectId 2>&1 | Out-String
     $text = $out.TrimEnd()
     if ($text) { Write-Host $text }
-    if ($LASTEXITCODE -ne 0) { return $false }
 
-    # firebase use co the "thanh cong" tren .firebaserc local du account khong co quyen API
-    $listOut = firebase projects:list --json 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
-      $getOut = firebase projects:get $ProjectId 2>&1 | Out-String
-      if ($getOut -match '(?i)Failed to get Firebase project|permission|not have') {
-        Write-Host "Account hien tai khong co quyen project '$ProjectId'" -ForegroundColor Yellow
-        return $false
-      }
-      return ($LASTEXITCODE -eq 0)
+    # Thanh cong neu exit 0 hoac thong bao "Now using project"
+    if ($LASTEXITCODE -eq 0) { return $true }
+    if ($text -match '(?i)Now using project|Aliased') { return $true }
+
+    if ($text -match '(?i)Invalid project selection|Failed to get Firebase project|do not have permission') {
+      return $false
     }
-    if ($listOut -match [regex]::Escape($ProjectId)) { return $true }
-    Write-Host "Project '$ProjectId' khong co trong danh sach account hien tai." -ForegroundColor Yellow
+
+    # Exit != 0 nhung khong ro — thu projects:list (khong bat buoc)
+    $listOut = firebase projects:list 2>&1 | Out-String
+    if ($listOut -match [regex]::Escape($ProjectId)) {
+      Write-Host "Project co trong projects:list — tiep tuc." -ForegroundColor Green
+      return $true
+    }
     return $false
   } finally {
     if ($pushed) { Pop-Location }
@@ -706,6 +713,22 @@ function Use-FirebaseProject {
   if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) { return }
 
   $current = if ($App.accountEmail) { [string]$App.accountEmail } else { "" }
+
+  # Thu reauth account dang gan truoc khi doi sang account khac
+  if ($current -and $Interactive) {
+    Write-Host ""
+    Write-Host "Account $current chua dung duoc project (token CLI co the cu)." -ForegroundColor Yellow
+    Write-Host "Neu Console van thay project — can: firebase login --reauth" -ForegroundColor Yellow
+    $re = Read-Host "Enter = reauth $current, S = thu account khac, Q = bo"
+    if ($re -match '^[Qq]$') { throw "Huy deploy project '$ProjectId'" }
+    if ($re -notmatch '^[Ss]$') {
+      Write-Host "Dang firebase login --reauth ..." -ForegroundColor Cyan
+      Invoke-External -AllowFail -Command { firebase login --reauth } | Out-Null
+      Invoke-FirebaseLoginUse $current | Out-Null
+      if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) { return }
+    }
+  }
+
   foreach ($email in @(Get-FirebaseEmails)) {
     if ($email -eq $current) { continue }
     Write-Host "Thu account: $email" -ForegroundColor Yellow
@@ -718,15 +741,15 @@ function Use-FirebaseProject {
   }
 
   if ($Interactive) {
-    Write-Host "Khong account nao co quyen project '$ProjectId'." -ForegroundColor Red
-    Write-Host "Bam M > T de them tai khoan Google dung." -ForegroundColor Yellow
-    $again = Read-Host "Da login xong? Enter = thu lai, Q = bo"
+    Write-Host "Khong account nao chon duoc project '$ProjectId'." -ForegroundColor Red
+    Write-Host "Thu: firebase login --reauth   hoac   M > T (login:add)" -ForegroundColor Yellow
+    $again = Read-Host "Da xong? Enter = thu lai, Q = bo"
     if ($again -notmatch '^[Qq]$') {
-      Use-FirebaseProject -ProjectId $ProjectId -Config $Config -App $App -RepoRoot $RepoRoot
+      Use-FirebaseProject -ProjectId $ProjectId -Config $Config -App $App -RepoRoot $RepoRoot -Interactive
       return
     }
   }
-  throw "Khong truy cap duoc Firebase project '$ProjectId'"
+  throw "Khong truy cap duoc Firebase project '$ProjectId' — thu firebase login --reauth"
 }
 
 function Sync-Git {
