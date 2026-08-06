@@ -8,6 +8,8 @@
 
 Tu dong: doi tai khoan Firebase → git pull → build → hosting.
 
+Neu config bi hong / menu loi: chay `sua-config-deploy.bat` (tao lai local.json sach, giu mapping TK).
+
 ## Lan dau
 
 - Tool tu cai / huong dan login Firebase neu thieu
