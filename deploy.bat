@@ -9,15 +9,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM Chi can double-click file nay:
-REM   - Hien menu app
-REM   - Go so -> deploy (tu doi tai khoan Firebase)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\deploy-select.ps1" %*
 set EXITCODE=%ERRORLEVEL%
 
 echo.
-if %EXITCODE% neq 0 (
-  echo [Ket thuc] Co loi — ma thoat: %EXITCODE%
-)
+if %EXITCODE% neq 0 echo [Ket thuc] Co loi — ma: %EXITCODE%
 pause
 exit /b %EXITCODE%

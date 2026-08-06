@@ -2,22 +2,15 @@
   "discoverCursor": true,
   "scanRoots": [],
   "exclude": [],
-  "accounts": [
-    {
-      "id": "saree",
-      "label": "SAREE (tài khoản chính)",
-      "email": ""
-    }
-  ],
+  "accounts": [],
   "accountByPath": {},
   "apps": [
     {
       "id": "quan-ly-du-an",
-      "label": "Quản lý dự án SAREE",
+      "label": "Quan ly du an",
       "path": "",
       "branch": "main",
       "firebaseProject": "quan-ly-du-an-7d651",
-      "accountId": "saree",
       "deploy": "hosting",
       "siteUrl": "https://quan-ly-du-an-7d651.web.app"
     }

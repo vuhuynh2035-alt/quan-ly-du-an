@@ -1,8 +1,6 @@
-# Deploy tat ca app Firebase (Cursor + config)
-# PowerShell: .\scripts\deploy-all.ps1
+# Deploy tat ca app: .\scripts\deploy-all.ps1
 
 param(
-  [string]$ConfigPath = "",
   [switch]$SkipPull,
   [switch]$FullDeploy
 )
@@ -10,27 +8,22 @@ param(
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "deploy-lib.ps1")
 
-$config = Read-DeployConfig $ConfigPath
-$apps = @(Get-MergedDeployApps $config)
+$config = Read-DeployConfig
+$apps = @(Get-DeployApps $config)
 $failed = @()
 
-Write-Host ""
 Write-Host "Deploy $($apps.Count) app..." -ForegroundColor Cyan
-
 foreach ($app in $apps) {
   try {
     Invoke-AppDeploy -App $app -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy -Interactive
   } catch {
     Write-Host "[LOI] $($app.label): $($_.Exception.Message)" -ForegroundColor Red
-    $failed += $app.id
+    $failed += $app.label
   }
-  Write-Host ""
 }
 
-if ($failed.Count -eq 0) {
-  Write-Host "Deploy tat ca app: THANH CONG" -ForegroundColor Green
-  exit 0
+if ($failed.Count -gt 0) {
+  Write-Host "That bai: $($failed -join ', ')" -ForegroundColor Red
+  exit 1
 }
-
-Write-Host "Mot so app that bai: $($failed -join ', ')" -ForegroundColor Red
-exit 1
+Write-Host "THANH CONG" -ForegroundColor Green

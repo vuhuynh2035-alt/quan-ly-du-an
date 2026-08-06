@@ -1,38 +1,33 @@
-# Deploy Firebase — đơn giản
+# Deploy Firebase — huong dan ngan
 
-## Cách dùng hàng ngày
+## Hang ngay
 
-1. Double-click **`deploy.bat`**  
-   (hoặc shortcut **Deploy App** trên Desktop — chạy `tao-shortcut-desktop.bat` một lần)
-2. Gõ **số** app → Enter
+1. Double-click `deploy.bat` (hoac shortcut Desktop)
+2. Go **so** app → Enter
 3. Xong
 
-Tool tự: đổi tài khoản Firebase đúng app → `git pull` → build → Hosting.
+Tu dong: doi tai khoan Firebase → git pull → build → hosting.
 
-## Lần đầu
+## Lan dau
 
-- Nếu chưa có Firebase CLI / chưa login → `deploy.bat` tự hướng dẫn
-- App mới chưa gắn TK → hỏi chọn email một lần (nhớ lại)
+- Tool tu cai / huong dan login Firebase neu thieu
+- App moi: hoi chon email 1 lan (nho lai)
 
-Thêm tài khoản Google khác: trong menu bấm **`M`** → **`T`**.
+Tao shortcut Desktop: chay `tao-shortcut-desktop.bat`
 
-## Menu chính
+## Tuy chon (bam M)
 
-| Việc | Thao tác |
-|------|----------|
-| Deploy app | Gõ `1`, `2`, … |
-| Thoát | `Q` |
-| Tuỳ chọn | `M` (ẩn app, thêm TK, shortcut Desktop, …) |
-
-## Ẩn / hiện app
-
-- Ẩn app không dùng: **`M`** → **`X`**
-- **Giữ lại** Xuân Quỳnh và apartment (không dùng exclude `"hotel"` — sẽ ẩn nhầm)
+| Phim | Viec |
+|------|------|
+| A | Deploy tat ca |
+| X | An app khoi list |
+| R | Quet lai Cursor |
+| T | Them tai khoan Firebase |
+| E | Sua config |
+| D | Tao shortcut Desktop |
 
 ## File
 
-| File | Vai trò |
-|------|---------|
-| `deploy.bat` | Chạy hàng ngày |
-| `tao-shortcut-desktop.bat` | Tạo icon Desktop (1 lần) |
-| `scripts/deploy-apps.local.json` | Email / exclude trên máy bạn (không commit) |
+- `deploy.bat` — chay hang ngay
+- `scripts/deploy-apps.local.json` — email/exclude tren may (khong commit)
+- Giữ Xuân Quỳnh / apartment trong list (khong exclude "hotel")

@@ -1,34 +1,16 @@
 {
   "discoverCursor": true,
-  "scanRoots": [
-    "D:\\projects",
-    "C:\\Users\\BAN_TEN\\Documents\\GitHub"
-  ],
+  "scanRoots": [],
   "exclude": [],
-  "accounts": [
-    {
-      "id": "saree",
-      "label": "SAREE — tài khoản Firebase chính",
-      "email": "email-saree@gmail.com"
-    },
-    {
-      "id": "ca-nhan",
-      "label": "Tài khoản Firebase cá nhân",
-      "email": "email-khac@gmail.com"
-    }
-  ],
-  "accountByPath": {
-    "D:\\projects\\quan-ly-du-an": "email-saree@gmail.com",
-    "D:\\projects\\family-medical-record": "email-khac@gmail.com"
-  },
+  "accounts": [],
+  "accountByPath": {},
   "apps": [
     {
       "id": "quan-ly-du-an",
-      "label": "Quản lý dự án SAREE",
+      "label": "Quan ly du an",
       "path": "",
       "branch": "main",
       "firebaseProject": "quan-ly-du-an-7d651",
-      "accountId": "saree",
       "deploy": "hosting",
       "siteUrl": "https://quan-ly-du-an-7d651.web.app"
     }
