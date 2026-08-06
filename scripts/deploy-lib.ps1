@@ -958,9 +958,9 @@ function Invoke-AppDeploy {
     }
   }
 
-  Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -Interactive:$Interactive
+  Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root -Interactive:$Interactive
 
-  $code = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy -AllowFail
+  $code = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
   if ($code -ne 0) {
     Write-Host ""
     Write-Host "Deploy that bai — thu tai khoan Firebase khac..." -ForegroundColor Yellow
@@ -974,8 +974,8 @@ function Invoke-AppDeploy {
       if ($tried -contains $email) { continue }
       Write-Host "Thu deploy bang: $email" -ForegroundColor Yellow
       if (-not (Invoke-FirebaseLoginUse $email)) { continue }
-      if (-not (Test-FirebaseProjectAccess $App.firebaseProject)) { continue }
-      $code2 = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy -AllowFail
+      if (-not (Test-FirebaseProjectAccess -ProjectId $App.firebaseProject -RepoRoot $root)) { continue }
+      $code2 = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
       if ($code2 -eq 0) {
         Set-AccountMapping -Config $Config -App $App -Email $email
         $ok = $true
@@ -993,8 +993,8 @@ function Invoke-AppDeploy {
         $email = Select-AccountInteractive -App $App -Config $Config
         Set-AccountMapping -Config $Config -App $App -Email $email
         if (-not (Invoke-FirebaseLoginUse $email)) { throw "login:use that bai" }
-        Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App
-        Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy | Out-Null
+        Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root
+        Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy | Out-Null
         $ok = $true
       }
     }
