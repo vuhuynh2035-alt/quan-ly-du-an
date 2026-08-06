@@ -24,9 +24,10 @@ Thêm tài khoản Google khác: trong menu bấm **`M`** → **`T`**.
 | Thoát | `Q` |
 | Tuỳ chọn | `M` (ẩn app, thêm TK, shortcut Desktop, …) |
 
-## Vì sao còn thấy app cũ?
+## Ẩn / hiện app
 
-Cursor vẫn nhớ project đã mở. Bam **`M`** → **`X`** để ẩn, hoặc dùng `exclude` trong config.
+- Ẩn app không dùng: **`M`** → **`X`**
+- **Giữ lại** Xuân Quỳnh và apartment (không dùng exclude `"hotel"` — sẽ ẩn nhầm)
 
 ## File
 
