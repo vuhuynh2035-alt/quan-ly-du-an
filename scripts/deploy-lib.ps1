@@ -56,9 +56,9 @@ function Save-DeployConfig {
 
 function Repair-DeployConfigObject {
   param([object]$Config)
-  # Khong bao gio an Xuan Quynh / apartment (ban chinh).
-  # Duoc phep an ban copy cu hotel_app_firebase (trung project Firebase).
-  $neverExclude = @("xuanquynh", "xuan-quynh", "apartment", "hotel-xuan-quynh")
+  # Khong an bang keyword ngan (se an het). Duoc an tung PATH copy cu.
+  # Bao ve ban GitHub XUANQUYNH — khong cho exclude path do.
+  $neverKeyword = @("xuanquynh", "xuan-quynh", "apartment", "hotel-xuan-quynh")
   $goodApps = @()
   $extraEx = @()
 
@@ -69,9 +69,15 @@ function Repair-DeployConfigObject {
       if (-not $s) { continue }
       $low = $s.ToLowerInvariant()
       if ($low -eq "hotel") { continue }
-      $keepHit = $false
-      foreach ($k in $neverExclude) { if ($low.Contains($k)) { $keepHit = $true; break } }
-      if (-not $keepHit) { $extraEx += $s }
+      $isPath = ($s -match '^[A-Za-z]:[\\/]') -or ($s.Contains('\')) -or ($s.Contains('/'))
+      if ($isPath) {
+        if ($low -match 'xuanquynh' -and $low -match 'github') { continue }
+        $extraEx += $s
+      } else {
+        $keepHit = $false
+        foreach ($k in $neverKeyword) { if ($low.Contains($k)) { $keepHit = $true; break } }
+        if (-not $keepHit) { $extraEx += $s }
+      }
       continue
     }
     try {
@@ -85,8 +91,15 @@ function Repair-DeployConfigObject {
     $s = [string]$r
     $low = $s.ToLowerInvariant()
     if ($low -eq "hotel") { continue }
+    $isPath = ($s -match '^[A-Za-z]:[\\/]') -or ($s.Contains('\')) -or ($s.Contains('/'))
+    if ($isPath) {
+      # Bao ve ban chinh GitHub
+      if ($low -match 'xuanquynh' -and $low -match 'github') { continue }
+      $ex += $s
+      continue
+    }
     $keepHit = $false
-    foreach ($k in $neverExclude) { if ($low.Contains($k)) { $keepHit = $true; break } }
+    foreach ($k in $neverKeyword) { if ($low.Contains($k)) { $keepHit = $true; break } }
     if ($keepHit) { continue }
     $ex += $s
   }
