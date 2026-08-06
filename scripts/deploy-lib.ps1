@@ -658,7 +658,22 @@ function Test-FirebaseProjectAccess {
     $out = firebase use $ProjectId 2>&1 | Out-String
     $text = $out.TrimEnd()
     if ($text) { Write-Host $text }
-    return ($LASTEXITCODE -eq 0)
+    if ($LASTEXITCODE -ne 0) { return $false }
+
+    # firebase use co the "thanh cong" tren .firebaserc local du account khong co quyen API
+    $listOut = firebase projects:list --json 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      # fallback: thu get project
+      $getOut = firebase projects:get $ProjectId 2>&1 | Out-String
+      if ($getOut -match '(?i)Failed to get Firebase project|permission|not have') {
+        Write-Host "Account hien tai khong co quyen project '$ProjectId'" -ForegroundColor Yellow
+        return $false
+      }
+      return ($LASTEXITCODE -eq 0)
+    }
+    if ($listOut -match [regex]::Escape($ProjectId)) { return $true }
+    Write-Host "Project '$ProjectId' khong co trong danh sach account hien tai." -ForegroundColor Yellow
+    return $false
   } finally {
     $ErrorActionPreference = $prev
   }
@@ -764,7 +779,12 @@ function Ensure-Ready {
 }
 
 function Invoke-DeployCommands {
-  param([string]$RepoRoot, [string]$Kind, [switch]$FullDeploy)
+  param(
+    [string]$RepoRoot,
+    [string]$Kind,
+    [switch]$FullDeploy,
+    [switch]$AllowFail
+  )
   Push-Location $RepoRoot
   try {
     $pkg = Get-Content -LiteralPath (Join-Path $RepoRoot "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -772,33 +792,52 @@ function Invoke-DeployCommands {
     if ($pkg.scripts) { $scripts = @($pkg.scripts.PSObject.Properties.Name) }
 
     $wantFull = $FullDeploy -or ($Kind -eq "all")
+    $code = 0
     if ($wantFull) {
       if ($scripts -contains "deploy") {
         Write-Host "npm run deploy..." -ForegroundColor Yellow
-        Invoke-External -FailMessage "deploy that bai" -Command { npm run deploy } | Out-Null
+        $code = Invoke-External -AllowFail -Command { npm run deploy }
       } else {
         if ($scripts -contains "build") {
           Invoke-External -FailMessage "build that bai" -Command { npm run build } | Out-Null
         }
-        Invoke-External -FailMessage "firebase deploy that bai" -Command { firebase deploy } | Out-Null
+        $code = Invoke-External -AllowFail -Command { firebase deploy }
       }
     } else {
       if ($scripts -contains "deploy:hosting") {
         Write-Host "npm run deploy:hosting..." -ForegroundColor Yellow
-        Invoke-External -FailMessage "deploy:hosting that bai" -Command { npm run deploy:hosting } | Out-Null
+        $code = Invoke-External -AllowFail -Command { npm run deploy:hosting }
       } elseif ($scripts -contains "deploy") {
         Write-Host "npm run deploy..." -ForegroundColor Yellow
-        Invoke-External -FailMessage "deploy that bai" -Command { npm run deploy } | Out-Null
+        $code = Invoke-External -AllowFail -Command { npm run deploy }
       } else {
         if ($scripts -contains "build") {
           Invoke-External -FailMessage "build that bai" -Command { npm run build } | Out-Null
         }
-        Invoke-External -FailMessage "firebase deploy that bai" -Command { firebase deploy --only hosting } | Out-Null
+        $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting }
       }
     }
+    if (-not $AllowFail -and $code -ne 0) {
+      throw "firebase deploy that bai (exit $code)"
+    }
+    return $code
   } finally {
     Pop-Location
   }
+}
+
+function Clear-AccountMapping {
+  param([object]$Config, [string]$Path)
+  if (-not $Config.accountByPath -or -not $Path) { return }
+  $obj = [pscustomobject]@{}
+  foreach ($prop in $Config.accountByPath.PSObject.Properties) {
+    if ($prop.Name -ne $Path) {
+      $obj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+    }
+  }
+  $Config | Add-Member accountByPath $obj -Force
+  $Config.apps = @($Config.apps)
+  Save-DeployConfig $Config
 }
 
 function Invoke-AppDeploy {
@@ -848,7 +887,55 @@ function Invoke-AppDeploy {
   }
 
   Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -Interactive:$Interactive
-  Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy
+
+  $code = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy -AllowFail
+  if ($code -ne 0) {
+    Write-Host ""
+    Write-Host "Deploy that bai — thu tai khoan Firebase khac..." -ForegroundColor Yellow
+    Clear-AccountMapping -Config $Config -Path $root
+    $App | Add-Member accountEmail "" -Force
+
+    $tried = @()
+    if ($account) { $tried += $account.email }
+    $ok = $false
+    foreach ($email in @(Get-FirebaseEmails)) {
+      if ($tried -contains $email) { continue }
+      Write-Host "Thu deploy bang: $email" -ForegroundColor Yellow
+      if (-not (Invoke-FirebaseLoginUse $email)) { continue }
+      if (-not (Test-FirebaseProjectAccess $App.firebaseProject)) { continue }
+      $code2 = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy -AllowFail
+      if ($code2 -eq 0) {
+        Set-AccountMapping -Config $Config -App $App -Email $email
+        $ok = $true
+        break
+      }
+    }
+
+    if (-not $ok -and $Interactive) {
+      Write-Host ""
+      Write-Host "Account hien tai KHONG co quyen project '$($App.firebaseProject)'." -ForegroundColor Red
+      Write-Host "Can login Google dung (Firebase Console -> Project settings -> Users)." -ForegroundColor Yellow
+      Write-Host "Bam M > T de them TK, roi chon lai app." -ForegroundColor Yellow
+      $go = Read-Host "Da login:add xong? Enter = chon TK moi, Q = dung"
+      if ($go -notmatch '^[Qq]$') {
+        $email = Select-AccountInteractive -App $App -Config $Config
+        Set-AccountMapping -Config $Config -App $App -Email $email
+        if (-not (Invoke-FirebaseLoginUse $email)) { throw "login:use that bai" }
+        Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App
+        Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -FullDeploy:$FullDeploy | Out-Null
+        $ok = $true
+      }
+    }
+
+    if (-not $ok) {
+      throw @"
+firebase deploy that bai (exit $code).
+Project: $($App.firebaseProject)
+Account dang dung khong co quyen.
+Fix: firebase login:add (dung Google so huu project) roi chay lai, chon dung TK cho yana-app.
+"@
+    }
+  }
 
   $ver2 = Get-VersionLabel $root
   $url = if ($App.siteUrl) { $App.siteUrl } elseif ($App.firebaseProject) { "https://$($App.firebaseProject).web.app" } else { "" }
