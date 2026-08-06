@@ -55,16 +55,23 @@ function Show-Menu {
   Write-Host "           DEPLOY APP" -ForegroundColor Cyan
   Write-Host "========================================" -ForegroundColor Cyan
   Write-Host "  Chon so -> tu dong doi TK + deploy" -ForegroundColor DarkGray
+  Write-Host "  (trung project Firebase da gop — giu ban Cursor moi nhat)" -ForegroundColor DarkGray
   Write-Host ""
 
   if (-not $Apps -or $Apps.Count -eq 0) {
     Write-Host "  Chua thay app Firebase." -ForegroundColor Yellow
     Write-Host "  Mo project trong Cursor, roi bam M > R." -ForegroundColor DarkGray
   } else {
+    $topRank = ($Apps | Measure-Object -Property rank -Maximum).Maximum
     $i = 1
     foreach ($app in $Apps) {
       $email = if ($app.accountEmail) { $app.accountEmail } else { "lan dau se hoi TK" }
-      Write-Host ("  {0,2}. {1}" -f $i, $app.label) -ForegroundColor White
+      $mark = ""
+      if ($app.rank -and $topRank -and ([int64]$app.rank -eq [int64]$topRank)) {
+        $mark = "  << Cursor moi nhat"
+      }
+      Write-Host ("  {0,2}. {1}{2}" -f $i, $app.label, $mark) -ForegroundColor White
+      Write-Host ("      {0}" -f $app.path) -ForegroundColor DarkGray
       Write-Host ("      {0}" -f $email) -ForegroundColor DarkCyan
       $i++
     }
