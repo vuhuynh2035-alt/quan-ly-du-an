@@ -45,10 +45,84 @@ function Get-DeployConfigPath {
 
 function Save-DeployConfig {
   param([object]$Config)
+  # Dam bao apps chi chua object, exclude chi chua string
+  $Config = Repair-DeployConfigObject $Config
   $path = Join-Path $PSScriptRoot "deploy-apps.local.json"
   $json = $Config | ConvertTo-Json -Depth 10
   [System.IO.File]::WriteAllText($path, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
   Write-Host "Da luu: $path" -ForegroundColor DarkGray
+}
+
+function Repair-DeployConfigObject {
+  param([object]$Config)
+
+  $keepNames = @("xuanquynh", "xuan-quynh", "xuan_quynh", "apartment", "hotel_app_firebase", "hotel-xuan-quynh")
+
+  $goodApps = @()
+  $extraExclude = @()
+
+  foreach ($item in @($Config.apps)) {
+    if ($null -eq $item) { continue }
+    # String bi nhét nhầm vào apps (file hỏng) → chuyển sang exclude (trừ Xuan Quynh)
+    if ($item -is [string]) {
+      $s = [string]$item
+      if (-not $s) { continue }
+      $low = $s.ToLowerInvariant()
+      if ($low -eq "hotel") { continue }
+      $keep = $false
+      foreach ($k in $keepNames) { if ($low.Contains($k)) { $keep = $true; break } }
+      if (-not $keep) { $extraExclude += $s }
+      continue
+    }
+    # Chi giu object co id hoac path/label
+    if ($item -is [System.Management.Automation.PSObject] -or $item -is [hashtable]) {
+      $id = $null
+      try { $id = $item.id } catch {}
+      $path = $null
+      try { $path = $item.path } catch {}
+      $label = $null
+      try { $label = $item.label } catch {}
+      if ($id -or $label -or ($null -ne $path)) {
+        $goodApps += $item
+      }
+    }
+  }
+
+  $ex = @()
+  foreach ($r in @($Config.exclude)) {
+    if ($null -eq $r) { continue }
+    $s = [string]$r
+    if (-not $s) { continue }
+    $low = $s.ToLowerInvariant()
+    if ($low -eq "hotel") { continue }
+    $keep = $false
+    foreach ($k in $keepNames) { if ($low.Contains($k)) { $keep = $true; break } }
+    if ($keep) { continue }
+    $ex += $s
+  }
+  foreach ($s in $extraExclude) {
+    if (-not ($ex | Where-Object { "$_" -eq $s })) { $ex += $s }
+  }
+
+  $Config | Add-Member apps $goodApps -Force
+  $Config | Add-Member exclude $ex -Force
+
+  # Neu mat app quan-ly-du-an, them lai mac dinh
+  $hasQld = $goodApps | Where-Object { $_.id -eq "quan-ly-du-an" -or $_.firebaseProject -eq "quan-ly-du-an-7d651" } | Select-Object -First 1
+  if (-not $hasQld) {
+    $defaultApp = [pscustomobject]@{
+      id              = "quan-ly-du-an"
+      label           = "Quan ly du an"
+      path            = ""
+      branch          = "main"
+      firebaseProject = "quan-ly-du-an-7d651"
+      deploy          = "hosting"
+      siteUrl         = "https://quan-ly-du-an-7d651.web.app"
+    }
+    $Config | Add-Member apps (@($defaultApp) + @($goodApps)) -Force
+  }
+
+  return $Config
 }
 
 function Read-DeployConfig {
@@ -63,7 +137,36 @@ function Read-DeployConfig {
     }
   }
 
-  $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+  $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+  try {
+    $cfg = $raw | ConvertFrom-Json
+  } catch {
+    Write-Host "File config bi hong JSON. Tao lai file sach..." -ForegroundColor Yellow
+    $backup = "$path.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
+    Copy-Item -LiteralPath $path $backup -Force
+    Write-Host "Da backup: $backup" -ForegroundColor DarkGray
+    $cfg = [pscustomobject]@{
+      discoverCursor = $true
+      scanRoots      = @()
+      exclude        = @()
+      accounts       = @()
+      accountByPath  = ([pscustomobject]@{})
+      apps           = @(
+        [pscustomobject]@{
+          id              = "quan-ly-du-an"
+          label           = "Quan ly du an"
+          path            = ""
+          branch          = "main"
+          firebaseProject = "quan-ly-du-an-7d651"
+          deploy          = "hosting"
+          siteUrl         = "https://quan-ly-du-an-7d651.web.app"
+        }
+      )
+    }
+    $path = Join-Path $PSScriptRoot "deploy-apps.local.json"
+    $json = $cfg | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($path, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+  }
 
   if (-not $cfg.PSObject.Properties["accounts"]) { $cfg | Add-Member accounts @() -Force }
   if (-not $cfg.PSObject.Properties["apps"]) { $cfg | Add-Member apps @() -Force }
@@ -71,6 +174,18 @@ function Read-DeployConfig {
   if (-not $cfg.PSObject.Properties["exclude"]) { $cfg | Add-Member exclude @() -Force }
   if (-not $cfg.PSObject.Properties["scanRoots"]) { $cfg | Add-Member scanRoots @() -Force }
   if (-not $cfg.PSObject.Properties["discoverCursor"]) { $cfg | Add-Member discoverCursor $true -Force }
+
+  $before = ($cfg.apps | ConvertTo-Json -Compress -Depth 5)
+  $cfg = Repair-DeployConfigObject $cfg
+  $after = ($cfg.apps | ConvertTo-Json -Compress -Depth 5)
+
+  # Neu sua duoc file hong (string trong apps), ghi lai local
+  if ($before -ne $after -or ($raw -match '"apps"\s*:\s*\[[^\]]*"hotel"')) {
+    $localPath = Join-Path $PSScriptRoot "deploy-apps.local.json"
+    $json = $cfg | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($localPath, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Da sua config bi hong -> $localPath" -ForegroundColor Green
+  }
 
   return $cfg
 }

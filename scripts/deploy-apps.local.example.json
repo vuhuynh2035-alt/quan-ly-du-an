@@ -1,0 +1,39 @@
+{
+  "discoverCursor": true,
+  "scanRoots": [
+    "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub",
+    "C:\\hotel_app_firebase",
+    "C:\\Quan ly xe"
+  ],
+  "exclude": [],
+  "accounts": [
+    {
+      "id": "vuhuynh2035",
+      "label": "vuhuynh2035@gmail.com",
+      "email": "vuhuynh2035@gmail.com"
+    },
+    {
+      "id": "vickylabnb",
+      "label": "vickylabnb@gmail.com",
+      "email": "vickylabnb@gmail.com"
+    }
+  ],
+  "accountByPath": {
+    "C:\\Quan ly du an": "vuhuynh2035@gmail.com",
+    "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub\\XUANQUYNH_HOTEL": "vickylabnb@gmail.com",
+    "C:\\Quan ly xe": "vuhuynh2035@gmail.com",
+    "C:\\hotel_app_firebase": "vickylabnb@gmail.com",
+    "C:\\You're not alone\\yana-app": "vuhuynh2035@gmail.com"
+  },
+  "apps": [
+    {
+      "id": "quan-ly-du-an",
+      "label": "Quan ly du an",
+      "path": "",
+      "branch": "main",
+      "firebaseProject": "quan-ly-du-an-7d651",
+      "deploy": "hosting",
+      "siteUrl": "https://quan-ly-du-an-7d651.web.app"
+    }
+  ]
+}
