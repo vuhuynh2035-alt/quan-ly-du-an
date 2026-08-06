@@ -1,18 +1,10 @@
-# Deploy tat ca app: .\scripts\deploy-all.ps1
-
-param(
-  [switch]$SkipPull,
-  [switch]$FullDeploy
-)
-
+# Deploy tat ca
+param([switch]$SkipPull, [switch]$FullDeploy)
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "deploy-lib.ps1")
-
 $config = Read-DeployConfig
 $apps = @(Get-DeployApps $config)
 $failed = @()
-
-Write-Host "Deploy $($apps.Count) app..." -ForegroundColor Cyan
 foreach ($app in $apps) {
   try {
     Invoke-AppDeploy -App $app -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy -Interactive
@@ -21,9 +13,5 @@ foreach ($app in $apps) {
     $failed += $app.label
   }
 }
-
-if ($failed.Count -gt 0) {
-  Write-Host "That bai: $($failed -join ', ')" -ForegroundColor Red
-  exit 1
-}
+if ($failed.Count -gt 0) { Write-Host "That bai: $($failed -join ', ')" -ForegroundColor Red; exit 1 }
 Write-Host "THANH CONG" -ForegroundColor Green

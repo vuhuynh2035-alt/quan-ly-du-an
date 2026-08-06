@@ -56,10 +56,10 @@ Xem [FIREBASE_SETUP.md](./FIREBASE_SETUP.md) — deploy cloud sync realtime + th
 
 1. Double-click **`deploy.bat`**
 2. Gõ số app → Enter
-3. Xong (tự đổi tài khoản Firebase + deploy)
+3. Tự động: đổi TK Firebase → pull → build → deploy
 
-Lần đầu có thể hỏi login Firebase. Tạo shortcut Desktop: `tao-shortcut-desktop.bat`.  
-Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
+Lần đầu có thể hỏi login / chọn email (nhớ lại).  
+Shortcut Desktop: `tao-shortcut-desktop.bat`. Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
 
 ## File không commit (bí mật)
 

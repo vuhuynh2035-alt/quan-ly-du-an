@@ -1,9 +1,7 @@
 {
   "discoverCursor": true,
   "scanRoots": [
-    "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub",
-    "C:\\hotel_app_firebase",
-    "C:\\Quan ly xe"
+    "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub"
   ],
   "exclude": [],
   "accounts": [
@@ -20,9 +18,8 @@
   ],
   "accountByPath": {
     "C:\\Quan ly du an": "vuhuynh2035@gmail.com",
-    "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub\\XUANQUYNH_HOTEL": "vickylabnb@gmail.com",
     "C:\\Quan ly xe": "vuhuynh2035@gmail.com",
-    "C:\\hotel_app_firebase": "vickylabnb@gmail.com"
+    "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub\\XUANQUYNH_HOTEL": "vickylabnb@gmail.com"
   },
   "apps": [
     {

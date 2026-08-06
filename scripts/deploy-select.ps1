@@ -1,6 +1,4 @@
-# Menu deploy — chon so app -> deploy
-# Goi tu deploy.bat
-
+# deploy-select.ps1 — Menu: go so app -> tu dong deploy
 param(
   [switch]$SkipPull,
   [switch]$FullDeploy,
@@ -14,83 +12,76 @@ $ErrorActionPreference = "Stop"
 function Invoke-FirstRun {
   Write-Host ""
   Write-Host "========================================" -ForegroundColor Cyan
-  Write-Host "  CAI DAT LAN DAU" -ForegroundColor Cyan
+  Write-Host "  CAI DAT LAN DAU (chi 1 lan tren may)" -ForegroundColor Cyan
   Write-Host "========================================" -ForegroundColor Cyan
 
   if (-not (Test-CommandExists "node") -or -not (Test-CommandExists "npm")) {
-    throw "Can cai Node.js tu https://nodejs.org roi chay lai."
+    throw "Can cai Node.js: https://nodejs.org"
   }
-
   if (-not (Test-CommandExists "firebase")) {
     Write-Host "Dang cai firebase-tools..." -ForegroundColor Yellow
     Invoke-External -AllowFail -Command { npm install -g firebase-tools } | Out-Null
     if (-not (Test-CommandExists "firebase")) {
-      throw "Khong cai duoc firebase-tools. Mo terminal moi sau khi cai Node.js."
+      throw "Cai firebase-tools that bai. Mo terminal moi roi chay lai."
     }
   }
 
   $emails = @(Get-FirebaseEmails)
   if ($emails.Count -eq 0) {
-    Write-Host "Chua dang nhap Firebase. Se mo trinh duyet..." -ForegroundColor Yellow
+    Write-Host "Chua dang nhap Firebase. Mo trinh duyet de login..." -ForegroundColor Yellow
     $go = Read-Host "Enter = dang nhap, Q = thoat"
     if ($go -match '^[Qq]$') { exit 0 }
     Invoke-External -AllowFail -Command { firebase login:add } | Out-Null
     $emails = @(Get-FirebaseEmails)
-    if ($emails.Count -eq 0) {
-      throw "Chua login thanh cong. Chay lai deploy.bat"
-    }
+    if ($emails.Count -eq 0) { throw "Chua login. Chay lai deploy.bat" }
   }
 
   Write-Host "San sang:" -ForegroundColor Green
   foreach ($e in $emails) { Write-Host "  - $e" }
+  Write-Host "Them TK khac (neu can): M > T" -ForegroundColor DarkGray
   Write-Host ""
 }
 
 function Show-Menu {
   param([object[]]$Apps)
-
   Clear-Host
   Write-Host ""
   Write-Host "========================================" -ForegroundColor Cyan
   Write-Host "           DEPLOY APP" -ForegroundColor Cyan
   Write-Host "========================================" -ForegroundColor Cyan
-  Write-Host "  Goi SO app -> tu dong lam het:" -ForegroundColor DarkGray
-  Write-Host "  doi TK Firebase -> git pull -> build -> deploy hosting" -ForegroundColor DarkGray
+  Write-Host "  Go SO -> tu dong: doi TK + pull + build + deploy" -ForegroundColor DarkGray
   Write-Host ""
 
   if (-not $Apps -or $Apps.Count -eq 0) {
     Write-Host "  Chua thay app Firebase." -ForegroundColor Yellow
-    Write-Host "  Mo project trong Cursor, roi bam M > R." -ForegroundColor DarkGray
+    Write-Host "  Mo project trong Cursor, roi M > R." -ForegroundColor DarkGray
   } else {
-    $topRank = ($Apps | Measure-Object -Property rank -Maximum).Maximum
+    $top = ($Apps | Measure-Object -Property rank -Maximum).Maximum
     $i = 1
     foreach ($app in $Apps) {
       $email = if ($app.accountEmail) { $app.accountEmail } else { "lan dau se hoi TK" }
       $mark = ""
-      if ($app.rank -and $topRank -and ([int64]$app.rank -eq [int64]$topRank)) {
-        $mark = "  << Cursor moi nhat"
-      }
+      if ($app.rank -and $top -and ([int64]$app.rank -eq [int64]$top)) { $mark = "  << Cursor moi nhat" }
       Write-Host ("  {0,2}. {1}{2}" -f $i, $app.label, $mark) -ForegroundColor White
       Write-Host ("      {0}" -f $app.path) -ForegroundColor DarkGray
       Write-Host ("      {0}" -f $email) -ForegroundColor DarkCyan
       $i++
     }
   }
-
   Write-Host ""
-  Write-Host "   M  Tuy chon (an app / them TK / shortcut...)" -ForegroundColor DarkGray
+  Write-Host "   M  Tuy chon" -ForegroundColor DarkGray
   Write-Host "   Q  Thoat" -ForegroundColor DarkGray
   Write-Host ""
 }
 
 function Show-More {
   Write-Host ""
-  Write-Host "  A  Deploy tat ca" -ForegroundColor Yellow
-  Write-Host "  X  An app khoi danh sach"
+  Write-Host "  A  Deploy tat ca"
+  Write-Host "  X  An app khoi list"
   Write-Host "  R  Quet lai Cursor"
   Write-Host "  L  Xem tai khoan Firebase"
   Write-Host "  T  Them tai khoan Firebase"
-  Write-Host "  E  Mo file cau hinh"
+  Write-Host "  E  Mo config"
   Write-Host "  D  Tao shortcut Desktop"
   Write-Host "  B  Quay lai"
   Write-Host ""
@@ -121,14 +112,8 @@ function Hide-App {
   if ($pick -notmatch '^\d+$') { return }
   $idx = [int]$pick - 1
   if ($idx -lt 0 -or $idx -ge $Apps.Count) { return }
-  $app = $Apps[$idx]
-  Add-ExcludeRule -Config $Config -Rule ([string]$app.path)
-  Write-Host "Da an: $($app.label)" -ForegroundColor Green
-}
-
-function Open-Config {
-  $path = Get-DeployConfigPath
-  notepad $path
+  Add-ExcludeRule -Config $Config -Rule ([string]$Apps[$idx].path)
+  Write-Host "Da an: $($Apps[$idx].label)" -ForegroundColor Green
 }
 
 try {
@@ -165,19 +150,9 @@ try {
       $m = (Read-Host "Chon").Trim()
       switch -Regex ($m) {
         '^[Aa]$' {
-          $failed = @()
           foreach ($a in $apps) {
-            try {
-              Invoke-AppDeploy -App $a -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy -Interactive
-            } catch {
-              Write-Host "[LOI] $($a.label): $($_.Exception.Message)" -ForegroundColor Red
-              $failed += $a.label
-            }
-          }
-          if ($failed.Count -gt 0) {
-            Write-Host "That bai: $($failed -join ', ')" -ForegroundColor Red
-          } else {
-            Write-Host "Deploy tat ca: THANH CONG" -ForegroundColor Green
+            try { Invoke-AppDeploy -App $a -Config $config -SkipPull:$SkipPull -FullDeploy:$FullDeploy -Interactive }
+            catch { Write-Host "[LOI] $($a.label): $($_.Exception.Message)" -ForegroundColor Red }
           }
           Read-Host "Enter" | Out-Null
         }
@@ -199,7 +174,7 @@ try {
           Read-Host "Enter" | Out-Null
         }
         '^[Ee]$' {
-          Open-Config
+          notepad (Get-DeployConfigPath)
           $config = Read-DeployConfig
           $apps = @(Get-DeployApps $config)
         }

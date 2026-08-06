@@ -1,5 +1,7 @@
-# Deploy Firebase — thu vien dung chung (ban rebuild)
-# Quet app tu Cursor, doi tai khoan Firebase, git pull, build, hosting
+# =============================================================================
+# deploy-lib.ps1 — Cong cu deploy Firebase da app / da tai khoan (ban hoan chinh)
+# Luong: chon app -> doi TK -> git pull -> build -> firebase deploy --project
+# =============================================================================
 
 function Test-CommandExists {
   param([string]$Name)
@@ -45,7 +47,6 @@ function Get-DeployConfigPath {
 
 function Save-DeployConfig {
   param([object]$Config)
-  # Dam bao apps chi chua object, exclude chi chua string
   $Config = Repair-DeployConfigObject $Config
   $path = Join-Path $PSScriptRoot "deploy-apps.local.json"
   $json = $Config | ConvertTo-Json -Depth 10
@@ -55,73 +56,54 @@ function Save-DeployConfig {
 
 function Repair-DeployConfigObject {
   param([object]$Config)
-
-  $keepNames = @("xuanquynh", "xuan-quynh", "xuan_quynh", "apartment", "hotel_app_firebase", "hotel-xuan-quynh")
-
+  $keep = @("xuanquynh", "xuan-quynh", "apartment", "hotel_app_firebase", "hotel-xuan-quynh")
   $goodApps = @()
-  $extraExclude = @()
+  $extraEx = @()
 
   foreach ($item in @($Config.apps)) {
     if ($null -eq $item) { continue }
-    # String bi nhét nhầm vào apps (file hỏng) → chuyển sang exclude (trừ Xuan Quynh)
     if ($item -is [string]) {
       $s = [string]$item
       if (-not $s) { continue }
       $low = $s.ToLowerInvariant()
       if ($low -eq "hotel") { continue }
-      $keep = $false
-      foreach ($k in $keepNames) { if ($low.Contains($k)) { $keep = $true; break } }
-      if (-not $keep) { $extraExclude += $s }
+      $keepHit = $false
+      foreach ($k in $keep) { if ($low.Contains($k)) { $keepHit = $true; break } }
+      if (-not $keepHit) { $extraEx += $s }
       continue
     }
-    # Chi giu object co id hoac path/label
-    if ($item -is [System.Management.Automation.PSObject] -or $item -is [hashtable]) {
-      $id = $null
-      try { $id = $item.id } catch {}
-      $path = $null
-      try { $path = $item.path } catch {}
-      $label = $null
-      try { $label = $item.label } catch {}
-      if ($id -or $label -or ($null -ne $path)) {
-        $goodApps += $item
-      }
-    }
+    try {
+      if ($item.id -or $item.label -or $null -ne $item.path) { $goodApps += $item }
+    } catch {}
   }
 
   $ex = @()
   foreach ($r in @($Config.exclude)) {
-    if ($null -eq $r) { continue }
+    if (-not $r) { continue }
     $s = [string]$r
-    if (-not $s) { continue }
     $low = $s.ToLowerInvariant()
     if ($low -eq "hotel") { continue }
-    $keep = $false
-    foreach ($k in $keepNames) { if ($low.Contains($k)) { $keep = $true; break } }
-    if ($keep) { continue }
+    $keepHit = $false
+    foreach ($k in $keep) { if ($low.Contains($k)) { $keepHit = $true; break } }
+    if ($keepHit) { continue }
     $ex += $s
   }
-  foreach ($s in $extraExclude) {
+  foreach ($s in $extraEx) {
     if (-not ($ex | Where-Object { "$_" -eq $s })) { $ex += $s }
+  }
+
+  if (-not ($goodApps | Where-Object { $_.id -eq "quan-ly-du-an" -or $_.firebaseProject -eq "quan-ly-du-an-7d651" })) {
+    $goodApps = @(
+      [pscustomobject]@{
+        id = "quan-ly-du-an"; label = "Quan ly du an"; path = ""; branch = "main"
+        firebaseProject = "quan-ly-du-an-7d651"; deploy = "hosting"
+        siteUrl = "https://quan-ly-du-an-7d651.web.app"
+      }
+    ) + $goodApps
   }
 
   $Config | Add-Member apps $goodApps -Force
   $Config | Add-Member exclude $ex -Force
-
-  # Neu mat app quan-ly-du-an, them lai mac dinh
-  $hasQld = $goodApps | Where-Object { $_.id -eq "quan-ly-du-an" -or $_.firebaseProject -eq "quan-ly-du-an-7d651" } | Select-Object -First 1
-  if (-not $hasQld) {
-    $defaultApp = [pscustomobject]@{
-      id              = "quan-ly-du-an"
-      label           = "Quan ly du an"
-      path            = ""
-      branch          = "main"
-      firebaseProject = "quan-ly-du-an-7d651"
-      deploy          = "hosting"
-      siteUrl         = "https://quan-ly-du-an-7d651.web.app"
-    }
-    $Config | Add-Member apps (@($defaultApp) + @($goodApps)) -Force
-  }
-
   return $Config
 }
 
@@ -131,7 +113,7 @@ function Read-DeployConfig {
     $example = Join-Path $PSScriptRoot "deploy-apps.config.example.json"
     if (Test-Path -LiteralPath $example) {
       Copy-Item $example $path
-      Write-Host "Da tao config tu file mau: $path" -ForegroundColor Green
+      Write-Host "Da tao config: $path" -ForegroundColor Green
     } else {
       throw "Khong tim thay config deploy."
     }
@@ -141,54 +123,40 @@ function Read-DeployConfig {
   try {
     $cfg = $raw | ConvertFrom-Json
   } catch {
-    Write-Host "File config bi hong JSON. Tao lai file sach..." -ForegroundColor Yellow
-    $backup = "$path.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
-    Copy-Item -LiteralPath $path $backup -Force
-    Write-Host "Da backup: $backup" -ForegroundColor DarkGray
-    $cfg = [pscustomobject]@{
-      discoverCursor = $true
-      scanRoots      = @()
-      exclude        = @()
-      accounts       = @()
-      accountByPath  = ([pscustomobject]@{})
-      apps           = @(
-        [pscustomobject]@{
-          id              = "quan-ly-du-an"
-          label           = "Quan ly du an"
-          path            = ""
-          branch          = "main"
-          firebaseProject = "quan-ly-du-an-7d651"
-          deploy          = "hosting"
-          siteUrl         = "https://quan-ly-du-an-7d651.web.app"
-        }
-      )
+    $bak = "$path.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
+    Copy-Item -LiteralPath $path $bak -Force
+    Write-Host "Config JSON hong — backup $bak, tao lai." -ForegroundColor Yellow
+    $example = Join-Path $PSScriptRoot "deploy-apps.local.example.json"
+    if (-not (Test-Path -LiteralPath $example)) {
+      $example = Join-Path $PSScriptRoot "deploy-apps.config.example.json"
     }
     $path = Join-Path $PSScriptRoot "deploy-apps.local.json"
-    $json = $cfg | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($path, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+    Copy-Item $example $path -Force
+    $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
   }
 
-  if (-not $cfg.PSObject.Properties["accounts"]) { $cfg | Add-Member accounts @() -Force }
-  if (-not $cfg.PSObject.Properties["apps"]) { $cfg | Add-Member apps @() -Force }
-  if (-not $cfg.PSObject.Properties["accountByPath"]) { $cfg | Add-Member accountByPath ([pscustomobject]@{}) -Force }
-  if (-not $cfg.PSObject.Properties["exclude"]) { $cfg | Add-Member exclude @() -Force }
-  if (-not $cfg.PSObject.Properties["scanRoots"]) { $cfg | Add-Member scanRoots @() -Force }
-  if (-not $cfg.PSObject.Properties["discoverCursor"]) { $cfg | Add-Member discoverCursor $true -Force }
+  foreach ($name in @("accounts", "apps", "exclude", "scanRoots")) {
+    if (-not $cfg.PSObject.Properties[$name]) { $cfg | Add-Member $name @() -Force }
+  }
+  if (-not $cfg.PSObject.Properties["accountByPath"]) {
+    $cfg | Add-Member accountByPath ([pscustomobject]@{}) -Force
+  }
+  if (-not $cfg.PSObject.Properties["discoverCursor"]) {
+    $cfg | Add-Member discoverCursor $true -Force
+  }
 
   $before = ($cfg.apps | ConvertTo-Json -Compress -Depth 5)
   $cfg = Repair-DeployConfigObject $cfg
   $after = ($cfg.apps | ConvertTo-Json -Compress -Depth 5)
-
-  # Neu sua duoc file hong (string trong apps), ghi lai local
-  if ($before -ne $after -or ($raw -match '"apps"\s*:\s*\[[^\]]*"hotel"')) {
-    $localPath = Join-Path $PSScriptRoot "deploy-apps.local.json"
-    $json = $cfg | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($localPath, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "Da sua config bi hong -> $localPath" -ForegroundColor Green
+  if ($before -ne $after) {
+    $local = Join-Path $PSScriptRoot "deploy-apps.local.json"
+    [System.IO.File]::WriteAllText($local, (($cfg | ConvertTo-Json -Depth 10) + [Environment]::NewLine), [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Da sua config bi hong -> $local" -ForegroundColor Green
   }
-
   return $cfg
 }
+
+# ----- Firebase accounts -----
 
 function Get-FirebaseEmails {
   if (-not (Test-CommandExists "firebase")) { return @() }
@@ -213,33 +181,44 @@ function Show-FirebaseAccounts {
   Write-Host ""
   Write-Host "Tai khoan Firebase tren may:" -ForegroundColor Cyan
   $emails = @(Get-FirebaseEmails)
-  if ($emails.Count -eq 0) {
-    Write-Host "  (chua co)" -ForegroundColor Yellow
-  } else {
-    foreach ($e in $emails) { Write-Host "  - $e" }
-  }
+  if ($emails.Count -eq 0) { Write-Host "  (chua co)" -ForegroundColor Yellow }
+  else { foreach ($e in $emails) { Write-Host "  - $e" } }
   Write-Host ""
 }
+
+function Invoke-FirebaseLoginUse {
+  param([string]$Email)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = firebase login:use $Email 2>&1 | Out-String
+    $text = $out.TrimEnd()
+    if ($text) { Write-Host $text }
+    if ($LASTEXITCODE -eq 0) { return $true }
+    if ($text -match '(?i)Already using account') { return $true }
+    return $false
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
+# ----- Cursor discovery -----
 
 function ConvertFrom-FileUri {
   param([string]$Uri)
   if (-not $Uri) { return $null }
   $u = $Uri.Trim()
-  if ($u -match '^file:') {
-    try {
-      $decoded = [System.Uri]::UnescapeDataString(($u -replace '^file:///', '' -replace '^file://', ''))
-      if ($decoded -match '^[A-Za-z]:') { return ($decoded -replace '/', '\') }
-      if ($decoded.StartsWith('/')) { return $decoded }
-      return ($decoded -replace '/', '\')
-    } catch { return $null }
-  }
-  return $u
+  if ($u -notmatch '^file:') { return $u }
+  try {
+    $decoded = [System.Uri]::UnescapeDataString(($u -replace '^file:///', '' -replace '^file://', ''))
+    if ($decoded -match '^[A-Za-z]:') { return ($decoded -replace '/', '\') }
+    if ($decoded.StartsWith('/')) { return $decoded }
+    return ($decoded -replace '/', '\')
+  } catch { return $null }
 }
 
 function Get-CursorFolderInfos {
-  # Tra ve @{ Path; LastUsed } — LastUsed = thoi gian workspace Cursor moi nhat
   $map = @{}
-
   $touch = {
     param($folderPath, $when)
     if (-not $folderPath) { return }
@@ -249,26 +228,24 @@ function Get-CursorFolderInfos {
     try {
       if (-not (Test-Path -LiteralPath $p -PathType Container)) { return }
       $r = (Resolve-Path -LiteralPath $p).Path
+      try { $r = [System.IO.Path]::GetFullPath($r) } catch {}
       $t = if ($when) { [datetime]$when } else { [datetime]::MinValue }
-      if (-not $map.ContainsKey($r) -or $t -gt $map[$r]) {
-        $map[$r] = $t
-      }
+      if (-not $map.ContainsKey($r) -or $t -gt $map[$r]) { $map[$r] = $t }
     } catch {}
   }
 
-  $userRoots = @()
+  $roots = @()
   if ($env:APPDATA) {
-    $userRoots += (Join-Path $env:APPDATA "Cursor\User")
-    $userRoots += (Join-Path $env:APPDATA "Cursor - Insiders\User")
+    $roots += (Join-Path $env:APPDATA "Cursor\User")
+    $roots += (Join-Path $env:APPDATA "Cursor - Insiders\User")
   }
   if ($env:HOME) {
-    $userRoots += (Join-Path $env:HOME ".config/Cursor/User")
-    $userRoots += (Join-Path $env:HOME "Library/Application Support/Cursor/User")
+    $roots += (Join-Path $env:HOME ".config/Cursor/User")
+    $roots += (Join-Path $env:HOME "Library/Application Support/Cursor/User")
   }
 
-  foreach ($userRoot in ($userRoots | Select-Object -Unique)) {
+  foreach ($userRoot in ($roots | Select-Object -Unique)) {
     if (-not (Test-Path -LiteralPath $userRoot)) { continue }
-
     $ws = Join-Path $userRoot "workspaceStorage"
     if (Test-Path -LiteralPath $ws) {
       Get-ChildItem -LiteralPath $ws -Directory -ErrorAction SilentlyContinue | ForEach-Object {
@@ -277,16 +254,16 @@ function Get-CursorFolderInfos {
           try {
             $data = Get-Content -LiteralPath $wj -Raw -Encoding UTF8 | ConvertFrom-Json
             $when = $_.LastWriteTime
-            if (Test-Path -LiteralPath (Join-Path $_.FullName "state.vscdb")) {
-              $db = Get-Item -LiteralPath (Join-Path $_.FullName "state.vscdb") -ErrorAction SilentlyContinue
-              if ($db -and $db.LastWriteTime -gt $when) { $when = $db.LastWriteTime }
+            $db = Join-Path $_.FullName "state.vscdb"
+            if (Test-Path -LiteralPath $db) {
+              $dbi = Get-Item -LiteralPath $db
+              if ($dbi.LastWriteTime -gt $when) { $when = $dbi.LastWriteTime }
             }
             if ($data.folder) { & $touch $data.folder $when }
           } catch {}
         }
       }
     }
-
     $storage = Join-Path $userRoot "globalStorage\storage.json"
     if (-not (Test-Path -LiteralPath $storage)) {
       $storage = Join-Path $userRoot "globalStorage/storage.json"
@@ -305,41 +282,6 @@ function Get-CursorFolderInfos {
     $list += [pscustomobject]@{ Path = $k; LastUsed = $map[$k] }
   }
   return $list
-}
-
-function Get-CursorFolders {
-  return @((Get-CursorFolderInfos).Path)
-}
-
-function Get-PathRecency {
-  param([string]$Path, [hashtable]$CursorTimes)
-  if ($CursorTimes -and $CursorTimes.ContainsKey($Path)) { return [datetime]$CursorTimes[$Path] }
-  try {
-    if (Test-Path -LiteralPath $Path) {
-      return (Get-Item -LiteralPath $Path).LastWriteTime
-    }
-  } catch {}
-  return [datetime]::MinValue
-}
-
-function Get-AppRank {
-  # Diem cao = uu tien giu lai khi trung Firebase project
-  param([object]$App, [hashtable]$CursorTimes)
-  $score = 0L
-  $recency = Get-PathRecency -Path $App.path -CursorTimes $CursorTimes
-  $score += [int64]($recency.Ticks / 10000000)  # seconds
-
-  $p = ([string]$App.path).ToLowerInvariant()
-  $src = if ($App.source) { [string]$App.source } else { "" }
-
-  if ($src -eq "cursor") { $score += 100000000 }
-  if ($p -match 'github') { $score += 50000000 }
-  if ($p -match 'xuanquynh') { $score += 40000000 }
-  if ($p -match 'onedrive') { $score += 10000000 }
-  # Ban copy cu o C:\hotel_app_firebase — diem thap hon
-  if ($p -match '^[a-z]:\\hotel_app_firebase') { $score -= 30000000 }
-
-  return $score
 }
 
 function Get-FirebaseProjectId {
@@ -365,17 +307,13 @@ function Test-IsFirebaseApp {
 
 function Test-IsExcluded {
   param([object]$App, [object]$Config)
-  $rules = @()
-  if ($Config.exclude) { $rules = @($Config.exclude | Where-Object { $_ }) }
+  $rules = @($Config.exclude | Where-Object { $_ })
   if ($rules.Count -eq 0) { return $false }
-
   $path = [string]$App.path
   $leaf = if ($path) { Split-Path $path -Leaf } else { "" }
   $checks = @($path, [string]$App.id, [string]$App.label, $leaf, [string]$App.firebaseProject) | Where-Object { $_ }
-
   foreach ($rule in $rules) {
     $r = ([string]$rule).ToLowerInvariant()
-    # Khong dung rule "hotel" chung — an nham Xuan Quynh
     if ($r -eq "hotel") { continue }
     foreach ($h in $checks) {
       if ($h.ToLowerInvariant().Contains($r)) { return $true }
@@ -398,6 +336,25 @@ function Get-AccountEmailForPath {
   return ""
 }
 
+function Get-AppRank {
+  param([object]$App, [hashtable]$CursorTimes)
+  $score = 0L
+  $recency = [datetime]::MinValue
+  if ($CursorTimes -and $CursorTimes.ContainsKey($App.path)) {
+    $recency = [datetime]$CursorTimes[$App.path]
+  } elseif (Test-Path -LiteralPath $App.path) {
+    try { $recency = (Get-Item -LiteralPath $App.path).LastWriteTime } catch {}
+  }
+  $score += [int64]($recency.Ticks / 10000000)
+  $p = ([string]$App.path).ToLowerInvariant()
+  $src = if ($App.source) { [string]$App.source } else { "" }
+  if ($src -eq "cursor") { $score += 100000000 }
+  if ($p -match 'github') { $score += 50000000 }
+  if ($p -match 'xuanquynh') { $score += 40000000 }
+  if ($p -match '^[a-z]:\\hotel_app_firebase') { $score -= 30000000 }
+  return $score
+}
+
 function New-DiscoveredApp {
   param([string]$Path, [object]$Config, [string]$Source)
   $name = Split-Path $Path -Leaf
@@ -405,17 +362,11 @@ function New-DiscoveredApp {
   if (-not $id) { $id = "app" }
   $project = Get-FirebaseProjectId $Path
   $email = Get-AccountEmailForPath $Config $Path
-
   return [pscustomobject]@{
-    id              = $id
-    label           = $name
-    path            = $Path
-    branch          = "main"
-    firebaseProject = $project
-    accountEmail    = $email
-    deploy          = "hosting"
-    siteUrl         = $(if ($project) { "https://$project.web.app" } else { "" })
-    source          = $Source
+    id = $id; label = $name; path = $Path; branch = "main"
+    firebaseProject = $project; accountEmail = $email; deploy = "hosting"
+    siteUrl = $(if ($project) { "https://$project.web.app" } else { "" })
+    source = $Source
   }
 }
 
@@ -433,14 +384,24 @@ function Resolve-AppPath {
   return (Resolve-Path -LiteralPath $joined).Path
 }
 
+function Add-ExcludeRule {
+  param([object]$Config, [string]$Rule)
+  if (-not $Rule) { return }
+  $list = @()
+  if ($Config.exclude) { $list = @($Config.exclude) }
+  if (-not ($list | Where-Object { "$_" -eq $Rule })) {
+    $list += $Rule
+    $Config | Add-Member exclude $list -Force
+    Save-DeployConfig $Config
+  }
+}
+
 function Get-DeployApps {
   param([object]$Config)
 
   $cursorInfos = @(Get-CursorFolderInfos)
   $cursorTimes = @{}
-  foreach ($info in $cursorInfos) {
-    $cursorTimes[$info.Path] = $info.LastUsed
-  }
+  foreach ($info in $cursorInfos) { $cursorTimes[$info.Path] = $info.LastUsed }
 
   $byPath = @{}
   $order = New-Object System.Collections.Generic.List[string]
@@ -455,13 +416,9 @@ function Get-DeployApps {
         $app | Add-Member firebaseProject (Get-FirebaseProjectId $p) -Force
       }
       if (-not $app.accountEmail) {
-        $em = Get-AccountEmailForPath $Config $p
-        $app | Add-Member accountEmail $em -Force
+        $app | Add-Member accountEmail (Get-AccountEmailForPath $Config $p) -Force
       }
-      $recency = Get-PathRecency -Path $p -CursorTimes $cursorTimes
-      $app | Add-Member lastUsed $recency -Force
       $app | Add-Member rank (Get-AppRank -App $app -CursorTimes $cursorTimes) -Force
-
       if (Test-IsExcluded -App $app -Config $Config) { return }
 
       $key = $p.ToLowerInvariant()
@@ -477,7 +434,6 @@ function Get-DeployApps {
         }
         if ([int64]$app.rank -gt [int64]$ex.rank) {
           $ex | Add-Member rank $app.rank -Force
-          $ex | Add-Member lastUsed $app.lastUsed -Force
           if ($app.source) { $ex | Add-Member source $app.source -Force }
         }
       }
@@ -503,14 +459,12 @@ function Get-DeployApps {
   }
 
   $scan = New-Object System.Collections.Generic.List[string]
-  if ($Config.scanRoots) {
-    foreach ($root in @($Config.scanRoots)) {
-      if (-not $root) { continue }
-      if (Test-Path -LiteralPath $root) {
-        [void]$scan.Add((Resolve-Path -LiteralPath $root).Path)
-        Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-          [void]$scan.Add($_.FullName)
-        }
+  foreach ($root in @($Config.scanRoots)) {
+    if (-not $root) { continue }
+    if (Test-Path -LiteralPath $root) {
+      [void]$scan.Add((Resolve-Path -LiteralPath $root).Path)
+      Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        [void]$scan.Add($_.FullName)
       }
     }
   }
@@ -529,7 +483,7 @@ function Get-DeployApps {
   $list = @()
   foreach ($k in $order) { $list += $byPath[$k] }
 
-  # Gop trung Firebase project — giu ban diem cao (Cursor moi / GitHub / XuanQuynh)
+  # 1 project Firebase = 1 app trong menu
   $byProject = @{}
   $noProject = @()
   foreach ($app in $list) {
@@ -537,20 +491,17 @@ function Get-DeployApps {
     if (-not $proj) { $noProject += $app; continue }
     if (-not $byProject.ContainsKey($proj)) {
       $byProject[$proj] = $app
+    } elseif ([int64]$app.rank -gt [int64]$byProject[$proj].rank) {
+      try { Add-ExcludeRule -Config $Config -Rule ([string]$byProject[$proj].path) } catch {}
+      $byProject[$proj] = $app
     } else {
-      $cur = $byProject[$proj]
-      if ([int64]$app.rank -gt [int64]$cur.rank) {
-        try { Add-ExcludeRule -Config $Config -Rule ([string]$cur.path) } catch {}
-        $byProject[$proj] = $app
-      } else {
-        try { Add-ExcludeRule -Config $Config -Rule ([string]$app.path) } catch {}
-      }
+      try { Add-ExcludeRule -Config $Config -Rule ([string]$app.path) } catch {}
     }
   }
-
-  $final = @($byProject.Values) + $noProject
-  return @($final | Sort-Object @{ Expression = { [int64]$_.rank }; Descending = $true })
+  return @((@($byProject.Values) + $noProject) | Sort-Object @{ Expression = { [int64]$_.rank }; Descending = $true })
 }
+
+# ----- Account mapping -----
 
 function Set-AccountMapping {
   param([object]$Config, [object]$App, [string]$Email)
@@ -561,7 +512,6 @@ function Set-AccountMapping {
   $Config.accountByPath | Add-Member -NotePropertyName $path -NotePropertyValue $Email -Force
   $App | Add-Member accountEmail $Email -Force
   $App | Add-Member path $path -Force
-
   $exists = @($Config.accounts | Where-Object { $_.email -eq $Email })
   if ($exists.Count -eq 0) {
     $id = (($Email -split '@')[0] -replace '[^a-zA-Z0-9\-]', '-')
@@ -570,27 +520,13 @@ function Set-AccountMapping {
   Save-DeployConfig $Config
 }
 
-function Add-ExcludeRule {
-  param([object]$Config, [string]$Rule)
-  if (-not $Rule) { return }
-  $list = @()
-  if ($Config.exclude) { $list = @($Config.exclude) }
-  if (-not ($list | Where-Object { "$_" -eq $Rule })) {
-    $list += $Rule
-    $Config | Add-Member exclude $list -Force
-    Save-DeployConfig $Config
-  }
-}
-
 function Select-AccountInteractive {
   param([object]$App, [object]$Config)
   $emails = @(Get-FirebaseEmails)
   Write-Host ""
   Write-Host "Chon tai khoan Firebase cho: $($App.label)" -ForegroundColor Yellow
   Write-Host "  $($App.path)" -ForegroundColor DarkGray
-  if ($emails.Count -eq 0) {
-    throw "Chua co tai khoan. Bam M > T de firebase login:add"
-  }
+  if ($emails.Count -eq 0) { throw "Chua co TK. Bam M > T de login:add" }
   for ($i = 0; $i -lt $emails.Count; $i++) {
     Write-Host ("  {0,2}. {1}" -f ($i + 1), $emails[$i])
   }
@@ -604,23 +540,20 @@ function Select-AccountInteractive {
     $idx = [int]$pick - 1
     if ($idx -ge 0 -and $idx -lt $emails.Count) { return $emails[$idx] }
   }
-  throw "Lua chon tai khoan khong hop le"
+  throw "Lua chon khong hop le"
 }
 
 function Resolve-AppAccount {
   param([object]$App, [object]$Config, [switch]$Interactive)
   $email = if ($App.accountEmail) { [string]$App.accountEmail.Trim() } else { "" }
-
   if ($email -eq "" -and $App.accountId -and $Config.accounts) {
     $acc = @($Config.accounts | Where-Object { $_.id -eq $App.accountId } | Select-Object -First 1)
     if ($acc.Count -gt 0 -and $acc[0].email) { $email = [string]$acc[0].email }
   }
-
   if ($email -eq "" -and $Interactive) {
     $email = Select-AccountInteractive -App $App -Config $Config
     Set-AccountMapping -Config $Config -App $App -Email $email
   }
-
   if ($email -eq "") {
     $emails = @(Get-FirebaseEmails)
     if ($emails.Count -eq 1) {
@@ -628,33 +561,34 @@ function Resolve-AppAccount {
       Set-AccountMapping -Config $Config -App $App -Email $email
     }
   }
-
   if ($email -eq "") { return $null }
   return [pscustomobject]@{ email = $email; label = $email }
 }
 
-function Invoke-FirebaseLoginUse {
-  param([string]$Email)
-  $prev = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
-  try {
-    $out = firebase login:use $Email 2>&1 | Out-String
-    $code = $LASTEXITCODE
-    $text = $out.TrimEnd()
-    if ($text) { Write-Host $text }
-    if ($code -eq 0) { return $true }
-    if ($text -match '(?i)Already using account') { return $true }
-    return $false
-  } finally {
-    $ErrorActionPreference = $prev
+# ----- Project + deploy -----
+
+function Set-AppFirebaseRc {
+  param([string]$RepoRoot, [string]$ProjectId)
+  if (-not $ProjectId) { return }
+  $rcPath = Join-Path $RepoRoot ".firebaserc"
+  $obj = [pscustomobject]@{ projects = [pscustomobject]@{ default = $ProjectId } }
+  if (Test-Path -LiteralPath $rcPath) {
+    try {
+      $old = Get-Content -LiteralPath $rcPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($old.projects) {
+        foreach ($p in $old.projects.PSObject.Properties) {
+          if ($p.Name -ne "default") {
+            $obj.projects | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+          }
+        }
+      }
+    } catch {}
   }
+  [System.IO.File]::WriteAllText($rcPath, (($obj | ConvertTo-Json -Depth 5) + [Environment]::NewLine), [System.Text.UTF8Encoding]::new($false))
 }
 
 function Test-FirebaseProjectAccess {
-  param(
-    [string]$ProjectId,
-    [string]$RepoRoot = ""
-  )
+  param([string]$ProjectId, [string]$RepoRoot = "")
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   $pushed = $false
@@ -663,30 +597,19 @@ function Test-FirebaseProjectAccess {
       Push-Location -LiteralPath $RepoRoot
       $pushed = $true
     }
-
-    # Ghi .firebaserc truoc khi use (tranh file cu chi dinh project khac)
     if ($RepoRoot -and $ProjectId) {
       try { Set-AppFirebaseRc -RepoRoot $RepoRoot -ProjectId $ProjectId } catch {}
     }
-
     $out = firebase use $ProjectId 2>&1 | Out-String
     $text = $out.TrimEnd()
     if ($text) { Write-Host $text }
-
-    # Thanh cong neu exit 0 hoac thong bao "Now using project"
     if ($LASTEXITCODE -eq 0) { return $true }
     if ($text -match '(?i)Now using project|Aliased') { return $true }
-
     if ($text -match '(?i)Invalid project selection|Failed to get Firebase project|do not have permission') {
       return $false
     }
-
-    # Exit != 0 nhung khong ro — thu projects:list (khong bat buoc)
     $listOut = firebase projects:list 2>&1 | Out-String
-    if ($listOut -match [regex]::Escape($ProjectId)) {
-      Write-Host "Project co trong projects:list — tiep tuc." -ForegroundColor Green
-      return $true
-    }
+    if ($listOut -match [regex]::Escape($ProjectId)) { return $true }
     return $false
   } finally {
     if ($pushed) { Pop-Location }
@@ -702,27 +625,21 @@ function Use-FirebaseProject {
     [string]$RepoRoot = "",
     [switch]$Interactive
   )
-  if (-not $ProjectId) {
-    throw "Chua co Firebase project ID (.firebaserc). Mo project dung hoac sua config."
-  }
+  if (-not $ProjectId) { throw "Thieu Firebase project ID." }
   if (-not $RepoRoot -and $App -and $App.path) { $RepoRoot = [string]$App.path }
 
   Write-Host "Firebase project: $ProjectId" -ForegroundColor DarkCyan
-  if ($RepoRoot) { Write-Host "  (trong thu muc app: $RepoRoot)" -ForegroundColor DarkGray }
+  if ($RepoRoot) { Write-Host "  (thu muc: $RepoRoot)" -ForegroundColor DarkGray }
 
   if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) { return }
 
   $current = if ($App.accountEmail) { [string]$App.accountEmail } else { "" }
-
-  # Thu reauth account dang gan truoc khi doi sang account khac
   if ($current -and $Interactive) {
-    Write-Host ""
-    Write-Host "Account $current chua dung duoc project (token CLI co the cu)." -ForegroundColor Yellow
-    Write-Host "Neu Console van thay project — can: firebase login --reauth" -ForegroundColor Yellow
-    $re = Read-Host "Enter = reauth $current, S = thu account khac, Q = bo"
-    if ($re -match '^[Qq]$') { throw "Huy deploy project '$ProjectId'" }
+    Write-Host "Khong chon duoc project bang $current (token CLI co the cu)." -ForegroundColor Yellow
+    Write-Host "Neu Console van thay project: can reauth 1 lan cho account nay." -ForegroundColor Yellow
+    $re = Read-Host "Enter = reauth, S = thu TK khac, Q = bo"
+    if ($re -match '^[Qq]$') { throw "Huy deploy" }
     if ($re -notmatch '^[Ss]$') {
-      Write-Host "Dang firebase login --reauth ..." -ForegroundColor Cyan
       Invoke-External -AllowFail -Command { firebase login --reauth } | Out-Null
       Invoke-FirebaseLoginUse $current | Out-Null
       if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) { return }
@@ -735,48 +652,27 @@ function Use-FirebaseProject {
     if (-not (Invoke-FirebaseLoginUse $email)) { continue }
     if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) {
       Set-AccountMapping -Config $Config -App $App -Email $email
-      Write-Host "Da gan account $email cho $($App.label)" -ForegroundColor Green
       return
     }
   }
-
-  if ($Interactive) {
-    Write-Host "Khong account nao chon duoc project '$ProjectId'." -ForegroundColor Red
-    Write-Host "Thu: firebase login --reauth   hoac   M > T (login:add)" -ForegroundColor Yellow
-    $again = Read-Host "Da xong? Enter = thu lai, Q = bo"
-    if ($again -notmatch '^[Qq]$') {
-      Use-FirebaseProject -ProjectId $ProjectId -Config $Config -App $App -RepoRoot $RepoRoot -Interactive
-      return
-    }
-  }
-  throw "Khong truy cap duoc Firebase project '$ProjectId' — thu firebase login --reauth"
+  throw "Khong truy cap duoc project '$ProjectId'. Thu: firebase login --reauth"
 }
 
 function Sync-Git {
   param([string]$RepoRoot, [string]$Branch, [switch]$SkipPull)
-  if ($SkipPull) {
-    Write-Host "Bo qua git pull" -ForegroundColor DarkYellow
-    return
-  }
+  if ($SkipPull) { Write-Host "Bo qua git pull" -ForegroundColor DarkYellow; return }
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot ".git"))) {
     Write-Host "Khong phai git repo — bo qua pull" -ForegroundColor DarkYellow
     return
   }
-  Push-Location $RepoRoot
+  Push-Location -LiteralPath $RepoRoot
   try {
     Write-Host "Git pull origin $Branch..." -ForegroundColor Yellow
     $fc = Invoke-External -AllowFail -Command { git fetch origin $Branch }
-    if ($fc -ne 0) {
-      Write-Host "git fetch loi — deploy code local" -ForegroundColor Yellow
-      return
-    }
+    if ($fc -ne 0) { Write-Host "git fetch loi — deploy code local" -ForegroundColor Yellow; return }
     $pc = Invoke-External -AllowFail -Command { git pull origin $Branch }
-    if ($pc -ne 0) {
-      Write-Host "git pull loi — deploy code local (stash/commit neu can)" -ForegroundColor Yellow
-    }
-  } finally {
-    Pop-Location
-  }
+    if ($pc -ne 0) { Write-Host "git pull loi — deploy code local" -ForegroundColor Yellow }
+  } finally { Pop-Location }
 }
 
 function Get-VersionLabel {
@@ -801,41 +697,15 @@ function Ensure-Ready {
   $cfg = Join-Path $RepoRoot "public\firebase-config.js"
   $ex = Join-Path $RepoRoot "public\firebase-config.example.js"
   if (-not (Test-Path -LiteralPath $cfg) -and (Test-Path -LiteralPath $ex)) {
-    throw "Thieu public\firebase-config.js — copy tu firebase-config.example.js"
+    throw "Thieu public\firebase-config.js — copy tu example"
   }
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "node_modules"))) {
     Write-Host "npm install..." -ForegroundColor Yellow
-    Push-Location $RepoRoot
+    Push-Location -LiteralPath $RepoRoot
     try {
       Invoke-External -FailMessage "npm install that bai" -Command { npm install } | Out-Null
-    } finally {
-      Pop-Location
-    }
+    } finally { Pop-Location }
   }
-}
-
-function Set-AppFirebaseRc {
-  param([string]$RepoRoot, [string]$ProjectId)
-  if (-not $ProjectId) { return }
-  $rcPath = Join-Path $RepoRoot ".firebaserc"
-  $obj = [pscustomobject]@{
-    projects = [pscustomobject]@{ default = $ProjectId }
-  }
-  # Giữ alias cũ nếu có
-  if (Test-Path -LiteralPath $rcPath) {
-    try {
-      $old = Get-Content -LiteralPath $rcPath -Raw -Encoding UTF8 | ConvertFrom-Json
-      if ($old.projects) {
-        foreach ($p in $old.projects.PSObject.Properties) {
-          if ($p.Name -ne "default") {
-            $obj.projects | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
-          }
-        }
-      }
-    } catch {}
-  }
-  $json = $obj | ConvertTo-Json -Depth 5
-  [System.IO.File]::WriteAllText($rcPath, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Invoke-DeployCommands {
@@ -846,18 +716,13 @@ function Invoke-DeployCommands {
     [switch]$FullDeploy,
     [switch]$AllowFail
   )
-  Push-Location $RepoRoot
+  Push-Location -LiteralPath $RepoRoot
   try {
-    if (-not $ProjectId) {
-      $ProjectId = Get-FirebaseProjectId $RepoRoot
-    }
-    if (-not $ProjectId) {
-      throw "Khong xac dinh duoc Firebase project ID trong $RepoRoot"
-    }
+    if (-not $ProjectId) { $ProjectId = Get-FirebaseProjectId $RepoRoot }
+    if (-not $ProjectId) { throw "Khong co Firebase project ID" }
 
-    # 1) Ghi dung project vao .firebaserc CUA APP
     Set-AppFirebaseRc -RepoRoot $RepoRoot -ProjectId $ProjectId
-    Write-Host "[1/4] firebase use $ProjectId (trong thu muc app)" -ForegroundColor Yellow
+    Write-Host "[1/3] firebase use $ProjectId" -ForegroundColor Yellow
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try { firebase use $ProjectId 2>&1 | Out-Host } finally { $ErrorActionPreference = $prev }
@@ -865,47 +730,32 @@ function Invoke-DeployCommands {
     $pkg = Get-Content -LiteralPath (Join-Path $RepoRoot "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
     $scripts = @()
     if ($pkg.scripts) { $scripts = @($pkg.scripts.PSObject.Properties.Name) }
-
-    $wantFull = $FullDeploy -or ($Kind -eq "all")
-    $code = 0
     $env:GOOGLE_CLOUD_PROJECT = $ProjectId
 
-    # 2) Build / predeploy (neu co) — khong goi npm deploy de tranh script tu doi project
-    Write-Host "[2/4] Build..." -ForegroundColor Yellow
+    Write-Host "[2/3] Build..." -ForegroundColor Yellow
+    $code = 0
     if ($scripts -contains "predeploy") {
       $code = Invoke-External -AllowFail -Command { npm run predeploy }
-      if ($code -ne 0) {
-        if (-not $AllowFail) { throw "predeploy/build that bai (exit $code)" }
-        return $code
-      }
     } elseif ($scripts -contains "build") {
       $code = Invoke-External -AllowFail -Command { npm run build }
-      if ($code -ne 0) {
-        if (-not $AllowFail) { throw "build that bai (exit $code)" }
-        return $code
-      }
     } elseif ($scripts -contains "build:css") {
       Invoke-External -AllowFail -Command { npm run build:css } | Out-Null
     }
+    if ($code -ne 0) {
+      if (-not $AllowFail) { throw "build that bai (exit $code)" }
+      return $code
+    }
 
-    # 3) Deploy — luon --project de khong nham app
+    $wantFull = $FullDeploy -or ($Kind -eq "all")
+    Write-Host "[3/3] firebase deploy --project $ProjectId ..." -ForegroundColor Yellow
     if ($wantFull) {
-      Write-Host "[3/4] firebase deploy --project $ProjectId ..." -ForegroundColor Yellow
       $code = Invoke-External -AllowFail -Command { firebase deploy --project $ProjectId }
     } else {
-      Write-Host "[3/4] firebase deploy --only hosting --project $ProjectId ..." -ForegroundColor Yellow
       $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting --project $ProjectId }
     }
-
-    Write-Host "[4/4] Ket thuc deploy (exit $code)" -ForegroundColor $(if ($code -eq 0) { "Green" } else { "Red" })
-
-    if (-not $AllowFail -and $code -ne 0) {
-      throw "firebase deploy that bai (exit $code)"
-    }
+    if (-not $AllowFail -and $code -ne 0) { throw "firebase deploy that bai (exit $code)" }
     return $code
-  } finally {
-    Pop-Location
-  }
+  } finally { Pop-Location }
 }
 
 function Clear-AccountMapping {
@@ -918,7 +768,6 @@ function Clear-AccountMapping {
     }
   }
   $Config | Add-Member accountByPath $obj -Force
-  $Config.apps = @($Config.apps)
   Save-DeployConfig $Config
 }
 
@@ -933,11 +782,12 @@ function Invoke-AppDeploy {
 
   foreach ($cmd in @("git", "node", "npm", "firebase")) {
     if (-not (Test-CommandExists $cmd)) {
-      throw "Thieu '$cmd' tren PATH. Cai Node.js + npm i -g firebase-tools"
+      throw "Thieu '$cmd'. Cai Node.js + npm i -g firebase-tools"
     }
   }
 
   $root = Resolve-AppPath $App
+  try { $root = [System.IO.Path]::GetFullPath($root) } catch {}
   $App.path = $root
   $branch = if ($App.branch) { [string]$App.branch } else { "main" }
   if (-not $App.firebaseProject) {
@@ -953,80 +803,62 @@ function Invoke-AppDeploy {
   if ($App.firebaseProject) { Write-Host " Project: $($App.firebaseProject)" -ForegroundColor Cyan }
   if ($account) { Write-Host " Account: $($account.email)" -ForegroundColor Cyan }
   Write-Host "========================================" -ForegroundColor Cyan
-  Write-Host "Tu dong: doi TK -> git pull -> build -> firebase hosting" -ForegroundColor DarkGray
+  Write-Host "Tu dong: doi TK -> git pull -> build -> hosting" -ForegroundColor DarkGray
   Write-Host ""
 
   Write-Host ">> Git pull..." -ForegroundColor Cyan
   Sync-Git -RepoRoot $root -Branch $branch -SkipPull:$SkipPull
-
   $ver = Get-VersionLabel $root
-  if ($ver) { Write-Host "Version (truoc build): $ver" -ForegroundColor Green }
+  if ($ver) { Write-Host "Version: $ver" -ForegroundColor Green }
 
-  Write-Host ">> Kiem tra npm / config..." -ForegroundColor Cyan
+  Write-Host ">> Kiem tra npm..." -ForegroundColor Cyan
   Ensure-Ready $root
 
   if ($account) {
-    Write-Host ">> Doi Firebase account -> $($account.email)" -ForegroundColor Cyan
+    Write-Host ">> Doi TK Firebase -> $($account.email)" -ForegroundColor Cyan
     if (-not (Invoke-FirebaseLoginUse $account.email)) {
-      throw "firebase login:use that bai — bam M > T de login:add"
+      throw "login:use that bai — M > T de login:add"
     }
   }
 
-  Write-Host ">> Chon Firebase project trong thu muc app..." -ForegroundColor Cyan
+  Write-Host ">> Chon project Firebase..." -ForegroundColor Cyan
   Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root -Interactive:$Interactive
 
   Write-Host ">> Build + Deploy..." -ForegroundColor Cyan
   $code = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
+
   if ($code -ne 0) {
-    Write-Host ""
-    Write-Host "Deploy that bai — thu tai khoan Firebase khac..." -ForegroundColor Yellow
+    Write-Host "Deploy that bai — thu account khac..." -ForegroundColor Yellow
     Clear-AccountMapping -Config $Config -Path $root
     $App | Add-Member accountEmail "" -Force
-
-    $tried = @()
-    if ($account) { $tried += $account.email }
+    $tried = @(); if ($account) { $tried += $account.email }
     $ok = $false
     foreach ($email in @(Get-FirebaseEmails)) {
       if ($tried -contains $email) { continue }
-      Write-Host "Thu deploy bang: $email" -ForegroundColor Yellow
+      Write-Host "Thu: $email" -ForegroundColor Yellow
       if (-not (Invoke-FirebaseLoginUse $email)) { continue }
       if (-not (Test-FirebaseProjectAccess -ProjectId $App.firebaseProject -RepoRoot $root)) { continue }
       $code2 = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
       if ($code2 -eq 0) {
         Set-AccountMapping -Config $Config -App $App -Email $email
-        $ok = $true
-        break
+        $ok = $true; break
       }
     }
-
     if (-not $ok -and $Interactive) {
-      Write-Host ""
-      Write-Host "Account hien tai KHONG co quyen project '$($App.firebaseProject)'." -ForegroundColor Red
-      Write-Host "Can login Google dung (Firebase Console -> Project settings -> Users)." -ForegroundColor Yellow
-      Write-Host "Bam M > T de them TK, roi chon lai app." -ForegroundColor Yellow
-      $go = Read-Host "Da login:add xong? Enter = chon TK moi, Q = dung"
+      Write-Host "Can reauth hoac login dung Google so huu project." -ForegroundColor Yellow
+      $go = Read-Host "Enter = chon TK moi / reauth, Q = dung"
       if ($go -notmatch '^[Qq]$') {
+        Invoke-External -AllowFail -Command { firebase login --reauth } | Out-Null
         $email = Select-AccountInteractive -App $App -Config $Config
         Set-AccountMapping -Config $Config -App $App -Email $email
-        if (-not (Invoke-FirebaseLoginUse $email)) { throw "login:use that bai" }
+        Invoke-FirebaseLoginUse $email | Out-Null
         Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root
         Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy | Out-Null
         $ok = $true
       }
     }
-
     if (-not $ok) {
-      throw @"
-firebase deploy that bai (exit $code).
-Project: $($App.firebaseProject)
-Thuong gap khi CLI dung token cu du Console van thay project.
-Fix tren PowerShell:
-  firebase login:list
-  firebase login --reauth
-  firebase login:use EMAIL_DUNG
-  firebase projects:list
-Roi chay lai deploy.bat, chon app.
-"@
+      throw "Deploy that bai (exit $code). Thu: firebase login --reauth roi chay lai."
     }
   }
 
