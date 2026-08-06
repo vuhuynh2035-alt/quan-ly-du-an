@@ -187,7 +187,12 @@ function Show-FirebaseAccounts {
 }
 
 function Invoke-FirebaseLoginUse {
-  param([string]$Email)
+  param(
+    [string]$Email,
+    [switch]$AutoAdd
+  )
+  if (-not $Email) { return $false }
+
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
@@ -196,6 +201,43 @@ function Invoke-FirebaseLoginUse {
     if ($text) { Write-Host $text }
     if ($LASTEXITCODE -eq 0) { return $true }
     if ($text -match '(?i)Already using account') { return $true }
+
+    # Account chua co tren may — can login:add (mo trinh duyet, 1 lan)
+    $missing = ($text -match '(?i)does not exist|not found|valid accounts')
+    $alreadyListed = (@(Get-FirebaseEmails) -contains $Email)
+
+    if (($missing -or -not $alreadyListed) -and $AutoAdd) {
+      Write-Host ""
+      Write-Host "Tai khoan $Email chua dang nhap tren may nay." -ForegroundColor Yellow
+      Write-Host "Khong can logout account khac — Firebase giu nhieu TK cung luc." -ForegroundColor DarkGray
+      Write-Host "Se mo trinh duyet de login $Email (chi 1 lan)..." -ForegroundColor Cyan
+      Write-Host ""
+      $go = Read-Host "Enter = mo trinh duyet login, Q = huy"
+      if ($go -match '^[Qq]$') { return $false }
+
+      # firebase login:add mo browser OAuth — user chon dung Google account
+      firebase login:add 2>&1 | Out-Host
+
+      $emails = @(Get-FirebaseEmails)
+      if ($emails -notcontains $Email) {
+        Write-Host ""
+        Write-Host "Chua thay $Email trong firebase login:list." -ForegroundColor Red
+        Write-Host "Ban phai chon DUNG Google account $Email trong cua so login." -ForegroundColor Yellow
+        Write-Host "Tai khoan hien co:" -ForegroundColor DarkGray
+        foreach ($e in $emails) { Write-Host "  - $e" }
+        $retry = Read-Host "Enter = thu login:add lai, Q = huy"
+        if ($retry -match '^[Qq]$') { return $false }
+        firebase login:add 2>&1 | Out-Host
+      }
+
+      $out2 = firebase login:use $Email 2>&1 | Out-String
+      $text2 = $out2.TrimEnd()
+      if ($text2) { Write-Host $text2 }
+      if ($LASTEXITCODE -eq 0) { return $true }
+      if ($text2 -match '(?i)Already using account') { return $true }
+      return $false
+    }
+
     return $false
   } finally {
     $ErrorActionPreference = $prev
@@ -641,7 +683,7 @@ function Use-FirebaseProject {
     if ($re -match '^[Qq]$') { throw "Huy deploy" }
     if ($re -notmatch '^[Ss]$') {
       Invoke-External -AllowFail -Command { firebase login --reauth } | Out-Null
-      Invoke-FirebaseLoginUse $current | Out-Null
+      Invoke-FirebaseLoginUse -Email $current -AutoAdd | Out-Null
       if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) { return }
     }
   }
@@ -649,7 +691,7 @@ function Use-FirebaseProject {
   foreach ($email in @(Get-FirebaseEmails)) {
     if ($email -eq $current) { continue }
     Write-Host "Thu account: $email" -ForegroundColor Yellow
-    if (-not (Invoke-FirebaseLoginUse $email)) { continue }
+    if (-not (Invoke-FirebaseLoginUse -Email $email -AutoAdd)) { continue }
     if (Test-FirebaseProjectAccess -ProjectId $ProjectId -RepoRoot $RepoRoot) {
       Set-AccountMapping -Config $Config -App $App -Email $email
       return
@@ -816,8 +858,8 @@ function Invoke-AppDeploy {
 
   if ($account) {
     Write-Host ">> Doi TK Firebase -> $($account.email)" -ForegroundColor Cyan
-    if (-not (Invoke-FirebaseLoginUse $account.email)) {
-      throw "login:use that bai — M > T de login:add"
+    if (-not (Invoke-FirebaseLoginUse -Email $account.email -AutoAdd)) {
+      throw "Khong doi duoc sang $($account.email). Can login dung Google account do trong trinh duyet."
     }
   }
 
@@ -836,7 +878,7 @@ function Invoke-AppDeploy {
     foreach ($email in @(Get-FirebaseEmails)) {
       if ($tried -contains $email) { continue }
       Write-Host "Thu: $email" -ForegroundColor Yellow
-      if (-not (Invoke-FirebaseLoginUse $email)) { continue }
+      if (-not (Invoke-FirebaseLoginUse -Email $email -AutoAdd)) { continue }
       if (-not (Test-FirebaseProjectAccess -ProjectId $App.firebaseProject -RepoRoot $root)) { continue }
       $code2 = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
       if ($code2 -eq 0) {
@@ -845,13 +887,13 @@ function Invoke-AppDeploy {
       }
     }
     if (-not $ok -and $Interactive) {
-      Write-Host "Can reauth hoac login dung Google so huu project." -ForegroundColor Yellow
-      $go = Read-Host "Enter = chon TK moi / reauth, Q = dung"
+      Write-Host "Can login dung Google so huu project." -ForegroundColor Yellow
+      $go = Read-Host "Enter = chon / them TK, Q = dung"
       if ($go -notmatch '^[Qq]$') {
         Invoke-External -AllowFail -Command { firebase login --reauth } | Out-Null
         $email = Select-AccountInteractive -App $App -Config $Config
         Set-AccountMapping -Config $Config -App $App -Email $email
-        Invoke-FirebaseLoginUse $email | Out-Null
+        Invoke-FirebaseLoginUse -Email $email -AutoAdd | Out-Null
         Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root
         Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy | Out-Null
         $ok = $true
