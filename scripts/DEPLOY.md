@@ -1,21 +1,23 @@
 # Deploy Firebase — huong dan ngan
 
-## Hang ngay
+## Hang ngay (chi can vay)
 
-1. Double-click `deploy.bat` (hoac shortcut Desktop)
+1. Double-click `deploy.bat`
 2. Go **so** app → Enter
-3. Xong
+3. Ngồi chờ — tool tự làm hết:
+   - Đổi tài khoản Firebase đúng app
+   - `git pull`
+   - Build
+   - `firebase deploy --only hosting --project <dung-project>`
 
-Tu dong: doi tai khoan Firebase → git pull → build → hosting.
+Lan dau moi app: hoi chon email Firebase **1 lan** (nho lai).
 
-Neu config bi hong / menu loi: chay `sua-config-deploy.bat` (tao lai local.json sach, giu mapping TK).
+## Lan dau cai may
 
-## Lan dau
-
-- Tool tu cai / huong dan login Firebase neu thieu
-- App moi: hoi chon email 1 lan (nho lai)
-
-Tao shortcut Desktop: chay `tao-shortcut-desktop.bat`
+- Can Node.js
+- Tool tu huong dan `firebase login` neu chua co
+- Shortcut Desktop: `tao-shortcut-desktop.bat`
+- Config hong: `sua-config-deploy.bat`
 
 ## Tuy chon (bam M)
 
@@ -27,9 +29,3 @@ Tao shortcut Desktop: chay `tao-shortcut-desktop.bat`
 | T | Them tai khoan Firebase |
 | E | Sua config |
 | D | Tao shortcut Desktop |
-
-## File
-
-- `deploy.bat` — chay hang ngay
-- `scripts/deploy-apps.local.json` — email/exclude tren may (khong commit)
-- Giữ Xuân Quỳnh / apartment trong list (khong exclude "hotel")

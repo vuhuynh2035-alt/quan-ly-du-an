@@ -54,8 +54,8 @@ function Show-Menu {
   Write-Host "========================================" -ForegroundColor Cyan
   Write-Host "           DEPLOY APP" -ForegroundColor Cyan
   Write-Host "========================================" -ForegroundColor Cyan
-  Write-Host "  Chon so -> tu dong doi TK + deploy" -ForegroundColor DarkGray
-  Write-Host "  (trung project Firebase da gop — giu ban Cursor moi nhat)" -ForegroundColor DarkGray
+  Write-Host "  Goi SO app -> tu dong lam het:" -ForegroundColor DarkGray
+  Write-Host "  doi TK Firebase -> git pull -> build -> deploy hosting" -ForegroundColor DarkGray
   Write-Host ""
 
   if (-not $Apps -or $Apps.Count -eq 0) {

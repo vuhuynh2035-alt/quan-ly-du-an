@@ -791,6 +791,30 @@ function Ensure-Ready {
   }
 }
 
+function Set-AppFirebaseRc {
+  param([string]$RepoRoot, [string]$ProjectId)
+  if (-not $ProjectId) { return }
+  $rcPath = Join-Path $RepoRoot ".firebaserc"
+  $obj = [pscustomobject]@{
+    projects = [pscustomobject]@{ default = $ProjectId }
+  }
+  # Giữ alias cũ nếu có
+  if (Test-Path -LiteralPath $rcPath) {
+    try {
+      $old = Get-Content -LiteralPath $rcPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($old.projects) {
+        foreach ($p in $old.projects.PSObject.Properties) {
+          if ($p.Name -ne "default") {
+            $obj.projects | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+          }
+        }
+      }
+    } catch {}
+  }
+  $json = $obj | ConvertTo-Json -Depth 5
+  [System.IO.File]::WriteAllText($rcPath, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Invoke-DeployCommands {
   param(
     [string]$RepoRoot,
@@ -801,16 +825,19 @@ function Invoke-DeployCommands {
   )
   Push-Location $RepoRoot
   try {
-    # Dam bao project dung trong THU MUC app (tranh nham quan-ly-du-an)
-    if ($ProjectId) {
-      $prev = $ErrorActionPreference
-      $ErrorActionPreference = "Continue"
-      try {
-        firebase use $ProjectId 2>&1 | Out-Host
-      } finally {
-        $ErrorActionPreference = $prev
-      }
+    if (-not $ProjectId) {
+      $ProjectId = Get-FirebaseProjectId $RepoRoot
     }
+    if (-not $ProjectId) {
+      throw "Khong xac dinh duoc Firebase project ID trong $RepoRoot"
+    }
+
+    # 1) Ghi dung project vao .firebaserc CUA APP
+    Set-AppFirebaseRc -RepoRoot $RepoRoot -ProjectId $ProjectId
+    Write-Host "[1/4] firebase use $ProjectId (trong thu muc app)" -ForegroundColor Yellow
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { firebase use $ProjectId 2>&1 | Out-Host } finally { $ErrorActionPreference = $prev }
 
     $pkg = Get-Content -LiteralPath (Join-Path $RepoRoot "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
     $scripts = @()
@@ -818,76 +845,36 @@ function Invoke-DeployCommands {
 
     $wantFull = $FullDeploy -or ($Kind -eq "all")
     $code = 0
+    $env:GOOGLE_CLOUD_PROJECT = $ProjectId
 
-    # Uu tien: build bang npm, deploy bang firebase --project (tranh script npm goi nham project)
-    $hasBuild = ($scripts -contains "build") -or ($scripts -contains "build:css")
-    if (-not $wantFull -and $ProjectId) {
-      if ($scripts -contains "predeploy") {
-        # Mot so app (quan-ly-xe) dung predeploy bump version — van chay npm run deploy:hosting
-        # nhung ephemeral project flag:
-        Write-Host "npm run deploy:hosting (project=$ProjectId)..." -ForegroundColor Yellow
-        $env:GOOGLE_CLOUD_PROJECT = $ProjectId
-        $code = Invoke-External -AllowFail -Command { npm run deploy:hosting -- --project $ProjectId }
-        if ($code -ne 0) {
-          # Mot so script khong nhan -- ; thu firebase deploy truc tiep sau build
-          Write-Host "Thu firebase deploy --only hosting --project $ProjectId ..." -ForegroundColor Yellow
-          if ($scripts -contains "build") {
-            Invoke-External -AllowFail -Command { npm run build } | Out-Null
-          } elseif ($scripts -contains "predeploy") {
-            Invoke-External -AllowFail -Command { npm run predeploy } | Out-Null
-          }
-          $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting --project $ProjectId }
-        }
-      } elseif ($scripts -contains "deploy:hosting") {
-        Write-Host "npm run deploy:hosting -- --project $ProjectId ..." -ForegroundColor Yellow
-        $code = Invoke-External -AllowFail -Command { npm run deploy:hosting -- --project $ProjectId }
-        if ($code -ne 0) {
-          if ($scripts -contains "build") {
-            Invoke-External -AllowFail -Command { npm run build } | Out-Null
-          }
-          $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting --project $ProjectId }
-        }
-      } elseif ($scripts -contains "deploy") {
-        Write-Host "npm run deploy -- --project $ProjectId ..." -ForegroundColor Yellow
-        $code = Invoke-External -AllowFail -Command { npm run deploy -- --project $ProjectId }
-      } else {
-        if ($scripts -contains "build") {
-          Invoke-External -FailMessage "build that bai" -Command { npm run build } | Out-Null
-        }
-        $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting --project $ProjectId }
+    # 2) Build / predeploy (neu co) — khong goi npm deploy de tranh script tu doi project
+    Write-Host "[2/4] Build..." -ForegroundColor Yellow
+    if ($scripts -contains "predeploy") {
+      $code = Invoke-External -AllowFail -Command { npm run predeploy }
+      if ($code -ne 0) {
+        if (-not $AllowFail) { throw "predeploy/build that bai (exit $code)" }
+        return $code
       }
-    } elseif ($wantFull) {
-      if ($scripts -contains "deploy") {
-        Write-Host "npm run deploy..." -ForegroundColor Yellow
-        if ($ProjectId) {
-          $code = Invoke-External -AllowFail -Command { npm run deploy -- --project $ProjectId }
-        } else {
-          $code = Invoke-External -AllowFail -Command { npm run deploy }
-        }
-      } else {
-        if ($scripts -contains "build") {
-          Invoke-External -FailMessage "build that bai" -Command { npm run build } | Out-Null
-        }
-        if ($ProjectId) {
-          $code = Invoke-External -AllowFail -Command { firebase deploy --project $ProjectId }
-        } else {
-          $code = Invoke-External -AllowFail -Command { firebase deploy }
-        }
+    } elseif ($scripts -contains "build") {
+      $code = Invoke-External -AllowFail -Command { npm run build }
+      if ($code -ne 0) {
+        if (-not $AllowFail) { throw "build that bai (exit $code)" }
+        return $code
       }
-    } else {
-      if ($scripts -contains "deploy:hosting") {
-        Write-Host "npm run deploy:hosting..." -ForegroundColor Yellow
-        $code = Invoke-External -AllowFail -Command { npm run deploy:hosting }
-      } elseif ($scripts -contains "deploy") {
-        Write-Host "npm run deploy..." -ForegroundColor Yellow
-        $code = Invoke-External -AllowFail -Command { npm run deploy }
-      } else {
-        if ($scripts -contains "build") {
-          Invoke-External -FailMessage "build that bai" -Command { npm run build } | Out-Null
-        }
-        $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting }
-      }
+    } elseif ($scripts -contains "build:css") {
+      Invoke-External -AllowFail -Command { npm run build:css } | Out-Null
     }
+
+    # 3) Deploy — luon --project de khong nham app
+    if ($wantFull) {
+      Write-Host "[3/4] firebase deploy --project $ProjectId ..." -ForegroundColor Yellow
+      $code = Invoke-External -AllowFail -Command { firebase deploy --project $ProjectId }
+    } else {
+      Write-Host "[3/4] firebase deploy --only hosting --project $ProjectId ..." -ForegroundColor Yellow
+      $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting --project $ProjectId }
+    }
+
+    Write-Host "[4/4] Ket thuc deploy (exit $code)" -ForegroundColor $(if ($code -eq 0) { "Green" } else { "Red" })
 
     if (-not $AllowFail -and $code -ne 0) {
       throw "firebase deploy that bai (exit $code)"
@@ -943,23 +930,29 @@ function Invoke-AppDeploy {
   if ($App.firebaseProject) { Write-Host " Project: $($App.firebaseProject)" -ForegroundColor Cyan }
   if ($account) { Write-Host " Account: $($account.email)" -ForegroundColor Cyan }
   Write-Host "========================================" -ForegroundColor Cyan
+  Write-Host "Tu dong: doi TK -> git pull -> build -> firebase hosting" -ForegroundColor DarkGray
+  Write-Host ""
 
+  Write-Host ">> Git pull..." -ForegroundColor Cyan
   Sync-Git -RepoRoot $root -Branch $branch -SkipPull:$SkipPull
 
   $ver = Get-VersionLabel $root
   if ($ver) { Write-Host "Version (truoc build): $ver" -ForegroundColor Green }
 
+  Write-Host ">> Kiem tra npm / config..." -ForegroundColor Cyan
   Ensure-Ready $root
 
   if ($account) {
-    Write-Host "Chuyen Firebase account -> $($account.email)" -ForegroundColor DarkCyan
+    Write-Host ">> Doi Firebase account -> $($account.email)" -ForegroundColor Cyan
     if (-not (Invoke-FirebaseLoginUse $account.email)) {
       throw "firebase login:use that bai — bam M > T de login:add"
     }
   }
 
+  Write-Host ">> Chon Firebase project trong thu muc app..." -ForegroundColor Cyan
   Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root -Interactive:$Interactive
 
+  Write-Host ">> Build + Deploy..." -ForegroundColor Cyan
   $code = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
   if ($code -ne 0) {
     Write-Host ""
