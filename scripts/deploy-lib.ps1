@@ -931,8 +931,13 @@ function Invoke-AppDeploy {
       throw @"
 firebase deploy that bai (exit $code).
 Project: $($App.firebaseProject)
-Account dang dung khong co quyen.
-Fix: firebase login:add (dung Google so huu project) roi chay lai, chon dung TK cho yana-app.
+Thuong gap khi CLI dung token cu du Console van thay project.
+Fix tren PowerShell:
+  firebase login:list
+  firebase login --reauth
+  firebase login:use EMAIL_DUNG
+  firebase projects:list
+Roi chay lai deploy.bat, chon app.
 "@
     }
   }
