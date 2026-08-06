@@ -12,9 +12,18 @@ Hoac double-click **`Chay-Deploy.bat`** ngay trong thu muc du an.
 ## Tool tu lam khi chon so
 
 - Doi tai khoan Firebase dung app
-- git pull
+- git pull (neu loi se DUNG — khong deploy ban cu)
 - build
 - firebase deploy --project dung-id
+
+## Xuan Quynh bi len version cu?
+
+May co 2 thu muc cung Firebase project:
+
+- Dung: `...\GitHub\XUANQUYNH_HOTEL`
+- Cu: `C:\hotel_app_firebase`
+
+Menu se uu tien thu muc XUANQUYNH / GitHub. Truoc khi deploy, kiem tra dong **Thu muc:** — phai la XUANQUYNH_HOTEL. Sau deploy, xem dong **Commit:** co dung code moi khong. Neu web van cu: Ctrl+F5.
 
 ## File
 

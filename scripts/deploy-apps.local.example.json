@@ -3,7 +3,9 @@
   "scanRoots": [
     "C:\\Users\\VUHUYNH\\OneDrive\\Documents\\GitHub"
   ],
-  "exclude": [],
+  "exclude": [
+    "C:\\hotel_app_firebase"
+  ],
   "accounts": [
     {
       "id": "vuhuynh2035",

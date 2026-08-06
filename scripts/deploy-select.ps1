@@ -62,7 +62,11 @@ function Show-Menu {
       $email = if ($app.accountEmail) { $app.accountEmail } else { "lan dau se hoi TK" }
       $mark = ""
       if ($app.rank -and $top -and ([int64]$app.rank -eq [int64]$top)) { $mark = "  << Cursor moi nhat" }
-      Write-Host ("  {0,2}. {1}{2}" -f $i, $app.label, $mark) -ForegroundColor White
+      $pathWarn = ""
+      if (([string]$app.path) -match '(?i)hotel_app_firebase') {
+        $pathWarn = "  !! BAN COPY CU — nen dung XUANQUYNH_HOTEL"
+      }
+      Write-Host ("  {0,2}. {1}{2}{3}" -f $i, $app.label, $mark, $pathWarn) -ForegroundColor White
       Write-Host ("      {0}" -f $app.path) -ForegroundColor DarkGray
       Write-Host ("      {0}" -f $email) -ForegroundColor DarkCyan
       $i++
