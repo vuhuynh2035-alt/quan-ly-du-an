@@ -1,105 +1,37 @@
-# Deploy Firebase — nhiều app Cursor / nhiều tài khoản
+# Deploy Firebase — đơn giản
 
-## Mục tiêu
+## Cách dùng hàng ngày
 
-Một lần double-click **`deploy.bat`**:
+1. Double-click **`deploy.bat`**  
+   (hoặc shortcut **Deploy App** trên Desktop — chạy `tao-shortcut-desktop.bat` một lần)
+2. Gõ **số** app → Enter
+3. Xong
 
-1. **Liệt kê** các project Firebase đã mở trong Cursor (và thư mục sibling / `scanRoots`)
-2. Bạn **chọn số** app
-3. Tool **tự đổi tài khoản Firebase** → `git pull` → build → deploy Hosting
+Tool tự: đổi tài khoản Firebase đúng app → `git pull` → build → Hosting.
 
-## Vị trí
+## Lần đầu
+
+- Nếu chưa có Firebase CLI / chưa login → `deploy.bat` tự hướng dẫn
+- App mới chưa gắn TK → hỏi chọn email một lần (nhớ lại)
+
+Thêm tài khoản Google khác: trong menu bấm **`M`** → **`T`**.
+
+## Menu chính
+
+| Việc | Thao tác |
+|------|----------|
+| Deploy app | Gõ `1`, `2`, … |
+| Thoát | `Q` |
+| Tuỳ chọn | `M` (ẩn app, thêm TK, shortcut Desktop, …) |
+
+## Vì sao còn thấy app cũ?
+
+Cursor vẫn nhớ project đã mở. Bam **`M`** → **`X`** để ẩn, hoặc dùng `exclude` trong config.
+
+## File
 
 | File | Vai trò |
 |------|---------|
-| **`deploy.bat`** | Double-click trên Windows |
-| `scripts/deploy-select.ps1` | Menu |
-| `scripts/deploy-lib.ps1` | Quét Cursor + logic deploy |
-| `scripts/deploy-apps.config.json` | Config mẫu trong repo |
-| **`scripts/deploy-apps.local.json`** | Config máy bạn (email, mapping) — **không commit** |
-
-## Cách hoạt động
-
-### Tự tìm app từ Cursor
-
-Tool đọc:
-
-- `%APPDATA%\Cursor\User\workspaceStorage\*\workspace.json`
-- `%APPDATA%\Cursor\User\globalStorage\storage.json`
-- Thư mục **cùng cấp** với repo này
-- `scanRoots` trong config (nếu bạn khai báo)
-
-Chỉ hiện folder có **`firebase.json`** hoặc **`.firebaserc`** + `package.json`.
-
-### Nhiều tài khoản Firebase
-
-1. Đăng nhập từng tài khoản Google (một lần):
-
-```powershell
-firebase login:add
-firebase login:add
-firebase login:list
-```
-
-2. Lần đầu chọn app → menu hỏi **email nào** gắn với app đó → lưu vào `accountByPath` trong `deploy-apps.local.json`
-3. Lần sau: tự `firebase login:use <email>` rồi deploy
-
-## Menu
-
-| Phím | Chức năng |
-|------|-----------|
-| `1`, `2`… | Deploy app đó (đổi TK + pull + build + hosting) |
-| `A` | Deploy tất cả |
-| `R` | Quét lại Cursor |
-| `L` | Liệt kê tài khoản Firebase đã login |
-| `E` | Sửa config |
-| `S` | Hướng dẫn |
-| `Q` | Thoát |
-
-### An app khong dung
-
-Tool quet ca project **cu** ma Cursor van nho (`workspaceStorage`), nen app hotel van hien du ban khong dung.
-
-- Bam **`X`** trong menu → chon so app → an khoi danh sach
-- Hoac them vao `"exclude"` trong config:
-
-```json
-"exclude": ["hotel", "hotel_app_firebase", "XUANQUYNH_HOTEL"]
-```
-
-## Cấu hình tùy chọn
-
-```json
-{
-  "discoverCursor": true,
-  "scanRoots": ["D:\\projects"],
-  "accounts": [
-    { "id": "saree", "label": "SAREE", "email": "a@gmail.com" }
-  ],
-  "accountByPath": {
-    "D:\\projects\\quan-ly-du-an": "a@gmail.com"
-  },
-  "apps": []
-}
-```
-
-| Trường | Ý nghĩa |
-|--------|---------|
-| `discoverCursor` | `true` = tự quét Cursor |
-| `scanRoots` | Thêm thư mục cha để quét app con |
-| `accountByPath` | Gắn đường dẫn tuyệt đối → email Firebase |
-| `apps` | Ghi đè thủ công (label, branch, deploy full…) |
-
-## Lệnh nhanh
-
-```powershell
-deploy.bat
-deploy.bat 1
-deploy.bat quan-ly-du-an
-deploy.bat A
-deploy.bat S
-```
-
-## Vì sao trước đây ra version cũ?
-
-Tool cũ không `git pull` → deploy code local cũ. Luồng mới **luôn pull** trước khi build.
+| `deploy.bat` | Chạy hàng ngày |
+| `tao-shortcut-desktop.bat` | Tạo icon Desktop (1 lần) |
+| `scripts/deploy-apps.local.json` | Email / exclude trên máy bạn (không commit) |
