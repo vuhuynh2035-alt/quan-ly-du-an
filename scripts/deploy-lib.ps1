@@ -236,18 +236,22 @@ function ConvertFrom-FileUri {
   return $u
 }
 
-function Get-CursorFolders {
-  $found = New-Object System.Collections.Generic.List[string]
-  $add = {
-    param($p)
-    if (-not $p) { return }
-    $p = [string]$p
+function Get-CursorFolderInfos {
+  # Tra ve @{ Path; LastUsed } — LastUsed = thoi gian workspace Cursor moi nhat
+  $map = @{}
+
+  $touch = {
+    param($folderPath, $when)
+    if (-not $folderPath) { return }
+    $p = [string]$folderPath
     if ($p -match '^file:') { $p = ConvertFrom-FileUri $p }
     if (-not $p) { return }
     try {
-      if (Test-Path -LiteralPath $p -PathType Container) {
-        $r = (Resolve-Path -LiteralPath $p).Path
-        if (-not $found.Contains($r)) { [void]$found.Add($r) }
+      if (-not (Test-Path -LiteralPath $p -PathType Container)) { return }
+      $r = (Resolve-Path -LiteralPath $p).Path
+      $t = if ($when) { [datetime]$when } else { [datetime]::MinValue }
+      if (-not $map.ContainsKey($r) -or $t -gt $map[$r]) {
+        $map[$r] = $t
       }
     } catch {}
   }
@@ -272,7 +276,12 @@ function Get-CursorFolders {
         if (Test-Path -LiteralPath $wj) {
           try {
             $data = Get-Content -LiteralPath $wj -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($data.folder) { & $add $data.folder }
+            $when = $_.LastWriteTime
+            if (Test-Path -LiteralPath (Join-Path $_.FullName "state.vscdb")) {
+              $db = Get-Item -LiteralPath (Join-Path $_.FullName "state.vscdb") -ErrorAction SilentlyContinue
+              if ($db -and $db.LastWriteTime -gt $when) { $when = $db.LastWriteTime }
+            }
+            if ($data.folder) { & $touch $data.folder $when }
           } catch {}
         }
       }
@@ -285,12 +294,52 @@ function Get-CursorFolders {
     if (Test-Path -LiteralPath $storage) {
       try {
         $raw = Get-Content -LiteralPath $storage -Raw -Encoding UTF8
-        [regex]::Matches($raw, 'file:///[^\s"\\]+') | ForEach-Object { & $add $_.Value }
+        $when = (Get-Item -LiteralPath $storage).LastWriteTime
+        [regex]::Matches($raw, 'file:///[^\s"\\]+') | ForEach-Object { & $touch $_.Value $when }
       } catch {}
     }
   }
 
-  return @($found)
+  $list = @()
+  foreach ($k in $map.Keys) {
+    $list += [pscustomobject]@{ Path = $k; LastUsed = $map[$k] }
+  }
+  return $list
+}
+
+function Get-CursorFolders {
+  return @((Get-CursorFolderInfos).Path)
+}
+
+function Get-PathRecency {
+  param([string]$Path, [hashtable]$CursorTimes)
+  if ($CursorTimes -and $CursorTimes.ContainsKey($Path)) { return [datetime]$CursorTimes[$Path] }
+  try {
+    if (Test-Path -LiteralPath $Path) {
+      return (Get-Item -LiteralPath $Path).LastWriteTime
+    }
+  } catch {}
+  return [datetime]::MinValue
+}
+
+function Get-AppRank {
+  # Diem cao = uu tien giu lai khi trung Firebase project
+  param([object]$App, [hashtable]$CursorTimes)
+  $score = 0L
+  $recency = Get-PathRecency -Path $App.path -CursorTimes $CursorTimes
+  $score += [int64]($recency.Ticks / 10000000)  # seconds
+
+  $p = ([string]$App.path).ToLowerInvariant()
+  $src = if ($App.source) { [string]$App.source } else { "" }
+
+  if ($src -eq "cursor") { $score += 100000000 }
+  if ($p -match 'github') { $score += 50000000 }
+  if ($p -match 'xuanquynh') { $score += 40000000 }
+  if ($p -match 'onedrive') { $score += 10000000 }
+  # Ban copy cu o C:\hotel_app_firebase — diem thap hon
+  if ($p -match '^[a-z]:\\hotel_app_firebase') { $score -= 30000000 }
+
+  return $score
 }
 
 function Get-FirebaseProjectId {
@@ -387,6 +436,12 @@ function Resolve-AppPath {
 function Get-DeployApps {
   param([object]$Config)
 
+  $cursorInfos = @(Get-CursorFolderInfos)
+  $cursorTimes = @{}
+  foreach ($info in $cursorInfos) {
+    $cursorTimes[$info.Path] = $info.LastUsed
+  }
+
   $byPath = @{}
   $order = New-Object System.Collections.Generic.List[string]
 
@@ -394,6 +449,7 @@ function Get-DeployApps {
     param($app)
     try {
       $p = Resolve-AppPath $app
+      try { $p = [System.IO.Path]::GetFullPath($p) } catch {}
       $app.path = $p
       if (-not $app.firebaseProject) {
         $app | Add-Member firebaseProject (Get-FirebaseProjectId $p) -Force
@@ -402,23 +458,32 @@ function Get-DeployApps {
         $em = Get-AccountEmailForPath $Config $p
         $app | Add-Member accountEmail $em -Force
       }
+      $recency = Get-PathRecency -Path $p -CursorTimes $cursorTimes
+      $app | Add-Member lastUsed $recency -Force
+      $app | Add-Member rank (Get-AppRank -App $app -CursorTimes $cursorTimes) -Force
+
       if (Test-IsExcluded -App $app -Config $Config) { return }
 
-      if (-not $byPath.ContainsKey($p)) {
-        $byPath[$p] = $app
-        [void]$order.Add($p)
+      $key = $p.ToLowerInvariant()
+      if (-not $byPath.ContainsKey($key)) {
+        $byPath[$key] = $app
+        [void]$order.Add($key)
       } else {
-        $ex = $byPath[$p]
+        $ex = $byPath[$key]
         foreach ($prop in $app.PSObject.Properties) {
           if ($null -ne $prop.Value -and "$($prop.Value)" -ne "") {
             $ex | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
           }
         }
+        if ([int64]$app.rank -gt [int64]$ex.rank) {
+          $ex | Add-Member rank $app.rank -Force
+          $ex | Add-Member lastUsed $app.lastUsed -Force
+          if ($app.source) { $ex | Add-Member source $app.source -Force }
+        }
       }
     } catch {}
   }
 
-  # Config thu cong
   if ($Config.apps) {
     foreach ($a in @($Config.apps)) {
       $copy = $a | ConvertTo-Json -Depth 6 | ConvertFrom-Json
@@ -427,18 +492,16 @@ function Get-DeployApps {
     }
   }
 
-  # Cursor
   $discover = $true
   if ($null -ne $Config.discoverCursor) { $discover = [bool]$Config.discoverCursor }
   if ($discover) {
-    foreach ($folder in (Get-CursorFolders)) {
-      if (Test-IsFirebaseApp $folder) {
-        & $register (New-DiscoveredApp -Path $folder -Config $Config -Source "cursor")
+    foreach ($info in $cursorInfos) {
+      if (Test-IsFirebaseApp $info.Path) {
+        & $register (New-DiscoveredApp -Path $info.Path -Config $Config -Source "cursor")
       }
     }
   }
 
-  # scanRoots + sibling
   $scan = New-Object System.Collections.Generic.List[string]
   if ($Config.scanRoots) {
     foreach ($root in @($Config.scanRoots)) {
@@ -464,8 +527,29 @@ function Get-DeployApps {
   }
 
   $list = @()
-  foreach ($p in $order) { $list += $byPath[$p] }
-  return $list
+  foreach ($k in $order) { $list += $byPath[$k] }
+
+  # Gop trung Firebase project — giu ban diem cao (Cursor moi / GitHub / XuanQuynh)
+  $byProject = @{}
+  $noProject = @()
+  foreach ($app in $list) {
+    $proj = [string]$app.firebaseProject
+    if (-not $proj) { $noProject += $app; continue }
+    if (-not $byProject.ContainsKey($proj)) {
+      $byProject[$proj] = $app
+    } else {
+      $cur = $byProject[$proj]
+      if ([int64]$app.rank -gt [int64]$cur.rank) {
+        try { Add-ExcludeRule -Config $Config -Rule ([string]$cur.path) } catch {}
+        $byProject[$proj] = $app
+      } else {
+        try { Add-ExcludeRule -Config $Config -Rule ([string]$app.path) } catch {}
+      }
+    }
+  }
+
+  $final = @($byProject.Values) + $noProject
+  return @($final | Sort-Object @{ Expression = { [int64]$_.rank }; Descending = $true })
 }
 
 function Set-AccountMapping {
