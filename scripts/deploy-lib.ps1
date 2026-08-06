@@ -589,6 +589,24 @@ function Resolve-AppFirebaseAccount {
   return $account
 }
 
+function Invoke-FirebaseLoginUse {
+  param([string]$Email)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = firebase login:use $Email 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $text = $out.TrimEnd()
+    if ($text) { Write-Host $text }
+    if ($code -eq 0) { return $true }
+    # Firebase CLI tra exit 1 khi account da dang dung — van OK
+    if ($text -match '(?i)Already using account') { return $true }
+    return $false
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 function Invoke-FirebaseAccount {
   param([object]$Account)
   if (-not $Account) { return }
@@ -599,9 +617,10 @@ function Invoke-FirebaseAccount {
   }
 
   Write-Host "Chuyen Firebase account -> $email" -ForegroundColor DarkCyan
-  Invoke-NativeCommand -FailMessage "firebase login:use that bai — chay: firebase login:add" -Command {
-    firebase login:use $email
-  } | Out-Null
+  if (-not (Invoke-FirebaseLoginUse $email)) {
+    Write-Host "Chua dang nhap account nay. Chay: firebase login:add (hoac M > T)" -ForegroundColor Yellow
+    throw "firebase login:use that bai — chay: firebase login:add"
+  }
 }
 
 function Test-FirebaseProjectAccess {
@@ -641,10 +660,7 @@ function Invoke-FirebaseProject {
   foreach ($email in $emails) {
     if ($email -eq $current) { continue }
     Write-Host "Thu account khac: $email" -ForegroundColor Yellow
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try { firebase login:use $email 2>&1 | Out-Host } finally { $ErrorActionPreference = $prev }
-    if ($LASTEXITCODE -ne 0) { continue }
+    if (-not (Invoke-FirebaseLoginUse $email)) { continue }
     if (Test-FirebaseProjectAccess $ProjectId) {
       if ($Config -and $App) {
         Set-AppAccountMapping -Config $Config -App $App -Email $email
