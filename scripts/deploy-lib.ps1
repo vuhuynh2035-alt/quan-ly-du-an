@@ -133,6 +133,26 @@ function Read-DeployConfig {
       }
     } catch {}
   }
+
+  # Bo exclude qua rong lam mat Xuan Quynh / apartment (tu lan an "hotel" truoc do)
+  $keepAlive = @("xuanquynh", "xuan-quynh", "xuan_quynh", "apartment", "hotel_app_firebase", "hotel-xuan-quynh")
+  if ($cfg.exclude) {
+    $cleaned = @()
+    foreach ($r in @($cfg.exclude)) {
+      $s = [string]$r
+      if (-not $s) { continue }
+      $low = $s.ToLowerInvariant()
+      # Bo rule chi la "hotel" (khop nham moi app hotel*)
+      if ($low -eq "hotel") { continue }
+      $hitKeep = $false
+      foreach ($k in $keepAlive) {
+        if ($low.Contains($k)) { $hitKeep = $true; break }
+      }
+      if ($hitKeep) { continue }
+      $cleaned += $s
+    }
+    $cfg | Add-Member -NotePropertyName exclude -NotePropertyValue $cleaned -Force
+  }
   return $cfg
 }
 

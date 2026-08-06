@@ -1,13 +1,7 @@
 {
   "discoverCursor": true,
   "scanRoots": [],
-  "exclude": [
-    "hotel",
-    "hotel_app_firebase",
-    "XUANQUYNH_HOTEL",
-    "hotel-xuan-quynh",
-    "C:\\hotel_app_firebase"
-  ],
+  "exclude": [],
   "accounts": [
     {
       "id": "saree",
