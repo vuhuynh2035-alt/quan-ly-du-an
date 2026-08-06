@@ -60,15 +60,19 @@ function Show-Menu {
     $i = 1
     foreach ($app in $Apps) {
       $email = if ($app.accountEmail) { $app.accountEmail } else { "lan dau se hoi TK" }
+      $proj = if ($app.firebaseProject) { [string]$app.firebaseProject } else { "(chua co .firebaserc)" }
       $mark = ""
       if ($app.rank -and $top -and ([int64]$app.rank -eq [int64]$top)) { $mark = "  << Cursor moi nhat" }
       $pathWarn = ""
-      if (([string]$app.path) -match '(?i)hotel_app_firebase') {
-        $pathWarn = "  !! BAN COPY CU — nen dung XUANQUYNH_HOTEL"
+      $p = [string]$app.path
+      if ($p -match '(?i)hotel_app_firebase') {
+        $pathWarn = "  !! BAN COPY CU — nen AN (M>X) roi xoa thu muc"
+      } elseif ($p -match '(?i)xuanquynh' -and $p -match '(?i)github') {
+        $pathWarn = "  << BAN DUNG (GitHub)"
       }
       Write-Host ("  {0,2}. {1}{2}{3}" -f $i, $app.label, $mark, $pathWarn) -ForegroundColor White
-      Write-Host ("      {0}" -f $app.path) -ForegroundColor DarkGray
-      Write-Host ("      {0}" -f $email) -ForegroundColor DarkCyan
+      Write-Host ("      Path: {0}" -f $p) -ForegroundColor DarkGray
+      Write-Host ("      Firebase: {0} | {1}" -f $proj, $email) -ForegroundColor DarkCyan
       $i++
     }
   }
@@ -108,16 +112,27 @@ function New-DesktopShortcut {
 function Hide-App {
   param([object[]]$Apps, [object]$Config)
   if (-not $Apps -or $Apps.Count -eq 0) { return }
-  Write-Host "Chon so app muon AN:" -ForegroundColor Cyan
+  Write-Host "Chon so app muon AN (chi an khoi menu, khong xoa file):" -ForegroundColor Cyan
   for ($i = 0; $i -lt $Apps.Count; $i++) {
-    Write-Host ("  {0,2}. {1}" -f ($i + 1), $Apps[$i].label)
+    $a = $Apps[$i]
+    Write-Host ("  {0,2}. {1}" -f ($i + 1), $a.label)
+    Write-Host ("      {0}" -f $a.path) -ForegroundColor DarkGray
   }
   $pick = Read-Host "So (Enter = huy)"
   if ($pick -notmatch '^\d+$') { return }
   $idx = [int]$pick - 1
   if ($idx -lt 0 -or $idx -ge $Apps.Count) { return }
-  Add-ExcludeRule -Config $Config -Rule ([string]$Apps[$idx].path)
-  Write-Host "Da an: $($Apps[$idx].label)" -ForegroundColor Green
+  $target = $Apps[$idx]
+  $p = [string]$target.path
+  if ($p -match '(?i)xuanquynh' -and $p -match '(?i)github') {
+    Write-Host "Day la ban GitHub XUANQUYNH (ban DUNG). Khong nen an." -ForegroundColor Yellow
+    $ok = Read-Host "Van an? (Y = co, Enter = huy)"
+    if ($ok -notmatch '^[Yy]$') { return }
+  }
+  Add-ExcludeRule -Config $Config -Rule $p
+  Write-Host "Da an khoi menu: $($target.label)" -ForegroundColor Green
+  Write-Host "  $p" -ForegroundColor DarkGray
+  Write-Host "Muon xoa han thu muc: dong Cursor/Explorer dang mo no, roi xoa trong File Explorer." -ForegroundColor DarkGray
 }
 
 try {

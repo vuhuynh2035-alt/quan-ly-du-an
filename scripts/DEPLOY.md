@@ -16,14 +16,32 @@ Hoac double-click **`Chay-Deploy.bat`** ngay trong thu muc du an.
 - build
 - firebase deploy --project dung-id
 
-## Xuan Quynh bi len version cu?
+## Xuan Quynh — thu muc nao dung?
 
-May co 2 thu muc cung Firebase project:
+**Giu (ban dung):**
 
-- Dung: `...\GitHub\XUANQUYNH_HOTEL`
-- Cu: `C:\hotel_app_firebase`
+`C:\Users\VUHUYNH\OneDrive\Documents\GitHub\XUANQUYNH_HOTEL`
 
-Menu se uu tien thu muc XUANQUYNH / GitHub. Truoc khi deploy, kiem tra dong **Thu muc:** — phai la XUANQUYNH_HOTEL. Sau deploy, xem dong **Commit:** co dung code moi khong. Neu web van cu: Ctrl+F5.
+**Xoa (ban copy cu):**
+
+`C:\hotel_app_firebase`
+
+Menu co the hien them ban thu 3 vi tool quet:
+
+1. Moi project tung mo trong Cursor
+2. Cac thu muc trong `scanRoots` (vd. GitHub)
+3. Cac thu muc anh em cung cap voi `Quan ly du an` (vd. truc tiep o `C:\`)
+
+Cach nhan: nhin dong **Path:** duoi moi so trong menu — do la vi tri that.
+
+### Don sach de khong nham
+
+1. Pull tool deploy moi nhat (cung Firebase project chi con 1 dong)
+2. Trong menu: **M → X** → chon so cua ban SAI (an khoi list)
+3. Trong File Explorer: xoa thu muc copy (`hotel_app_firebase` va ban thu 3 neu co)
+4. **M → R** quet lai — chi con XUANQUYNH_HOTEL
+
+Khong xoa thu muc dang mo trong Cursor. Dong Cursor/tab do truoc.
 
 ## File
 
