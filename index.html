@@ -2139,53 +2139,6 @@ function projWorkItemsDetailHTML(p){
   return h+'</div>';
 }
 
-function projChiefAsgns(projId){
-  return (S.asgn||[]).filter(function(a){
-    return a.projId===projId&&isChiefAsgn(a)&&(a.status==="active"||a.status==="paused"||a.status==="queued"||a.status==="done");
-  });
-}
-function projChiefInspectHTML(p){
-  var list=projChiefAsgns(p.id);
-  var open=list.filter(function(a){return a.status==="active"||a.status==="paused"||a.status==="queued"});
-  var h='<div class="wi-det" style="border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.06)">';
-  h+='<div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:8px">Chỉ huy trưởng — việc kiểm tra</div>';
-  if(!list.length){
-    h+='<div style="font-size:13px;color:var(--c-muted4)">Chưa giao việc kiểm tra cho Chỉ huy trưởng.</div>';
-    return h+'</div>';
-  }
-  list.forEach(function(a){
-    var e=eById(a.empId);
-    var st=a.status==="done"?"Đã báo cáo / xong":(a.status==="paused"?"Tạm dừng":"Đang kiểm tra");
-    var sc=a.status==="done"?"#4ade80":"#fbbf24";
-    h+='<div class="wi-det-item"><div class="wi-det-title">'+esc(e?e.name:"?")+' '+bdg(st,sc,sc+"22")+'</div>';
-    h+='<div class="wi-det-meta">'+esc(a.workContent||"Kiểm tra / báo cáo tình trạng thi công")+' · '+dFmtG(a.startDate)+(a.endDate?" → "+dFmtG(a.endDate):"")+'</div></div>';
-  });
-  if(open.length)h+='<div style="font-size:12px;color:#fbbf24;margin-top:6px">Đang có '+open.length+' việc kiểm tra mở trên dự án này.</div>';
-  return h+'</div>';
-}
-function projChiefAssignBlockHTML(f){
-  if(!canOperate())return"";
-  if(!f.chiefMap)f.chiefMap={};
-  var chiefs=chiefEmpList().filter(function(e){return e.status!=="leave"});
-  if(!chiefs.length)return"";
-  var h='<div class="wi-box" style="border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.06)">';
-  h+='<div class="wi-box-hd" style="color:#fbbf24">Chỉ huy trưởng — giao kiểm tra</div>';
-  chiefs.forEach(function(e){
-    var sel=!!f.chiefMap[e.id];
-    var note=sel?(f.chiefMap[e.id].note||""):"";
-    h+='<div class="wi-emp'+(sel?" sel":"")+'" onclick="A.chiefToggle(\''+e.id+'\')">';
-    h+='<div><div style="font-weight:600;font-size:13px">'+esc(e.name)+'</div>';
-    h+='<div style="font-size:11px;color:var(--c-muted4)">'+busyPct(e)+'% bận · '+ac(e.id)+' việc kiểm tra</div></div>';
-    h+='</div>';
-    if(sel){
-      h+='<div style="margin:-2px 0 10px 0" onclick="event.stopPropagation()">';
-      h+='<input type="text" id="chief_note_'+e.id+'" value="'+esc(note)+'" placeholder="Nội dung kiểm tra (VD: kiểm tra tiến độ, chất lượng…)" onchange="A.chiefNote(\''+e.id+'\')">';
-      h+='</div>';
-    }
-  });
-  h+='</div>';
-  return h;
-}
 function buildAsgnsFromWorkItems(p,workItems,normalizedStaff,dates){
   var created=[],partIds=[];
   workItems.forEach(function(w,idx){
@@ -6124,7 +6077,6 @@ function vProjDet(id){
   h+='<div class="grid2" style="gap:14px;margin-bottom:14px"><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Khách hàng</div><div style="font-size:14px">'+(cn?esc(cn):"—")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Địa điểm</div><div style="font-size:14px">📍 '+esc(pl?pl.name:p.province)+(c&&c.lat!=null?' <span style="font-family:monospace;font-size:12px;color:var(--c-muted4)">('+c.lat.toFixed(4)+", "+c.lng.toFixed(4)+')</span>':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Thời gian</div><div style="font-family:monospace;font-size:13px">'+dFmtG(tl.start)+' → '+dFmtG(tl.end)+(p.durationDays?' · '+p.durationDays+' ngày':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Đội tham gia</div><div style="font-family:monospace;font-size:13px">'+projPartIds(p).length+' người'+(p.toTruongId||p.vatTuId?" · đã phân chức vụ":"")+'</div></div></div>';
   if(p.note)h+='<div style="margin-bottom:14px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Mô tả</div><div style="font-size:14px;color:rgba(200,220,255,.8)">'+esc(p.note)+'</div></div>';
   h+=projWorkItemsDetailHTML(p);
-  h+=projChiefInspectHTML(p);
   h+=projRoleEditCardHTML(p);
   h+='<div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px;margin-top:4px">Đội dự án (thi công)</div>';
   h+=projTeamListHTML(p,{link:canViewEmpTab(),acts:acts});
@@ -6727,7 +6679,6 @@ function projM(f){
     +'<div class="grid2"><div>'+fld("Ngày bắt đầu",'<div class="dm-input"><input type="text" inputmode="numeric" id="fsd-d" maxlength="2" value="'+pad2(parts.day)+'" placeholder="dd" autocomplete="off" onfocus="this.select()" onclick="this.select()" oninput="A.projDateInput(\'d\')" onkeydown="A.projDateKey(\'d\',event)"><span class="dm-sep">/</span><input type="text" inputmode="numeric" id="fsd-m" maxlength="2" value="'+pad2(parts.m)+'" placeholder="mm" autocomplete="off" onfocus="this.select()" onclick="this.select()" oninput="A.projDateInput(\'m\')" onkeydown="A.projDateKey(\'m\',event)"><input type="hidden" id="fsd-y" value="'+parts.y+'"></div>')+'</div><div>'+fld("Số ngày hoàn thành",'<input type="number" id="fdays" min="1" max="365" value="'+days+'" onfocus="this.select()" onclick="this.select()" oninput="A.projFormRecalc()" onchange="A.projFormRecalc()">')+'</div></div>'
     +'<div id="fdl-box" style="'+dw.box+'"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Hạn hoàn thành</div><div id="fdl-disp" style="font-family:monospace;font-size:15px;font-weight:700;color:'+dw.color+'">'+dFmt(dl)+'</div><input type="hidden" id="fdl" value="'+esc(dl)+'"><input type="hidden" id="fsd" value="'+esc(start)+'"></div>'
     +(canOperate()?projWorkItemsBlockHTML(f):"")
-    +(canOperate()?projChiefAssignBlockHTML(f):"")
     +fld("Mô tả",'<textarea id="fno">'+esc(f.note||"")+'</textarea>');
   return mw(f.id?"Sửa dự án":"Thêm dự án",b,btn("btn-primary","Lưu","A.spr()"),f.id?btn("btn-danger","Xoá","A.dp('"+f.id+"')"):"");
 }
@@ -7911,18 +7862,12 @@ window.A={
       S.form=JSON.parse(JSON.stringify(cur));
       ensureFormWorkItems(S.form);
       S.form.itemStaff={};
-      S.form.chiefMap={};
       S.form.wiOpenGrp={};
       (S.form.workItems||[]).forEach(function(w){S.form.itemStaff[w.id]={}});
       (S.asgn||[]).forEach(function(a){
         if(a.projId!==S.form.id)return;
         if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued"&&a.status!=="done")return;
-        if(isChiefAsgn(a)){
-          if(a.status==="active"||a.status==="paused"||a.status==="queued"){
-            S.form.chiefMap[a.empId]={note:a.workContent||"Kiểm tra / báo cáo tình trạng thi công"};
-          }
-          return;
-        }
+        if(isChiefAsgn(a))return;
         if(!a.workItemId)return;
         if(!S.form.itemStaff[a.workItemId])S.form.itemStaff[a.workItemId]={};
         S.form.itemStaff[a.workItemId][a.empId]={pct:a.loadPct!=null?a.loadPct:""};
@@ -7946,7 +7891,7 @@ window.A={
       });
     }else{
       var st=defaultProjStart();
-      S.form={name:"",custId:"",province:DP,type:"new",group:defaultFieldGroup(),priority:"normal",startDate:st,deadline:deadlineFromDuration(st,7),durationDays:7,status:"open",note:"",participantIds:[],toTruongId:"",vatTuId:"",workItems:[mkWorkItem("Hạng mục 1",0)],itemStaff:{},chiefMap:{},wiOpenGrp:{}};
+      S.form={name:"",custId:"",province:DP,type:"new",group:defaultFieldGroup(),priority:"normal",startDate:st,deadline:deadlineFromDuration(st,7),durationDays:7,status:"open",note:"",participantIds:[],toTruongId:"",vatTuId:"",workItems:[mkWorkItem("Hạng mục 1",0)],itemStaff:{},wiOpenGrp:{}};
       ensureFormWorkItems(S.form);
     }
     S.teamToTruong=S.form.toTruongId||"";
@@ -7964,11 +7909,6 @@ window.A={
     var fno=document.getElementById("fno");if(fno)f.note=fno.value;
     A.projFormRecalc();
     collectFormItemStaff(f);
-    if(!f.chiefMap)f.chiefMap={};
-    Object.keys(f.chiefMap).forEach(function(cid){
-      var nel=document.getElementById("chief_note_"+cid);
-      if(nel)f.chiefMap[cid].note=nel.value;
-    });
   },
   wiFlow:function(){/* legacy no-op — phụ thuộc theo từng hạng mục */},
   wiAdd:function(){
@@ -8029,13 +7969,9 @@ window.A={
   wiToggleEmp:function(wid,eid){
     if(!S.form)return;
     if(isOversightEmp(eById(eid)))return alert("Giám sát / Điều hành không cần giao vào hạng mục thi công.");
-    if(isChiefEmp(eById(eid)))return alert("Chỉ huy trưởng giao ở khối «Giao kiểm tra» bên dưới — không tính vào hạng mục thi công.");
+    if(isChiefEmp(eById(eid)))return alert("Chỉ huy trưởng không giao vào hạng mục thi công — dùng «Giao việc» riêng nếu cần kiểm tra.");
     var y=captureModalScroll();
     A.projSyncForm();
-    Object.keys(S.form.chiefMap||{}).forEach(function(cid){
-      var nel=document.getElementById("chief_note_"+cid);
-      if(nel&&S.form.chiefMap[cid])S.form.chiefMap[cid].note=nel.value;
-    });
     ensureFormWorkItems(S.form);
     if(!S.form.itemStaff[wid])S.form.itemStaff[wid]={};
     if(S.form.itemStaff[wid][eid])delete S.form.itemStaff[wid][eid];
@@ -8066,24 +8002,6 @@ window.A={
     if(S.form)S.form.vatTuId=v||"";
     if(S.form&&S.modal){var y=captureModalScroll();S.modal=projM(S.form);render();restoreModalScroll(y);}
     else render();
-  },
-  chiefToggle:function(eid){
-    if(!S.form)return;
-    var y=captureModalScroll();
-    A.projSyncForm();
-    if(!S.form.chiefMap)S.form.chiefMap={};
-    Object.keys(S.form.chiefMap).forEach(function(cid){
-      var nel=document.getElementById("chief_note_"+cid);
-      if(nel&&S.form.chiefMap[cid])S.form.chiefMap[cid].note=nel.value;
-    });
-    if(S.form.chiefMap[eid])delete S.form.chiefMap[eid];
-    else S.form.chiefMap[eid]={note:"Kiểm tra / báo cáo tình trạng thi công"};
-    S.modal=projM(S.form);render();restoreModalScroll(y);
-  },
-  chiefNote:function(eid){
-    if(!S.form||!S.form.chiefMap||!S.form.chiefMap[eid])return;
-    var el=document.getElementById("chief_note_"+eid);
-    S.form.chiefMap[eid].note=el?el.value:"";
   },
   projToggleAssign:function(){/* legacy no-op — dùng hạng mục */},
   projAssignDate:function(){},
@@ -8196,41 +8114,9 @@ window.A={
       else f.status="in_progress";
     }
     var itemStaffSave=f.itemStaff;
-    var chiefMapSave=f.chiefMap||{};
-    Object.keys(chiefMapSave).forEach(function(cid){
-      var nel=document.getElementById("chief_note_"+cid);
-      if(nel)chiefMapSave[cid].note=nel.value;
-    });
     delete f.assignMap;
     delete f.itemStaff;
     delete f.chiefMap;
-    function applyChiefInspectAsgns(proj){
-      var n=0;
-      Object.keys(chiefMapSave).forEach(function(eid){
-        var emp=eById(eid);if(!emp||!isChiefEmp(emp))return;
-        var note=(chiefMapSave[eid]&&chiefMapSave[eid].note)||"Kiểm tra / báo cáo tình trạng thi công";
-        var existing=(S.asgn||[]).find(function(a){return a.projId===proj.id&&a.empId===eid&&isChiefAsgn(a)&&(a.status==="active"||a.status==="paused"||a.status==="queued")});
-        if(existing){
-          S.asgn=S.asgn.map(function(a){return a.id===existing.id?Object.assign({},a,{workContent:note,taskKind:"chief",endDate:a.endDate||proj.deadline,startDate:a.startDate||proj.startDate}):a});
-          return;
-        }
-        var na=mkAsgn(eid,proj.id,0,{
-          startDate:proj.startDate,endDate:proj.deadline,
-          workContent:note,taskKind:"chief",status:"active"
-        });
-        S.asgn.push(na);
-        recordAssign(proj.id,emp,na," (kiểm tra Chỉ huy trưởng)");
-        applyProjLocToEmp(emp,proj,proj.startDate);
-        n++;
-      });
-      // Gỡ việc kiểm tra mở nếu bỏ tick Chỉ huy
-      S.asgn=S.asgn.filter(function(a){
-        if(a.projId!==proj.id||!isChiefAsgn(a))return true;
-        if(a.status==="done")return true;
-        return !!chiefMapSave[a.empId];
-      });
-      return n;
-    }
     if(isNew){
       f.id=uid();
       if(!f.participantIds)f.participantIds=[];
@@ -8240,12 +8126,11 @@ window.A={
       var depN=f.workItems.filter(function(w){return workItemParentIds(w).length}).length;logProjEvent(f.id,"proj_create",{text:"Tạo dự án «"+f.name+"» · "+f.workItems.length+" hạng mục"+(depN?" · "+depN+" có phụ thuộc":" · song song")});
       var built=buildAsgnsFromWorkItems(f,f.workItems,normLoads,{start:f.startDate,end:f.deadline});
       f.participantIds=built.participantIds.slice();
-      applyChiefInspectAsgns(f);
       S.proj=S.proj.map(function(x){return x.id===f.id?f:x});
       pushUndo("Hoàn tác tạo dự án «"+f.name+"»","create_revert",{type:"proj",id:f.id});
       auditLog("action","create_proj","Tạo dự án «"+f.name+"» · "+f.workItems.length+" hạng mục · "+built.created.length+" phân công",{id:f.id,assign:built.created.length,workItems:f.workItems.length});
     }else{
-      // Cập nhật cấu trúc hạng mục; tái tạo phân công đang mở theo % mới (giữ asgn đã done).
+      // Cập nhật cấu trúc hạng mục; tái tạo phân công đang mở theo % mới (giữ asgn đã done + việc kiểm tra Chỉ huy nếu có).
       if(!confirm("Lưu sẽ cập nhật hạng mục và giao việc theo % mới.\nCác hạng mục đang làm (chưa xong) sẽ được tạo lại theo cấu hình — tiến độ đang mở có thể bị đặt lại.\nTiếp tục?"))return;
       // Gia hạn trước: kéo hạn việc cũ theo hạn dự án mới (tránh banner trễ theo lịch cũ)
       if(before){
@@ -8259,11 +8144,11 @@ window.A={
         if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return;
         openSnap[a.empId+"|"+(a.workItemId||"")]={prog:a.prog,status:a.status,reopenedAt:a.reopenedAt||"",reopenedFromProg:a.reopenedFromProg};
       });
-      // Giữ việc đã done + việc kiểm tra Chỉ huy (tái tạo riêng)
+      // Giữ việc đã done + việc kiểm tra Chỉ huy (không còn khung giao trên form)
       S.asgn=(S.asgn||[]).filter(function(a){
         if(a.projId!==f.id)return true;
         if(a.status==="done")return true;
-        if(isChiefAsgn(a))return false; // sẽ tạo lại từ chiefMap
+        if(isChiefAsgn(a))return true;
         return false;
       });
       S.proj=S.proj.map(function(x){return x.id===f.id?f:x});
@@ -8285,7 +8170,6 @@ window.A={
         if(a.projId!==f.id||a.status==="done"||isChiefAsgn(a))return true;
         return !doneKeys[a.empId+"|"+(a.workItemId||"")];
       });
-      applyChiefInspectAsgns(f);
       var parts={};
       (f.participantIds||[]).concat(builtEdit.participantIds).forEach(function(eid){if(eid)parts[eid]=1});
       f.participantIds=Object.keys(parts);

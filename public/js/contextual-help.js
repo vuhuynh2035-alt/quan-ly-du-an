@@ -102,7 +102,6 @@
           "Không tick phụ thuộc = các hạng mục làm song song. Tick một/nhiều hạng mục cha = chỉ mở khi mọi cha đã xong (có thể nhiều tầng).",
           "Bấm tên nhóm (Điện, Hàn…) để xổ danh sách nhân viên; chọn người và % tải.",
           "Phân Trưởng nhóm / Thủ kho ở cuối khối hạng mục (khi đã chọn đủ người).",
-          "Khối «Chỉ huy trưởng — giao kiểm tra» nếu cần giao kiểm tra riêng.",
           "Lưu dự án.",
         ]),
       ]
@@ -114,11 +113,10 @@
         c("← Quay lại", "Về danh sách dự án hoặc trang trước."),
         c("Giao việc", "Mở màn hình chọn người tham gia dự án và lưu phân công."),
         c("Sửa", "Điều hành / Giám đốc: sửa thông tin dự án."),
-        c("Hoàn tất", "Giám đốc (hoặc trưởng nhóm): xác nhận đóng cả dự án — đóng phần việc thi công còn mở (không bắt buộc đóng việc kiểm tra của Chỉ huy trưởng)."),
+        c("Hoàn tất", "Giám đốc (hoặc trưởng nhóm): xác nhận đóng cả dự án — đóng phần việc thi công còn mở."),
         c("Mở lại để làm bổ sung", "Chỉ Giám đốc: mở dự án đã hoàn thành khi phát sinh hư hỏng / khách yêu cầu làm thêm — thêm hạng mục hoặc hạ tiến độ (VD 80–90%)."),
         c("Đang làm / Hoàn thành", "Tab lọc: dự án đang làm riêng; dự án đã hoàn tất vào mục Hoàn thành (khoá — Giám đốc có thể mở lại)."),
-        c("Thanh tiến độ", "Tiến độ tổng hợp từ việc thi công — không gồm việc kiểm tra của Chỉ huy trưởng."),
-        c("Chỉ huy trưởng", "Khối việc kiểm tra / báo cáo trên dự án — theo dõi Chỉ huy đang ở đâu; hoàn tất không ảnh hưởng tiến độ dự án."),
+        c("Thanh tiến độ", "Tiến độ tổng hợp từ việc thi công theo hạng mục."),
         c("Đội dự án", "Danh sách người đã vào đội; badge chức vụ cạnh tên — chỉ xem trên trang này. Đổi chức vụ trong «Giao việc»."),
         c("Timeline dự án", "Nhật ký giao việc, báo cáo, đến vị trí, hoàn tất…"),
       ],
@@ -126,7 +124,6 @@
         p("Giao việc / bố trí đội cho dự án", [
           "Vào Chi tiết dự án → bấm «Giao việc» hoặc Sửa dự án.",
           "Tick nhân viên thi công theo từng hạng mục / tổ chuyên môn.",
-          "Chỉ huy trưởng giao ở khối «Giao kiểm tra» (không vào hạng mục %).",
           "Chọn Trưởng nhóm / Thủ kho ở khối «Bố trí chức vụ» (khi đội đủ người).",
           "Bấm «Lưu». Người được giao sẽ thấy việc ở tab Công việc.",
         ]),
@@ -134,7 +131,6 @@
           "Chi tiết dự án hiện hạng mục, % từng người và phụ thuộc (chờ hạng mục cha).",
           "Hạng mục có cha chỉ mở khi mọi hạng mục cha đã xong.",
           "Nhân viên thi công bấm «Hoàn tất phần việc của tôi» chỉ xong phần của họ — dự án vẫn có thể Đang làm.",
-          "Chỉ huy trưởng bấm «Hoàn tất việc kiểm tra» để rảnh nhận kiểm tra dự án khác.",
           "Chỉ Giám đốc hoặc Trưởng nhóm bấm «Xác nhận hoàn thành dự án» mới chuyển dự án sang mục Hoàn thành.",
         ]),
         p("Mở lại dự án đã hoàn thành (Giám đốc)", [
