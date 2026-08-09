@@ -657,6 +657,13 @@ html[data-theme="light"] .wi-card{background:rgba(15,40,80,.02);border-color:rgb
 .gantt-date-tip{position:absolute;top:34px;left:0;z-index:50;background:var(--c-gantt-date-tip-bg);border:2px solid #fbbf24;color:var(--c-text);font-size:12px;font-family:monospace;font-weight:700;padding:5px 10px;border-radius:8px;white-space:nowrap;pointer-events:none;transform:translateX(-50%);box-shadow:0 4px 16px rgba(0,0,0,.2)}
 .gantt-body-row{display:flex;align-items:stretch;min-height:40px;border-bottom:1px solid var(--c-border4)}
 .gantt-body-row:last-child{border-bottom:none}
+.gantt-body-row.gantt-proj-head{min-height:34px;background:rgba(56,189,248,.04)}
+.gantt-body-row.gantt-wi-row{min-height:36px}
+.gantt-body-row.gantt-wi-row .gantt-lbl{padding-left:14px}
+.gantt-wi-flow{font-size:10px;font-weight:700;letter-spacing:.02em}
+.gantt-wi-idx{color:var(--c-muted4);font-family:monospace;font-size:10px;margin-right:3px}
+.gantt-bar-wrap.gantt-wi-locked{opacity:.55}
+.gantt-bar-wrap.gantt-wi-locked .gantt-bar-bg{border-style:dashed}
 .gantt-body-row>.gantt-scroll{display:flex;align-items:center;flex:1;min-width:0}
 .gantt-lbl{width:150px;flex-shrink:0;padding:6px 8px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;align-self:stretch;gap:2px;min-width:0;text-align:left;border-right:2px solid var(--c-gantt-lbl-divider);box-sizing:border-box}
 .gantt-name-title{font-size:13px;font-weight:600;color:var(--c-text);line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;text-align:left}
@@ -937,7 +944,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="88">
+<meta name="app-build" content="89">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -2399,6 +2406,107 @@ function projTL(p){
   else prog=p.status==="in_progress"?30:10;
   return {start:start,end:end,prog:prog};
 }
+function daySpanNum(start,end){
+  var s=dParse(start),e=dParse(end);
+  if(!s||!e)return 1;
+  return Math.max(1,Math.round((e.getTime()-s.getTime())/86400000)+1);
+}
+/**
+ * Lịch từng hạng mục trên Gantt.
+ * Song song: các thanh chồng cùng khoảng dự án.
+ * Nối tiếp: các thanh xếp liền nhau theo thứ tự hạng mục.
+ */
+function workItemsGanttSpans(p){
+  var items=normWorkItems(p);
+  var tl=projTL(p);
+  var flow=projWorkFlow(p);
+  var projStart=p.startDate||tl.start||td();
+  var projEnd=p.deadline||tl.end||dAdd(projStart,7);
+  if(projEnd<projStart)projEnd=projStart;
+  if(!items.length){
+    return[{kind:"proj",p:p,wi:null,s:tl.start,e:tl.end,prog:tl.prog,title:p.name||"Dự án",unlocked:true,done:p.status==="done",flow:flow}];
+  }
+  var raw=items.map(function(w,idx){
+    var acts=workItemAsgns(p.id,w.id).filter(function(a){return a.loadPct==null||Number(a.loadPct)>0});
+    var starts=acts.map(function(a){return a.startDate}).filter(Boolean).sort();
+    var ends=acts.map(function(a){return asgnEndDate(a)}).filter(Boolean).sort();
+    var doneAts=acts.filter(function(a){return a.status==="done"&&a.completedAt}).map(function(a){return a.completedAt}).sort();
+    return{
+      kind:"wi",p:p,wi:w,idx:idx,
+      s:starts[0]||"",e:ends.length?ends[ends.length-1]:"",
+      prog:workItemProgPct(p,w.id),
+      title:w.title||("Hạng mục "+(idx+1)),
+      unlocked:workItemUnlocked(p,w.id),
+      done:workItemIsDone(p,w.id),
+      completedAt:doneAts.length?doneAts[doneAts.length-1]:"",
+      flow:flow
+    };
+  });
+  var n=raw.length;
+  if(n===1){
+    raw[0].s=raw[0].s||projStart;
+    raw[0].e=raw[0].e||projEnd;
+    if(raw[0].e<raw[0].s)raw[0].e=raw[0].s;
+    return raw;
+  }
+  var sig0=(raw[0].s||projStart)+"|"+(raw[0].e||projEnd);
+  var distinct=raw.some(function(r){return ((r.s||projStart)+"|"+(r.e||projEnd))!==sig0});
+  if(flow==="sequence"){
+    // Nối tiếp: xếp liền nhau. Nếu lịch asgn trùng nhau → chia đều thời gian dự án.
+    var cursor=projStart;
+    raw.forEach(function(r,i){
+      var left=n-i;
+      var daysLeft=daySpanNum(cursor,projEnd);
+      var len=Math.max(1,Math.floor(daysLeft/left));
+      if(distinct&&r.s&&r.e&&r.s<=r.e){
+        // Giữ lịch riêng nếu đã lệch; vẫn không cho bắt đầu trước hạng mục trước
+        if(r.s<cursor)r.s=cursor;
+        if(r.e<r.s)r.e=r.s;
+      }else if(r.done&&r.completedAt){
+        r.s=cursor;
+        r.e=r.completedAt>=r.s?r.completedAt:dAdd(r.s,Math.max(0,len-1));
+      }else{
+        r.s=cursor;
+        r.e=i===n-1?projEnd:dAdd(cursor,len-1);
+      }
+      if(r.e<r.s)r.e=r.s;
+      cursor=dAdd(r.e,1);
+      if(cursor>projEnd&&i<n-1)cursor=projEnd;
+    });
+    if(raw[n-1].e<projEnd&&!distinct)raw[n-1].e=projEnd;
+  }else{
+    // Song song: cùng khung thời gian dự án (thanh chồng nhau)
+    raw.forEach(function(r){
+      if(distinct&&r.s&&r.e){
+        if(r.e<r.s)r.e=r.s;
+      }else{
+        r.s=projStart;r.e=projEnd;
+      }
+    });
+  }
+  return raw;
+}
+/** Các hàng Gantt: dự án 1 hạng mục = 1 hàng; nhiều hạng mục = hàng dự án + hàng từng hạng mục. */
+function projGanttRows(p){
+  var spans=workItemsGanttSpans(p);
+  var tl=projTL(p);
+  var flow=projWorkFlow(p);
+  var col=groupColor(p.group);
+  if(spans.length<=1&&spans[0]&&spans[0].kind==="proj"){
+    return[{type:"proj",p:p,s:spans[0].s,e:spans[0].e,prog:spans[0].prog,col:col,title:p.name||"",flow:flow}];
+  }
+  if(spans.length===1){
+    return[{type:"proj",p:p,s:spans[0].s,e:spans[0].e,prog:spans[0].prog,col:col,title:spans[0].title||p.name||"",flow:flow,wi:spans[0].wi}];
+  }
+  var rows=[{type:"head",p:p,s:tl.start,e:tl.end,prog:tl.prog,col:col,flow:flow,wiCount:spans.length}];
+  spans.forEach(function(sp,i){
+    rows.push({
+      type:"wi",p:p,wi:sp.wi,idx:i,s:sp.s,e:sp.e,prog:sp.prog,col:col,
+      title:sp.title,unlocked:sp.unlocked,done:sp.done,flow:flow
+    });
+  });
+  return rows;
+}
 function weekStart(d){var x=new Date(d.getTime());x.setHours(0,0,0,0);var day=x.getDay(),diff=day===0?-6:1-day;x.setDate(x.getDate()+diff);return x}
 function ganttWeekGrid(weeks,wkPx){
   var h="";
@@ -2415,9 +2523,10 @@ function ganttHTML(){
   if(!canViewSharedProg())return'<p style="color:rgba(255,255,255,.55);font-size:14px">Chỉ Giám sát / Điều hành / Giám đốc được xem biểu đồ Gantt dự án.</p>';
   var projs=S.proj.filter(function(p){return p.status!=="done"});
   if(!projs.length)return'<p style="color:rgba(255,255,255,.55);font-size:14px">Chưa có dự án đang thực hiện.</p>';
-  var items=projs.map(function(p){var t=projTL(p);return {p:p,s:t.start,e:t.end,prog:t.prog,col:groupColor(p.group)}});
+  var rows=[];
+  projs.forEach(function(p){projGanttRows(p).forEach(function(r){rows.push(r)});});
   var tMin=null,tMax=null;
-  items.forEach(function(it){var a=dParse(it.s),b=dParse(it.e);if(a&&(!tMin||a<tMin))tMin=a;if(b&&(!tMax||b>tMax))tMax=b});
+  rows.forEach(function(it){var a=dParse(it.s),b=dParse(it.e);if(a&&(!tMin||a<tMin))tMin=a;if(b&&(!tMax||b>tMax))tMax=b});
   var todayD=dParse(td());
   if(todayD){if(!tMin||todayD<tMin)tMin=new Date(todayD.getTime());if(!tMax||todayD>tMax)tMax=new Date(todayD.getTime())}
   if(!tMin||!tMax){tMin=dParse(td());tMax=dParse(dAdd(td(),30))}
@@ -2433,18 +2542,43 @@ function ganttHTML(){
   var h='<div class="gantt-root" style="--gantt-wkpx:'+wkPx+'px" data-tmin="'+tMin.getTime()+'" data-tmax="'+tMaxMs+'" data-twidth="'+trackW+'" data-wkpx="'+wkPx+'" data-weeks="'+weeks.length+'">';
   h+='<div class="gantt-wk-overlay"><div class="gantt-wk-lines" style="width:'+trackW+'px">'+ganttWeekGrid(weeks,wkPx)+'</div></div>';
   h+='<div class="gantt-needle"><div class="gantt-needle-line"></div></div>';
-  h+='<div class="gantt-sticky"><div class="gantt-date-tip"></div><div class="gantt-row-flex"><div class="gantt-lbl-col">Tên dự án</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
+  h+='<div class="gantt-sticky"><div class="gantt-date-tip"></div><div class="gantt-row-flex"><div class="gantt-lbl-col">Dự án / hạng mục</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
   weeks.forEach(function(w,i){h+='<div class="gantt-week" style="left:'+(i*wkPx)+'px;width:'+wkPx+'px">'+dFmtGanttWeek(w)+'</div>'});
   h+='</div></div></div></div>';
-  items.forEach(function(it){
-    var l=px(it.s),w=Math.max(4,px(it.e)-l),pw=Math.max(2,w*it.prog/100),bt=ganttBarText(it.p),days=projDays(it.s,it.e);
-    var barTip=(it.p.name||"")+" · "+days+" · "+it.prog+"%";
-    h+='<div class="gantt-body-row"><div class="gantt-lbl" title="'+esc((projCompanyName(it.p)||it.p.name||"")+" · "+dFmtCard(it.s)+" – "+dFmtCard(it.e))+'">'+ganttLblHTML(it.p,it.s,it.e)+'</div>';
+  rows.forEach(function(it){
+    var l=px(it.s),wbar=Math.max(4,px(it.e)-l),prog=Math.max(0,Math.min(100,Number(it.prog)||0)),pw=Math.max(2,wbar*prog/100);
+    var days=projDays(it.s,it.e);
+    var flowLbl=it.flow==="sequence"?"Nối tiếp":"Song song";
+    var flowCol=it.flow==="sequence"?"#fbbf24":"#38bdf8";
+    if(it.type==="head"){
+      var company=ganttCompanyLbl(it.p),full=projCompanyShort(it.p)||projCompanyName(it.p)||"";
+      var headTip=(it.p.name||"")+" · "+flowLbl+" · "+(it.wiCount||0)+" hạng mục · "+prog+"%";
+      h+='<div class="gantt-body-row gantt-proj-head"><div class="gantt-lbl" title="'+esc(headTip)+'">';
+      h+='<span class="gantt-name-title gantt-name" data-act="projDet" data-id="'+esc(it.p.id)+'"'+(full?' title="'+esc(full)+'"':"")+'>'+esc(company)+'</span>';
+      h+='<span class="gantt-name-dates"><span class="gantt-wi-flow" style="color:'+flowCol+'">'+flowLbl+'</span> · '+(it.wiCount||0)+' hạng mục</span>';
+      h+='</div><div class="gantt-scroll gantt-sync"><div class="gantt-track-px" style="width:'+trackW+'px;height:28px">';
+      h+='<div class="gantt-bar-wrap" style="left:'+l+'px;width:'+wbar+'px;height:12px" title="'+esc(headTip)+'">';
+      h+='<div class="gantt-bar-bg" style="background:'+it.col+'18;border-color:'+it.col+'40"></div>';
+      h+='<div class="gantt-bar" style="width:'+pw+'px;background:linear-gradient(90deg,'+it.col+'99,'+it.col+'66)"></div>';
+      h+='</div></div></div></div>';
+      return;
+    }
+    var locked=it.type==="wi"&&!it.unlocked;
+    var label=it.type==="wi"?it.title:(ganttBarText(it.p)||it.p.name||"");
+    var barTip=(it.p.name||"")+(it.type==="wi"?" · "+it.title:"")+" · "+flowLbl+" · "+days+" · "+prog+"%"+(locked?" · chờ hạng mục trước":"");
+    var lblHtml;
+    if(it.type==="wi"){
+      lblHtml='<span class="gantt-name-title gantt-name" data-act="projDet" data-id="'+esc(it.p.id)+'" title="'+esc(barTip)+'"><span class="gantt-wi-idx">'+(it.idx+1)+'.</span>'+esc(shortGanttText(it.title,18))+'</span>';
+      lblHtml+='<span class="gantt-name-dates">'+dFmtCard(it.s)+' – '+dFmtCard(it.e)+(locked?" · chờ":(it.done?" · xong":""))+'</span>';
+    }else{
+      lblHtml=ganttLblHTML(it.p,it.s,it.e);
+    }
+    h+='<div class="gantt-body-row'+(it.type==="wi"?" gantt-wi-row":"")+'"><div class="gantt-lbl" title="'+esc(barTip)+'">'+lblHtml+'</div>';
     h+='<div class="gantt-scroll gantt-sync"><div class="gantt-track-px" style="width:'+trackW+'px">';
-    h+='<div class="gantt-bar-wrap" style="left:'+l+'px;width:'+w+'px" title="'+esc(barTip)+'">';
+    h+='<div class="gantt-bar-wrap'+(locked?" gantt-wi-locked":"")+'" style="left:'+l+'px;width:'+wbar+'px" title="'+esc(barTip)+'">';
     h+='<div class="gantt-bar-bg" style="background:'+it.col+'28;border-color:'+it.col+'55"></div>';
     h+='<div class="gantt-bar" style="width:'+pw+'px;background:linear-gradient(90deg,'+it.col+','+it.col+'bb)"></div>';
-    h+=ganttBarInnerHTML(w,{label:bt,days:days,pct:it.prog,tip:it.p.name});
+    h+=ganttBarInnerHTML(wbar,{label:label,days:days,pct:prog,tip:barTip});
     h+='</div></div></div></div>';
   });
   return h+'</div>';
