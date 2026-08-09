@@ -439,6 +439,15 @@ html[data-theme="light"] .tab.active{color:#fff}
 .proj-view-tab.on .proj-view-n{background:rgba(255,255,255,.18)}
 html[data-theme="light"] .proj-view-tabs{background:rgba(15,40,80,.04);border-color:rgba(15,40,80,.1)}
 html[data-theme="light"] .proj-view-tab.on{color:#fff}
+.proj-complete-list{display:flex;flex-direction:column;gap:8px;max-height:min(52vh,420px);overflow:auto;padding-right:2px}
+.proj-complete-item{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);cursor:pointer}
+.proj-complete-item:hover{border-color:rgba(74,174,255,.35);background:rgba(56,189,248,.06)}
+.proj-complete-item.done{opacity:.72;cursor:default;border-color:rgba(74,222,128,.25);background:rgba(74,222,128,.06)}
+.proj-complete-item input{width:18px;height:18px;margin-top:2px;flex-shrink:0;accent-color:#4ade80}
+.proj-complete-body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.proj-complete-body b{font-size:14px;color:var(--c-text)}
+.proj-complete-meta{font-size:12px;color:var(--c-muted2)}
+html[data-theme="light"] .proj-complete-item{background:rgba(15,40,80,.02);border-color:rgba(15,40,80,.1)}
 
 .field{display:block;margin-bottom:14px}
 .lab{font-size:11px;font-weight:600;color:var(--c-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;display:block}
@@ -1661,13 +1670,28 @@ function projDurationDays(p){
   if(p&&p.startDate&&p.deadline)return asgnDaySpan(p.startDate,p.deadline);
   return 7;
 }
-/** Trạng thái hiển thị theo kế hoạch — dự án chỉ «Hoàn thành» khi giám đốc/trưởng nhóm xác nhận. */
+/** Hạng mục công việc của dự án = các phân công (asgn) active/paused/done. */
+function projWorkItems(projId){
+  return S.asgn.filter(function(a){
+    return a.projId===projId&&(a.status==="active"||a.status==="paused"||a.status==="done");
+  }).slice().sort(function(a,b){
+    var da=a.status==="done"?1:0,db=b.status==="done"?1:0;
+    if(da!==db)return da-db;
+    return String(a.startDate||"").localeCompare(String(b.startDate||""));
+  });
+}
+function projOpenWorkItems(projId){
+  return projWorkItems(projId).filter(function(a){return a.status==="active"||a.status==="paused"});
+}
+/** Trạng thái hiển thị — dự án «Hoàn thành» chỉ khi status=done (đã xong hết hạng mục). */
 function projPlanStatus(p){
   if(!p)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(p.status==="done")return{key:"done",label:"Hoàn thành",c:"#4ade80"};
-  var asgns=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused"||a.status==="done")});
-  var openAsgn=asgns.filter(function(a){return a.status==="active"||a.status==="paused"});
-  if(asgns.length&&!openAsgn.length)return{key:"await_close",label:"Chờ xác nhận hoàn tất",c:"#38bdf8"};
+  var items=projWorkItems(p.id),openN=projOpenWorkItems(p.id).length;
+  if(items.length){
+    var doneN=items.length-openN;
+    if(openN&&doneN)return{key:"doing",label:"Đang làm ("+doneN+"/"+items.length+")",c:"#fbbf24"};
+  }
   var today=td(),start=p.startDate||"",end=p.deadline||"";
   if(start&&today<start)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(end&&today>end)return{key:"late",label:"Trễ hạn",c:"#ef4444"};
@@ -1679,32 +1703,71 @@ function projLockedGuard(p){
   alert("Dự án đã hoàn tất — chỉ lưu trữ để tham khảo, không chỉnh sửa được.");
   return false;
 }
-function canConfirmProjDone(p){
+/** Giám đốc chọn tick hạng mục hoàn thành. */
+function canSelectProjCompleteItems(p){
   if(!p||isProjLocked(p))return false;
-  if(isDir())return true;
-  return !!(S.auth&&S.auth.empId&&p.toTruongId&&S.auth.empId===p.toTruongId);
+  if(!window.__CV3_SKIP_SEED)return true;
+  return isDir();
 }
-function applyCompleteProjectLocal(projId, meta){
+/** Khi mọi hạng mục đã done → chuyển dự án sang Hoàn thành (khoá + tab archive). */
+function maybeMarkProjDone(projId, meta){
   meta=meta||{};
-  var p=pById(projId);if(!p||p.status==="done")return 0;
-  var closed=0;
-  S.asgn=S.asgn.map(function(a){
-    if(a.projId!==projId)return a;
-    if(a.status!=="active"&&a.status!=="paused")return a;
-    closed++;
-    return Object.assign({},a,{status:"done",prog:100,completedAt:a.completedAt||td()});
-  });
+  var p=pById(projId);if(!p||p.status==="done")return false;
+  var items=projWorkItems(projId);
+  if(!items.length)return false;
+  if(projOpenWorkItems(projId).length)return false;
   p=Object.assign({},p,{status:"done",completedAt:p.completedAt||td()});
   S.proj=S.proj.map(function(x){return x.id===projId?p:x});
   var by=meta.byName||logActorName();
-  var role=meta.byRole||(isDir()?"Giám đốc":"Trưởng nhóm");
   logProjEvent(projId,"proj_done",{
     empId:meta.empId||(isDir()?"":(S.auth&&S.auth.empId)||""),
     empName:by,
-    text:role+" "+by+" xác nhận hoàn tất dự án «"+p.name+"»"+(closed?" ("+closed+" việc đóng)":""),
-    meta:{closed:closed,byRole:isDir()?"director":"to_truong"}
+    text:"Dự án «"+p.name+"» hoàn thành — đã xong tất cả "+items.length+" hạng mục",
+    meta:{total:items.length,byRole:isDir()?"director":"auto"}
   });
-  return closed;
+  return true;
+}
+function markAsgnsDoneLocal(asgnIds, meta){
+  meta=meta||{};
+  var idSet={};
+  (asgnIds||[]).forEach(function(id){if(id)idSet[String(id)]=1});
+  var marked=[],projIds={};
+  S.asgn=S.asgn.map(function(a){
+    if(!idSet[a.id]||a.status==="done")return a;
+    marked.push(a.id);
+    if(a.projId)projIds[a.projId]=1;
+    var e=eById(a.empId);
+    logProjEvent(a.projId,"done",{
+      empId:a.empId,empName:e?e.name:"",
+      text:(meta.byName||logActorName())+" xác nhận hoàn tất hạng mục «"+(asgnInfo(a).title||"?")+"»"+(e?" — "+e.name:""),
+      meta:{asgnId:a.id,scope:"item"}
+    });
+    return Object.assign({},a,{status:"done",prog:100,completedAt:a.completedAt||td()});
+  });
+  var closedProjs=[];
+  Object.keys(projIds).forEach(function(pid){
+    if(maybeMarkProjDone(pid, meta))closedProjs.push(pid);
+  });
+  return {marked:marked,closedProjs:closedProjs};
+}
+function projCompleteItemsM(p){
+  var items=projWorkItems(p.id);
+  var doneN=items.filter(function(a){return a.status==="done"}).length;
+  var body='<p style="font-size:13px;color:var(--c-muted2);margin-bottom:12px;line-height:1.45">Tick hạng mục đã xong rồi bấm <b>Lưu</b>. Dự án chỉ chuyển sang <b style="color:#4ade80">Hoàn thành</b> khi <b>tất cả</b> hạng mục được hoàn tất ('+doneN+'/'+items.length+').</p>';
+  if(!items.length){
+    body+='<div style="padding:12px;border-radius:10px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.28);color:#fbbf24;font-size:13px">Chưa có hạng mục công việc. Hãy <b>Giao việc</b> trước.</div>';
+    return mw("Hoàn thành hạng mục",body,"","");
+  }
+  body+='<div class="proj-complete-list">';
+  items.forEach(function(a){
+    var e=eById(a.empId),info=asgnInfo(a),done=a.status==="done";
+    body+='<label class="proj-complete-item'+(done?" done":"")+'">';
+    body+='<input type="checkbox" class="proj-complete-chk" value="'+esc(a.id)+'"'+(done?" checked disabled":"")+'>';
+    body+='<span class="proj-complete-body"><b>'+esc(info.title||p.name)+'</b>';
+    body+='<span class="proj-complete-meta">'+esc(e?e.name:"?")+(a.status==="paused"?" · tạm dừng":done?" · đã xong":"")+' · '+Math.max(0,a.prog||0)+'%</span></span></label>';
+  });
+  body+='</div>';
+  return mw("Hoàn thành hạng mục — "+esc(p.name),body,btn("btn-primary","Lưu","A.saveProjCompleteItems('"+p.id+"')"),"");
 }
 /** Danh sách dự án: chưa hoàn thành trước; trong nhóm giữ startDate → tên. */
 function projListCmp(a,b){
@@ -1755,8 +1818,6 @@ function lateAlertBannerHTML(){
   h+='</div>';
   return h;
 }
-/** Không tự đóng dự án khi mọi người xong phần mình — cần giám đốc / trưởng nhóm xác nhận. */
-function maybeMarkProjDone(projId){ /* intentionally no-op */ }
 function projTL(p){
   var acts=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused"||a.status==="done")});
   var openActs=acts.filter(function(a){return a.status==="active"||a.status==="paused"});
@@ -4870,13 +4931,7 @@ function vMyWorkDet(asgnId,orgHint){
   h+='<div class="row" style="gap:8px;margin-top:16px;flex-wrap:wrap">'+btn("btn-primary","Báo cáo tiến độ hôm nay","A.goReport('"+a.id+"')");
   if(a.status==="active"||a.status==="paused"){
     h+=btn("btn-accent","Hoàn tất phần việc","A.empFin('"+a.id+"')");
-    h+='<div style="width:100%;font-size:12px;color:var(--c-muted4);margin-top:2px">Chỉ kết thúc phần việc của bạn — dự án vẫn có thể tiếp tục với người khác.</div>';
-  }
-  if(p&&canConfirmProjDone(p)&&(a.status==="active"||a.status==="paused"||a.status==="done")){
-    h+='<div style="width:100%;margin-top:10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)">';
-    h+='<div style="font-size:12px;color:var(--c-muted2);margin-bottom:8px">Bạn là trưởng nhóm — có thể xác nhận đóng cả dự án.</div>';
-    h+=btn("btn-primary","Hoàn tất dự án","A.completeProj('"+p.id+"')");
-    h+='</div>';
+    h+='<div style="width:100%;font-size:12px;color:var(--c-muted4);margin-top:2px">Chỉ kết thúc phần việc của bạn — dự án chỉ hoàn thành khi mọi hạng mục đã xong.</div>';
   }
   h+='</div>';
   h+=renderReportsBlock(asgnId,5);
@@ -5174,13 +5229,14 @@ function vProjDet(id){
   if(!locked){
     if(canGiao())actions+=actBtn("btn-primary","Giao việc","giaoOpen",p.id);
     if(canOperate())actions+=btn("btn-ghost","Sửa","A.op('"+p.id+"')");
-    if(canConfirmProjDone(p))actions+=btn("btn-accent","Hoàn tất","A.completeProj('"+p.id+"')");
+    if(canSelectProjCompleteItems(p))actions+=btn("btn-accent","Hoàn thành","A.completeProj('"+p.id+"')");
   }
   var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","projBack")+'<div class="row" style="gap:8px;align-items:stretch">'+actions+'</div></div>';
   h+='<div class="card card-p"><h2 style="font-size:22px;font-weight:700;margin-bottom:10px">'+esc(p.name)+'</h2>';
   h+='<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">'+bdg(p.group,groupColor(p.group))+bdg(p.type==="repair"?"Sửa chữa":"Dự án mới",p.type==="repair"?"#fbbf24":"#38bdf8")+bdg(ps.label,ps.c,ps.c+"18")+bdg(pr[0],pr[1])+(locked?bdg("Đã khoá","#94a3b8","rgba(148,163,184,.15)"):"")+'</div>';
-  if(canConfirmProjDone(p)){
-    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.28);font-size:13px;color:var(--c-muted2);line-height:1.45">Bấm <b style="color:#4ade80">Hoàn tất</b> để đóng cả dự án — mọi thành viên còn việc sẽ được chuyển sang đã hoàn tất và sẵn sàng nhận việc mới.</div>';
+  if(canSelectProjCompleteItems(p)){
+    var itemsN=projWorkItems(p.id).length,openN=projOpenWorkItems(p.id).length,doneN=Math.max(0,itemsN-openN);
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.28);font-size:13px;color:var(--c-muted2);line-height:1.45">Bấm <b style="color:#4ade80">Hoàn thành</b> để tick hạng mục đã xong ('+doneN+'/'+itemsN+'). Dự án chỉ chuyển sang tab <b>Hoàn thành</b> khi <b>tất cả</b> hạng mục được hoàn tất.</div>';
   }else if(locked){
     h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.35);font-size:13px;color:#cbd5e1;line-height:1.45">Dự án đã hoàn tất và <b>khoá</b> — chỉ xem / lưu trữ tham khảo. Không sửa, giao việc hay thay đổi đội.</div>';
   }
@@ -5301,7 +5357,6 @@ function vProj(){
   var view=S.projView==="done"?"done":"active";
   var activeList=S.proj.filter(function(p){return p.status!=="done"}).slice().sort(projListCmp);
   var doneList=S.proj.filter(function(p){return p.status==="done"}).slice().sort(projDoneCmp);
-  var awaitN=activeList.filter(function(p){return projPlanStatus(p).key==="await_close"}).length;
   var list=view==="done"?doneList:activeList;
   var h='<div class="row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px"><h2 style="font-size:20px;font-weight:700">Dự án</h2>'+(canOperate()&&view==="active"?btn("btn-accent","+ Thêm dự án","A.op()"):"")+'</div>';
   h+='<div class="proj-view-tabs" role="tablist" aria-label="Lọc dự án">';
@@ -5310,12 +5365,12 @@ function vProj(){
   h+='</div>';
   if(view==="active"){
     h+=lateAlertBannerHTML();
-    if(awaitN)h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.28);font-size:13px;color:#7dd3fc;line-height:1.45">Có <b>'+awaitN+'</b> dự án đang <b>Chờ xác nhận hoàn tất</b> — mở Chi tiết → bấm <b>Hoàn tất</b> để khoá và chuyển vào mục Hoàn thành.</div>';
+    if(isDir())h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.28);font-size:13px;color:#7dd3fc;line-height:1.45">Giám đốc: mở Chi tiết → <b>Hoàn thành</b> → tick hạng mục đã xong. Dự án chỉ vào mục <b>Hoàn thành</b> khi <b>tất cả</b> hạng mục được hoàn tất.</div>';
   }else{
     h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.3);font-size:13px;color:#cbd5e1;line-height:1.45">Kho lưu trữ dự án đã hoàn tất — <b>đã khoá</b> (không sửa / giao việc). Chỉ xem tham khảo.</div>';
   }
   if(!list.length){
-    h+='<div class="card card-p" style="color:var(--c-muted)">'+(view==="done"?"Chưa có dự án hoàn thành. Khi giám đốc/trưởng nhóm bấm «Hoàn tất», dự án sẽ xuất hiện ở đây.":"Chưa có dự án đang làm.")+'</div>';
+    h+='<div class="card card-p" style="color:var(--c-muted)">'+(view==="done"?"Chưa có dự án hoàn thành. Khi mọi hạng mục trong dự án đã xong, dự án sẽ xuất hiện ở đây.":"Chưa có dự án đang làm.")+'</div>';
     return h;
   }
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">';
@@ -7116,14 +7171,14 @@ window.A={
     var e=eById(a.empId);
     logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" hoàn tất phần việc",meta:{asgnId:id,prog:100,scope:"self"}});
     S.asgn=S.asgn.map(function(x){return x.id===id?Object.assign({},x,{status:"done",prog:100,completedAt:x.completedAt||td()}):x});
-    // Không tự đóng dự án — chỉ giám đốc / trưởng nhóm được hoàn tất dự án.
+    if(maybeMarkProjDone(a.projId,{empId:a.empId,byName:e?e.name:""}))S.projView="done";
     sv();render();
   },
   empFin:function(id){
     var a=asgnById(id);
     if(!a||a.empId!==S.auth.empId)return alert("Chỉ nhân viên được giao việc mới hoàn tất phần việc của mình.");
     if(a.status==="done")return alert("Phần việc của bạn đã hoàn tất.");
-    if(!confirm("Hoàn tất phần việc của bạn trong dự án này?\n\nBạn sẽ sẵn sàng nhận việc mới. Các thành viên khác và dự án vẫn có thể tiếp tục."))return;
+    if(!confirm("Hoàn tất phần việc của bạn trong dự án này?\n\nBạn sẽ sẵn sàng nhận việc mới. Dự án chỉ hoàn thành khi mọi hạng mục đã xong."))return;
     S.selMyAsgn="";S.selMyAsgnOrg="";
     A.fin(id);
     if(typeof window.__CV3_completeMyAssignment==="function"){
@@ -7136,21 +7191,39 @@ window.A={
     var p=pById(id);
     if(!p)return alert("Không tìm thấy dự án.");
     if(p.status==="done")return alert("Dự án đã hoàn tất.");
-    if(!canConfirmProjDone(p))return alert("Chỉ giám đốc hoặc trưởng nhóm của dự án mới được xác nhận hoàn tất dự án.");
-    var openN=S.asgn.filter(function(a){return a.projId===id&&(a.status==="active"||a.status==="paused")}).length;
-    var msg="Xác nhận hoàn tất dự án «"+p.name+"»?\n\nToàn bộ "+openN+" thành viên còn việc sẽ được chuyển sang đã hoàn tất và có thể nhận dự án khác.";
-    if(!confirm(msg))return;
-    applyCompleteProjectLocal(id,{
-      byName:logActorName(),
-      byRole:isDir()?"Giám đốc":"Trưởng nhóm",
-      empId:isDir()?"":(S.auth&&S.auth.empId)||""
+    if(!canSelectProjCompleteItems(p))return alert("Chỉ giám đốc được chọn hạng mục hoàn thành của dự án.");
+    S.modal=projCompleteItemsM(p);
+    render();
+  },
+  saveProjCompleteItems:function(projId){
+    var p=pById(projId);
+    if(!p)return alert("Không tìm thấy dự án.");
+    if(p.status==="done")return alert("Dự án đã hoàn tất.");
+    if(!canSelectProjCompleteItems(p))return alert("Chỉ giám đốc được chọn hạng mục hoàn thành của dự án.");
+    var ids=[];
+    document.querySelectorAll(".proj-complete-chk:checked:not(:disabled)").forEach(function(el){
+      if(el.value)ids.push(String(el.value));
     });
+    if(!ids.length&&projOpenWorkItems(projId).length){
+      return alert("Hãy tick ít nhất một hạng mục đã hoàn thành, hoặc đóng hộp thoại nếu chưa xong.");
+    }
+    var result=markAsgnsDoneLocal(ids,{byName:logActorName(),empId:""});
+    if(!result.closedProjs.length)maybeMarkProjDone(projId,{byName:logActorName(),empId:""});
+    var closed=!!(pById(projId)&&pById(projId).status==="done");
+    S.modal=null;
+    if(closed){
+      S.projView="done";
+      alert("Đã hoàn tất tất cả hạng mục — dự án «"+p.name+"» chuyển sang mục Hoàn thành.");
+    }else{
+      var left=projOpenWorkItems(projId).length;
+      var total=projWorkItems(projId).length;
+      alert("Đã lưu "+result.marked.length+" hạng mục hoàn thành.\nCòn "+left+"/"+total+" hạng mục chưa xong — dự án vẫn ở Đang làm.");
+    }
     sv();
     render();
-    // Trưởng nhóm (employee) không ghi workspace trực tiếp — đồng bộ qua Cloud Function.
-    if(!canOperate()&&typeof window.__CV3_completeProject==="function"){
-      window.__CV3_completeProject(id, currentOrgId()).catch(function(err){
-        alert((err&&err.message)||"Đã lưu trên máy nhưng chưa đồng bộ cloud. Báo giám đốc kiểm tra hoặc thử lại khi có mạng.");
+    if(typeof window.__CV3_completeProject==="function"){
+      window.__CV3_completeProject(projId, currentOrgId(), ids).catch(function(err){
+        alert((err&&err.message)||"Đã lưu trên máy nhưng chưa đồng bộ cloud. Thử lại khi có mạng.");
       });
     }
   },

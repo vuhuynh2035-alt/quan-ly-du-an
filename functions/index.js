@@ -1649,7 +1649,8 @@ exports.completeMyAssignment = onCall(async (request) => {
       ? { ...a, status: "done", prog: 100, completedAt: a.completedAt || today }
       : a
   );
-  const projLogEntry = {
+  const projLog = [...(ws.projLog || [])];
+  projLog.push({
     id: `asgn_done_${asgnId}_${Date.now().toString(36)}`,
     projId: asgn.projId || "",
     at: new Date().toISOString(),
@@ -1659,17 +1660,56 @@ exports.completeMyAssignment = onCall(async (request) => {
     by: fromName,
     text: `${fromName} hoàn tất phần việc trong dự án`,
     meta: { asgnId, scope: "self" },
-  };
-  const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
+  });
+
+  let newProj = Array.isArray(ws.proj) ? ws.proj : [];
+  let projectClosed = false;
+  const pid = String(asgn.projId || "");
+  if (pid) {
+    const projItems = newAsgn.filter(
+      (a) =>
+        a &&
+        String(a.projId || "") === pid &&
+        (a.status === "active" || a.status === "paused" || a.status === "done")
+    );
+    const openLeft = projItems.filter(
+      (a) => a.status === "active" || a.status === "paused"
+    ).length;
+    if (projItems.length && !openLeft) {
+      newProj = newProj.map((p) =>
+        p && String(p.id) === pid
+          ? { ...p, status: "done", completedAt: p.completedAt || today }
+          : p
+      );
+      projectClosed = true;
+      const pname = (newProj.find((p) => p && String(p.id) === pid) || {}).name || "";
+      projLog.push({
+        id: `proj_done_${pid}_${Date.now().toString(36)}`,
+        projId: pid,
+        at: new Date().toISOString(),
+        type: "proj_done",
+        empId,
+        empName: fromName,
+        by: fromName,
+        text: `Dự án «${pname}» hoàn thành — đã xong tất cả ${projItems.length} hạng mục`,
+        meta: { total: projItems.length, byRole: "auto" },
+      });
+    }
+  }
+
   const patch = (ws.patch || 0) + 1;
-  await wsRef.set(
-    { asgn: newAsgn, projLog, patch, updatedAt: new Date() },
-    { merge: true }
-  );
-  return { ok: true, orgId, asgnId };
+  const payload = {
+    asgn: newAsgn,
+    projLog: projLog.slice(-500),
+    patch,
+    updatedAt: new Date(),
+  };
+  if (projectClosed) payload.proj = newProj;
+  await wsRef.set(payload, { merge: true });
+  return { ok: true, orgId, asgnId, projectClosed };
 });
 
-/** Giám đốc hoặc trưởng nhóm xác nhận hoàn tất cả dự án → đóng mọi việc còn lại. */
+/** Giám đốc tick hạng mục hoàn thành; chỉ đóng dự án khi hết hạng mục mở. */
 exports.completeProject = onCall(async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "Cần đăng nhập.");
@@ -1680,10 +1720,12 @@ exports.completeProject = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
   }
   const user = userSnap.data();
-  const empId = String(user.empId || "");
   const isDirector = user.role === "director";
-  if (!isDirector && (!empId || user.role !== "employee")) {
-    throw new HttpsError("permission-denied", "Không có quyền hoàn tất dự án.");
+  if (!isDirector) {
+    throw new HttpsError(
+      "permission-denied",
+      "Chỉ giám đốc được chọn hạng mục hoàn thành của dự án."
+    );
   }
 
   const data = request.data || {};
@@ -1696,6 +1738,10 @@ exports.completeProject = onCall(async (request) => {
   if (!projId) {
     throw new HttpsError("invalid-argument", "Thiếu dự án.");
   }
+  const asgnIds = Array.isArray(data.asgnIds)
+    ? data.asgnIds.map((x) => String(x || "")).filter(Boolean)
+    : [];
+  const idSet = new Set(asgnIds);
 
   const searchOrgs = [preferredOrg].concat(
     allowedOrgs.filter((o) => o !== preferredOrg)
@@ -1726,58 +1772,87 @@ exports.completeProject = onCall(async (request) => {
     throw new HttpsError("not-found", "Không tìm thấy dự án.");
   }
   if (proj.status === "done") {
-    return { ok: true, already: true, orgId };
+    return { ok: true, already: true, orgId, closed: 0, projectClosed: true };
   }
 
-  const isLead = empId && String(proj.toTruongId || "") === empId;
-  if (!isDirector && !isLead) {
-    throw new HttpsError(
-      "permission-denied",
-      "Chỉ giám đốc hoặc trưởng nhóm của dự án mới được hoàn tất dự án."
-    );
-  }
-
-  let fromName = user.displayName || user.username || (isDirector ? "Giám đốc" : "");
-  if (!isDirector) {
-    const empLocal = (ws.emp || []).find((e) => e && String(e.id) === empId);
-    if (empLocal && empLocal.name) fromName = empLocal.name;
-  }
-
+  const fromName = user.displayName || user.username || "Giám đốc";
   const today = new Date().toLocaleDateString("en-CA", {
     timeZone: "Asia/Ho_Chi_Minh",
   });
   const asgnList = Array.isArray(ws.asgn) ? ws.asgn : [];
-  let closed = 0;
+  const projLog = [...(ws.projLog || [])];
+  let marked = 0;
   const newAsgn = asgnList.map((a) => {
     if (!a || String(a.projId || "") !== projId) return a;
+    if (!idSet.has(String(a.id))) return a;
+    if (a.status === "done") return a;
     if (a.status !== "active" && a.status !== "paused") return a;
-    closed += 1;
+    marked += 1;
+    const empLocal = (ws.emp || []).find((e) => e && String(e.id) === String(a.empId || ""));
+    projLog.push({
+      id: `asgn_done_${a.id}_${Date.now().toString(36)}_${marked}`,
+      projId,
+      at: new Date().toISOString(),
+      type: "done",
+      empId: a.empId || "",
+      empName: empLocal ? empLocal.name || "" : "",
+      by: fromName,
+      text: `${fromName} xác nhận hoàn tất hạng mục${empLocal && empLocal.name ? " — " + empLocal.name : ""}`,
+      meta: { asgnId: a.id, scope: "item" },
+    });
     return { ...a, status: "done", prog: 100, completedAt: a.completedAt || today };
   });
-  const newProj = projs.map((p) =>
-    p && String(p.id) === projId
-      ? { ...p, status: "done", completedAt: p.completedAt || today }
-      : p
+
+  const projItems = newAsgn.filter(
+    (a) =>
+      a &&
+      String(a.projId || "") === projId &&
+      (a.status === "active" || a.status === "paused" || a.status === "done")
   );
-  const roleLbl = isDirector ? "Giám đốc" : "Trưởng nhóm";
-  const projLogEntry = {
-    id: `proj_done_${projId}_${Date.now().toString(36)}`,
-    projId,
-    at: new Date().toISOString(),
-    type: "proj_done",
-    empId: isDirector ? "" : empId,
-    empName: fromName,
-    by: fromName,
-    text: `${roleLbl} ${fromName} xác nhận hoàn tất dự án «${proj.name || ""}» (${closed} việc đóng)`,
-    meta: { closed, byRole: isDirector ? "director" : "to_truong" },
-  };
-  const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
+  const openLeft = projItems.filter(
+    (a) => a.status === "active" || a.status === "paused"
+  ).length;
+  const projectClosed = !!(projItems.length && !openLeft);
+  let newProj = projs;
+  if (projectClosed) {
+    newProj = projs.map((p) =>
+      p && String(p.id) === projId
+        ? { ...p, status: "done", completedAt: p.completedAt || today }
+        : p
+    );
+    projLog.push({
+      id: `proj_done_${projId}_${Date.now().toString(36)}`,
+      projId,
+      at: new Date().toISOString(),
+      type: "proj_done",
+      empId: "",
+      empName: fromName,
+      by: fromName,
+      text: `Dự án «${proj.name || ""}» hoàn thành — đã xong tất cả ${projItems.length} hạng mục`,
+      meta: { total: projItems.length, marked, byRole: "director" },
+    });
+  }
+
   const patch = (ws.patch || 0) + 1;
   await wsRef.set(
-    { proj: newProj, asgn: newAsgn, projLog, patch, updatedAt: new Date() },
+    {
+      proj: newProj,
+      asgn: newAsgn,
+      projLog: projLog.slice(-500),
+      patch,
+      updatedAt: new Date(),
+    },
     { merge: true }
   );
-  return { ok: true, orgId, closed };
+  return {
+    ok: true,
+    orgId,
+    marked,
+    closed: marked,
+    projectClosed,
+    openLeft,
+    total: projItems.length,
+  };
 });
 
 function vnMinsOfDay(d) {

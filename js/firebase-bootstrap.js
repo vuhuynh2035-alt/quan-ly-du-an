@@ -1315,7 +1315,7 @@ async function callCompleteMyAssignment(asgnId, forOrg) {
   }
 }
 
-async function callCompleteProject(projId, forOrg) {
+async function callCompleteProject(projId, forOrg, asgnIds) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
@@ -1324,10 +1324,11 @@ async function callCompleteProject(projId, forOrg) {
     var res = await fn({
       projId: projId,
       orgId: normalizeOrgId(forOrg || orgId),
+      asgnIds: Array.isArray(asgnIds) ? asgnIds : [],
     });
     return res.data || {};
   } catch (err) {
-    throw new Error(callableUserMsg(err, "Không hoàn tất được dự án."));
+    throw new Error(callableUserMsg(err, "Không hoàn tất được hạng mục dự án."));
   }
 }
 

@@ -110,7 +110,7 @@
         c("← Quay lại", "Về danh sách dự án hoặc trang trước."),
         c("Giao việc", "Mở màn hình chọn người tham gia dự án và lưu phân công."),
         c("Sửa", "Điều hành / Giám đốc: sửa thông tin dự án."),
-        c("Hoàn tất", "Giám đốc (hoặc trưởng nhóm): xác nhận đóng cả dự án — mọi thành viên còn việc được chuyển sang đã hoàn tất."),
+        c("Hoàn thành", "Giám đốc: mở hộp thoại tick hạng mục đã xong. Dự án chỉ vào mục Hoàn thành khi tất cả hạng mục được hoàn tất."),
         c("Đang làm / Hoàn thành", "Tab lọc: dự án đang làm riêng; dự án đã hoàn tất vào mục Hoàn thành (chỉ xem, đã khoá)."),
         c("Thanh tiến độ", "Tiến độ tổng hợp từ các công việc của dự án."),
         c("Đội dự án", "Danh sách người đã vào đội; badge chức vụ cạnh tên — chỉ xem trên trang này. Đổi chức vụ trong «Giao việc»."),
@@ -125,11 +125,11 @@
           "Bấm «Lưu giao việc». Nếu trùng lịch, chọn Dời việc mới hoặc Tạm dừng việc đang làm rồi xác nhận.",
           "Người được giao sẽ thấy việc ở tab Công việc và nhận nhắc / push (nếu đã bật).",
         ]),
-        p("Hoàn tất dự án", [
-          "Chỉ Giám đốc hoặc Trưởng nhóm được xác nhận hoàn tất cả dự án.",
-          "Vào Chi tiết dự án → bấm «Hoàn tất» (trưởng nhóm cũng thấy nút trong Công việc của mình).",
-          "Xác nhận: mọi việc còn mở của thành viên sẽ đóng; họ sẵn sàng nhận dự án khác.",
-          "Nhân viên bấm «Hoàn tất phần việc» chỉ kết thúc phần của họ — không đóng cả dự án.",
+        p("Hoàn thành theo hạng mục", [
+          "Chỉ Giám đốc tick hạng mục hoàn thành trong Chi tiết dự án → «Hoàn thành».",
+          "Ví dụ: 3 hạng mục mà chỉ tick 2 → dự án vẫn ở Đang làm.",
+          "Khi tất cả hạng mục đã xong → dự án chuyển sang mục Hoàn thành và bị khoá.",
+          "Nhân viên bấm «Hoàn tất phần việc» chỉ kết thúc phần của họ; nếu đó là hạng mục cuối thì dự án cũng hoàn thành.",
         ]),
       ]
     ),
