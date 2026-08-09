@@ -7206,6 +7206,7 @@ window.A={
     if(!dirGuard()) return;
     var a = asgnById(id);
     if(!a) return;
+    if(!projLockedGuard(pById(a.projId)))return;
     var before=JSON.parse(JSON.stringify(a));
     var wc = document.getElementById("eawc").value;
     var sd = document.getElementById("easd").value;
