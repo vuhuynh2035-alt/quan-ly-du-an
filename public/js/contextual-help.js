@@ -96,10 +96,11 @@
       [
         p("Tạo dự án mới", [
           "Bấm «+ Thêm dự án».",
-          "Điền tên, chọn tổ chuyên môn, loại (Dự án mới / Sửa chữa), ưu tiên.",
-          "Gắn khách hàng (nên có sẵn toạ độ để bản đồ / gợi ý khoảng cách chính xác).",
-          "Nhập ngày bắt đầu và số ngày hoàn thành — hệ thống tính ngày kết thúc.",
-          "Lưu dự án, rồi vào Chi tiết → «Giao việc» để bố trí đội thi công.",
+          "Điền tên, khách hàng, ngày bắt đầu và số ngày hoàn thành.",
+          "Thêm các hạng mục công việc; chọn Song song hoặc Nối tiếp.",
+          "Trong mỗi hạng mục: tick nhân viên và (tuỳ chọn) nhập % công việc của họ.",
+          "Phần % chưa nhập được chia đều cho các hạng mục còn lại (tổng 100%/người).",
+          "Lưu dự án — nhân viên thấy từng hạng mục trong Công việc của mình.",
         ]),
       ]
     ),
@@ -125,11 +126,11 @@
           "Bấm «Lưu giao việc». Nếu trùng lịch, chọn Dời việc mới hoặc Tạm dừng việc đang làm rồi xác nhận.",
           "Người được giao sẽ thấy việc ở tab Công việc và nhận nhắc / push (nếu đã bật).",
         ]),
-        p("Hoàn tất dự án", [
-          "Chỉ Giám đốc hoặc Trưởng nhóm được xác nhận hoàn tất cả dự án.",
-          "Vào Chi tiết dự án → bấm «Hoàn tất» (trưởng nhóm cũng thấy nút trong Công việc của mình).",
-          "Xác nhận: mọi việc còn mở của thành viên sẽ đóng; họ sẵn sàng nhận dự án khác.",
-          "Nhân viên bấm «Hoàn tất phần việc» chỉ kết thúc phần của họ — không đóng cả dự án.",
+        p("Hạng mục & hoàn tất", [
+          "Chi tiết dự án hiện danh sách hạng mục (song song / nối tiếp) và % từng người.",
+          "Nối tiếp: hạng mục sau chỉ mở khi hạng mục trước đã xong.",
+          "Nhân viên hoàn tất từng hạng mục; chỉ khi hết hạng mục có % > 0 của họ thì họ rảnh nhận việc khác.",
+          "Giám đốc / Trưởng nhóm bấm «Hoàn tất» để đóng cả dự án vào mục Hoàn thành.",
         ]),
       ]
     ),
