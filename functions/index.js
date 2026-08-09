@@ -1644,9 +1644,19 @@ exports.completeMyAssignment = onCall(async (request) => {
   const today = new Date().toLocaleDateString("en-CA", {
     timeZone: "Asia/Ho_Chi_Minh",
   });
+  const empForAsgn = (ws.emp || []).find((e) => e && String(e.id) === empId);
+  const isChief =
+    asgn.taskKind === "chief" ||
+    !!(empForAsgn && empForAsgn.group === "Chỉ huy trưởng");
   const newAsgn = asgnList.map((a) =>
     a && String(a.id) === asgnId
-      ? { ...a, status: "done", prog: 100, completedAt: a.completedAt || today }
+      ? {
+          ...a,
+          status: "done",
+          prog: 100,
+          completedAt: a.completedAt || today,
+          taskKind: isChief ? "chief" : a.taskKind,
+        }
       : a
   );
   const projLogEntry = {
@@ -1657,8 +1667,14 @@ exports.completeMyAssignment = onCall(async (request) => {
     empId,
     empName: fromName,
     by: fromName,
-    text: `${fromName} hoàn tất phần việc trong dự án`,
-    meta: { asgnId, scope: "self" },
+    text: isChief
+      ? `${fromName} hoàn tất việc kiểm tra (không ảnh hưởng tiến độ dự án)`
+      : `${fromName} hoàn tất phần việc trong dự án`,
+    meta: {
+      asgnId,
+      scope: isChief ? "chief_inspect" : "self",
+      taskKind: isChief ? "chief" : "",
+    },
   };
   const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
   const patch = (ws.patch || 0) + 1;
@@ -1747,10 +1763,22 @@ exports.completeProject = onCall(async (request) => {
     timeZone: "Asia/Ho_Chi_Minh",
   });
   const asgnList = Array.isArray(ws.asgn) ? ws.asgn : [];
+  const empById = {};
+  (Array.isArray(ws.emp) ? ws.emp : []).forEach((e) => {
+    if (e && e.id) empById[String(e.id)] = e;
+  });
+  const isChiefAsgnCloud = (a) => {
+    if (!a) return false;
+    if (a.taskKind === "chief") return true;
+    const e = empById[String(a.empId || "")];
+    return !!(e && e.group === "Chỉ huy trưởng");
+  };
   let closed = 0;
   const newAsgn = asgnList.map((a) => {
     if (!a || String(a.projId || "") !== projId) return a;
     if (a.status !== "active" && a.status !== "paused" && a.status !== "queued") return a;
+    // Việc kiểm tra Chỉ huy trưởng độc lập — không đóng theo dự án
+    if (isChiefAsgnCloud(a)) return a;
     closed += 1;
     return { ...a, status: "done", prog: 100, completedAt: a.completedAt || today };
   });
