@@ -1684,6 +1684,48 @@ function syncProjStatusFromPlan(p){
   else p.status="in_progress";
   return p;
 }
+/** Khi gia hạn / đổi kế hoạch dự án: kéo lịch việc active theo hạn mới. */
+function syncAsgnsToProjPlan(proj, before){
+  if(!proj||!proj.id||!before)return 0;
+  var oldStart=before.startDate||"";
+  var oldEnd=before.deadline||"";
+  var newStart=proj.startDate||"";
+  var newEnd=proj.deadline||"";
+  if(oldStart===newStart&&oldEnd===newEnd)return 0;
+  var n=0;
+  S.asgn=S.asgn.map(function(a){
+    if(a.projId!==proj.id)return a;
+    if(a.status!=="active"&&a.status!=="paused")return a;
+    var next=Object.assign({},a);
+    var touched=false;
+    if(newStart&&(!next.startDate||next.startDate===oldStart)){
+      next.startDate=newStart;
+      touched=true;
+    }
+    if(newEnd){
+      var end=next.endDate||"";
+      if(!end||end===oldEnd||(oldEnd&&end<=oldEnd)||(end&&end<newEnd&&td()>end)){
+        next.endDate=newEnd;
+        touched=true;
+      }else if(oldEnd&&newEnd<oldEnd&&end>newEnd){
+        next.endDate=newEnd;
+        touched=true;
+      }
+    }
+    if(next.startDate&&next.endDate&&next.endDate<next.startDate){
+      next.endDate=next.startDate;
+      touched=true;
+    }
+    if(touched){n++;return next;}
+    return a;
+  });
+  if(n){
+    logProjEvent(proj.id,"plan_sync",{
+      text:"Đồng bộ lịch "+n+" công việc theo kế hoạch mới ("+dFmtG(newStart)+" → "+dFmtG(newEnd)+")"
+    });
+  }
+  return n;
+}
 function lateProjects(){
   return S.proj.filter(function(p){return projPlanStatus(p).key==="late"});
 }
@@ -2477,7 +2519,14 @@ function custProjWorkLbl(p){
 }
 function ac(eid){return allAsgnForEmp(eid).filter(function(a){return a.status==="active"}).length}
 function empActs(eid){return allAsgnForEmp(eid).filter(function(x){return x.status==="active"||x.status==="paused"})}
-function asgnEndDate(a){var pr=pById(a.projId);return a.endDate||(pr&&pr.deadline)||a.startDate||""}
+function asgnEndDate(a){
+  var pr=pById(a.projId);
+  var own=a.endDate||"";
+  var projDl=pr&&pr.deadline||"";
+  // Hạn dự án mới hơn (gia hạn) luôn thắng hạn việc cũ — thông báo trễ theo lịch mới
+  if(own&&projDl)return own>projDl?own:projDl;
+  return own||projDl||a.startDate||"";
+}
 function asgnDays(a){var s=dParse(a.startDate),e=dParse(asgnEndDate(a));if(!s||!e)return "—";return Math.max(1,Math.round((e-s)/86400000)+1)+" ngày"}
 function asgnTimePct(a){var s=dParse(a.startDate),e=dParse(asgnEndDate(a)),t=dParse(td());if(!s||!e)return 0;var span=e.getTime()-s.getTime();if(span<=0)return 100;if(!t||t<s)return 0;if(t>e)return 100;return Math.round((t.getTime()-s.getTime())/span*100)}
 function asgnSchedStatus(a){var prog=Math.max(0,Math.min(100,a.prog||0)),timePct=asgnTimePct(a),end=dParse(asgnEndDate(a)),today=dParse(td());if(prog>=100)return "ok";if(end&&today&&today>end)return "late";var gap=prog-timePct;if(gap>=0)return "ok";if(gap>=-12)return "risk";return "late"}
@@ -6982,10 +7031,13 @@ window.A={
       pushUndo("Hoàn tác tạo dự án «"+f.name+"»","create_revert",{type:"proj",id:f.id});
       auditLog("action","create_proj","Tạo dự án «"+f.name+"»"+(assignIds.length?" · giao "+assignIds.length+" người":""),{id:f.id,assign:assignIds.length});
     }else{
+      var synced=0;
+      if(before)synced=syncAsgnsToProjPlan(f, before);
+      syncProjStatusFromPlan(f);
       S.proj=S.proj.map(function(x){return x.id===f.id?f:x});
       logProjEvent(f.id,"proj_edit",{text:"Cập nhật thông tin dự án «"+f.name+"»"});
       if(before)pushUndo("Hoàn tác sửa dự án «"+f.name+"»","edit_revert",{type:"proj",before:before});
-      auditLog("action","edit_proj","Sửa dự án «"+f.name+"»",{id:f.id});
+      auditLog("action","edit_proj","Sửa dự án «"+f.name+"»"+(synced?" · đồng bộ "+synced+" việc":""),{id:f.id,synced:synced});
     }
     sv();S.modal=null;S.form=null;render();
   },
