@@ -13,35 +13,50 @@ where git >nul 2>&1 || (echo Thieu git. & pause & exit /b 1)
 where node >nul 2>&1 || (echo Thieu Node.js. & pause & exit /b 1)
 where npm >nul 2>&1 || (echo Thieu npm. & pause & exit /b 1)
 
-echo [1/4] git pull origin main ...
+echo [1/5] git fetch + checkout main + pull ...
+git fetch origin main
+git checkout main
 git pull origin main
 if errorlevel 1 (
-  echo.
-  echo git pull loi — van tiep tuc deploy code local.
-  echo Neu PR #13 chua merge: merge tren GitHub truoc, roi chay lai file nay.
-  echo.
+  echo git pull loi.
+  pause
+  exit /b 1
 )
 
 echo.
-echo [2/4] firebase login ^(neu da login se bo qua^) ...
-call npx -y firebase-tools@latest login --no-localhost
-call npx -y firebase-tools@latest use quan-ly-du-an-7d651
-
-echo.
-echo [3/4] Deploy HOSTING ...
-call npm run deploy:hosting
+echo [2/5] Kiem tra code co muc Hoan thanh / khoa du an ...
+findstr /C:"projView" /C:"isProjLocked" index.html >nul
 if errorlevel 1 (
   echo.
+  echo LOI: index.html chua co code Hoan thanh / khoa du an.
+  echo Hay merge PR va git pull lai.
+  pause
+  exit /b 1
+)
+echo OK — tim thay projView + isProjLocked.
+
+echo.
+echo [3/5] firebase use project ...
+call npx -y firebase-tools@latest use quan-ly-du-an-7d651
+if errorlevel 1 (
+  echo Can firebase login...
+  call npx -y firebase-tools@latest login
+  call npx -y firebase-tools@latest use quan-ly-du-an-7d651
+)
+
+echo.
+echo [4/5] Deploy HOSTING ...
+call npm run deploy:hosting
+if errorlevel 1 (
   echo HOSTING THAT BAI.
   pause
   exit /b 1
 )
 
 echo.
-echo [4/4] Deploy FUNCTIONS ...
+echo [5/5] Deploy FUNCTIONS ...
 call npm run deploy:functions
 if errorlevel 1 (
-  echo.
   echo FUNCTIONS THAT BAI — hosting da len, can chay lai functions.
   pause
   exit /b 1
@@ -49,8 +64,10 @@ if errorlevel 1 (
 
 echo.
 echo ========================================
-echo  XONG — hosting + functions
+echo  XONG
 echo  Site: https://quan-ly-du-an-7d651.web.app
-echo  Mo app roi Ctrl+F5 ^(version v1.075+^)
+echo  Mo app → Ctrl+F5 → tab Du an
+echo  Phai thay 2 nut:  Dang lam  |  Hoan thanh
+echo  Version can ^>= v1.077
 echo ========================================
 pause
