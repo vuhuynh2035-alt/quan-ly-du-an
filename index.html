@@ -431,6 +431,14 @@ html[data-theme="light"] .tab.active{color:#fff}
 .hist-sub .btn.active{border-color:rgba(74,174,255,.55);background:rgba(56,189,248,.12);color:#7dd3fc}
 .hist-meta{font-family:monospace;font-size:11px;color:var(--c-muted);margin-top:3px}
 .hist-empty{font-size:13px;color:var(--c-muted3);padding:12px 0}
+.proj-view-tabs{display:flex;gap:0;margin-bottom:16px;padding:4px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);width:fit-content;max-width:100%}
+.proj-view-tab{appearance:none;border:0;background:transparent;color:var(--c-muted2);font:inherit;font-size:14px;font-weight:600;padding:10px 18px;border-radius:9px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;transition:background .15s,color .15s}
+.proj-view-tab:hover{color:var(--c-text);background:rgba(255,255,255,.04)}
+.proj-view-tab.on{color:#fff;background:linear-gradient(135deg,rgba(74,174,255,.45),rgba(26,111,212,.55));box-shadow:0 4px 14px rgba(26,111,212,.25)}
+.proj-view-tab .proj-view-n{font-family:monospace;font-size:12px;min-width:22px;padding:2px 7px;border-radius:999px;background:rgba(0,0,0,.2);text-align:center}
+.proj-view-tab.on .proj-view-n{background:rgba(255,255,255,.18)}
+html[data-theme="light"] .proj-view-tabs{background:rgba(15,40,80,.04);border-color:rgba(15,40,80,.1)}
+html[data-theme="light"] .proj-view-tab.on{color:#fff}
 
 .field{display:block;margin-bottom:14px}
 .lab{font-size:11px;font-weight:600;color:var(--c-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;display:block}
@@ -882,7 +890,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="75">
+<meta name="app-build" content="78">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -5293,16 +5301,21 @@ function vProj(){
   var view=S.projView==="done"?"done":"active";
   var activeList=S.proj.filter(function(p){return p.status!=="done"}).slice().sort(projListCmp);
   var doneList=S.proj.filter(function(p){return p.status==="done"}).slice().sort(projDoneCmp);
+  var awaitN=activeList.filter(function(p){return projPlanStatus(p).key==="await_close"}).length;
   var list=view==="done"?doneList:activeList;
   var h='<div class="row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px"><h2 style="font-size:20px;font-weight:700">Dự án</h2>'+(canOperate()&&view==="active"?btn("btn-accent","+ Thêm dự án","A.op()"):"")+'</div>';
-  h+='<div class="row hist-sub" style="gap:8px;margin-bottom:14px;flex-wrap:wrap">';
-  h+=btn("btn-ghost btn-sm"+(view==="active"?" active":""),"Đang làm ("+activeList.length+")","A.projView('active')");
-  h+=btn("btn-ghost btn-sm"+(view==="done"?" active":""),"Hoàn thành ("+doneList.length+")","A.projView('done')");
+  h+='<div class="proj-view-tabs" role="tablist" aria-label="Lọc dự án">';
+  h+='<button type="button" class="proj-view-tab'+(view==="active"?" on":"")+'" onclick="A.projView(\'active\')">Đang làm <span class="proj-view-n">'+activeList.length+'</span></button>';
+  h+='<button type="button" class="proj-view-tab'+(view==="done"?" on":"")+'" onclick="A.projView(\'done\')">Hoàn thành <span class="proj-view-n">'+doneList.length+'</span></button>';
   h+='</div>';
-  if(view==="active")h+=lateAlertBannerHTML();
-  else h+='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:14px">Kho lưu trữ dự án đã hoàn tất — chỉ xem tham khảo, không chỉnh sửa.</div>';
+  if(view==="active"){
+    h+=lateAlertBannerHTML();
+    if(awaitN)h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.28);font-size:13px;color:#7dd3fc;line-height:1.45">Có <b>'+awaitN+'</b> dự án đang <b>Chờ xác nhận hoàn tất</b> — mở Chi tiết → bấm <b>Hoàn tất</b> để khoá và chuyển vào mục Hoàn thành.</div>';
+  }else{
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.3);font-size:13px;color:#cbd5e1;line-height:1.45">Kho lưu trữ dự án đã hoàn tất — <b>đã khoá</b> (không sửa / giao việc). Chỉ xem tham khảo.</div>';
+  }
   if(!list.length){
-    h+='<div class="card card-p" style="color:var(--c-muted)">'+(view==="done"?"Chưa có dự án hoàn thành.":"Chưa có dự án đang làm.")+'</div>';
+    h+='<div class="card card-p" style="color:var(--c-muted)">'+(view==="done"?"Chưa có dự án hoàn thành. Khi giám đốc/trưởng nhóm bấm «Hoàn tất», dự án sẽ xuất hiện ở đây.":"Chưa có dự án đang làm.")+'</div>';
     return h;
   }
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">';
