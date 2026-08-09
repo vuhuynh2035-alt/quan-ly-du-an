@@ -444,13 +444,18 @@ html[data-theme="light"] .proj-view-tab.on{color:#fff}
 .late-alert-item{padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.18);border:1px solid rgba(239,68,68,.22);margin-bottom:8px;cursor:pointer}
 .late-alert-item:last-child{margin-bottom:0}
 .late-alert-item:hover{border-color:rgba(248,113,113,.45);background:rgba(239,68,68,.12)}
-.late-alert-name{font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:6px}
-.late-alert-deadline{font-size:13px;font-family:monospace;color:#fca5a5;margin-bottom:6px}
-.late-alert-row{font-size:13px;color:var(--c-muted2);line-height:1.45;margin-bottom:4px}
-.late-alert-row b{color:#fecaca;font-weight:600}
-.late-alert-emps{font-size:13px;color:var(--c-text);line-height:1.45;white-space:normal;word-break:break-word}
+.late-alert-co{font-size:13px;font-weight:700;color:#fecaca;margin-bottom:4px}
+.late-alert-name{font-size:15px;font-weight:700;color:var(--c-text);margin-bottom:4px}
+.late-alert-deadline{font-size:12px;font-family:monospace;color:#fca5a5;margin-bottom:10px}
+.late-alert-wi{padding:8px 10px;border-radius:8px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.18);margin-bottom:6px}
+.late-alert-wi:last-child{margin-bottom:0}
+.late-alert-wi-title{font-size:13px;color:var(--c-text);margin-bottom:4px;line-height:1.4}
+.late-alert-wi-title b{color:#fecaca;font-weight:600}
+.late-alert-emps{font-size:13px;color:var(--c-muted2);line-height:1.45;white-space:normal;word-break:break-word}
+.late-alert-emps b{color:#fecaca;font-weight:600}
 html[data-theme="light"] .late-alert-item{background:rgba(255,255,255,.55)}
-html[data-theme="light"] .late-alert-row b{color:#b91c1c}
+html[data-theme="light"] .late-alert-co,.late-alert-wi-title b,.late-alert-emps b{color:#b91c1c}
+html[data-theme="light"] .late-alert-wi{background:rgba(254,226,226,.55);border-color:rgba(248,113,113,.35)}
 
 .field{display:block;margin-bottom:14px}
 .lab{font-size:11px;font-weight:600;color:var(--c-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;display:block}
@@ -922,7 +927,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="82">
+<meta name="app-build" content="83">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -2037,66 +2042,121 @@ function lateProjects(){
 function lateAssignments(){
   return S.asgn.filter(function(a){return a.status==="active"||a.status==="paused"}).filter(function(a){return asgnPlanStatus(a).key==="late"});
 }
-/** Gom trễ theo dự án: tên · hạn · hạng mục trễ · nhân sự (1 hàng). */
+/** Tên hạng mục hiển thị — không dùng id phân công (tránh lặp tên theo từng người). */
+function lateWorkItemLabel(p,a){
+  if(a&&a.workItemId){
+    var wi=(normWorkItems(p)||[]).find(function(w){return w.id===a.workItemId});
+    if(wi&&wi.title)return String(wi.title).trim();
+  }
+  var wc=a&&String(a.workContent||"").trim();
+  if(wc&&wc!==String(p.name||"").trim())return wc;
+  var items=normWorkItems(p);
+  if(items.length===1&&items[0].title)return String(items[0].title).trim();
+  if(items.length>1&&a&&a.workItemId)return "Hạng mục";
+  return String((p&&p.name)||"Hạng mục").trim();
+}
+/**
+ * Gom trễ: dự án → từng hạng mục (1 lần) → nhân sự của hạng mục đó.
+ * Trước đây lặp tên hạng mục vì mỗi phân công NV bị add 1 dòng (key = asgn.id).
+ */
 function lateAlertGrouped(){
   var map={},order=[];
   function ensure(pid){
     var p=pById(pid);
     if(!p||p.status==="done")return null;
     if(!map[pid]){
-      map[pid]={p:p,itemTitles:[],itemSeen:{},empIds:[],empSeen:{}};
+      map[pid]={p:p,company:projCompanyName(p)||p.customer||"",items:{},itemOrder:[]};
       order.push(pid);
     }
     return map[pid];
   }
-  function addItem(g,title,key){
-    if(!g||!title)return;
-    var norm=String(title).trim().toLowerCase();
-    var k=norm||key||title;
-    if(g.itemSeen[k])return;
-    g.itemSeen[k]=1;
-    g.itemTitles.push(title);
+  function itemKey(p,a,wi){
+    if(wi&&wi.id)return "wi:"+wi.id;
+    if(a&&a.workItemId)return "wi:"+a.workItemId;
+    // Không có hạng mục riêng: 1 nhóm duy nhất / dự án (không tách theo từng NV)
+    return "proj:"+p.id;
   }
-  function addEmp(g,eid){
-    if(!g||!eid||g.empSeen[eid])return;
-    g.empSeen[eid]=1;
-    g.empIds.push(eid);
+  function ensureItem(g,key,title){
+    if(!g.items[key]){
+      g.items[key]={title:title||"Hạng mục",empIds:[],empSeen:{}};
+      g.itemOrder.push(key);
+    }else if(title&&(!g.items[key].title||g.items[key].title==="Hạng mục")){
+      g.items[key].title=title;
+    }
+    return g.items[key];
   }
+  function addEmpToItem(it,eid){
+    if(!it||!eid||it.empSeen[eid])return;
+    it.empSeen[eid]=1;
+    it.empIds.push(eid);
+  }
+  // Dự án quá hạn kế hoạch → mọi hạng mục chưa xong + NV đang tham gia
   lateProjects().forEach(function(p){
     var g=ensure(p.id);if(!g)return;
     var items=normWorkItems(p);
     if(items.length){
       items.forEach(function(w){
         if(workItemIsDone(p,w.id))return;
-        addItem(g,w.title||("Hạng mục "+((w.order||0)+1)),w.id);
+        var it=ensureItem(g,itemKey(p,null,w),w.title||("Hạng mục "+((w.order||0)+1)));
+        (S.asgn||[]).forEach(function(a){
+          if(a.projId!==p.id||a.workItemId!==w.id)return;
+          if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return;
+          if(a.loadPct!=null&&!(Number(a.loadPct)>0))return;
+          addEmpToItem(it,a.empId);
+        });
       });
+    }else{
+      var it0=ensureItem(g,itemKey(p,null,null),p.name||"Hạng mục");
+      (S.asgn||[]).forEach(function(a){
+        if(a.projId!==p.id)return;
+        if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return;
+        addEmpToItem(it0,a.empId);
+      });
+      if(!it0.empIds.length)projPartIds(p).forEach(function(eid){addEmpToItem(it0,eid)});
     }
-    (S.asgn||[]).forEach(function(a){
-      if(a.projId!==p.id)return;
-      if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return;
-      addEmp(g,a.empId);
-      if(!items.length){
-        var info=asgnInfo(a);
-        addItem(g,info.title||p.name,a.workItemId||a.id);
-      }
-    });
-    projPartIds(p).forEach(function(eid){addEmp(g,eid)});
   });
+  // Việc trễ hạn riêng → gắn đúng hạng mục của việc đó
   lateAssignments().forEach(function(a){
     var g=ensure(a.projId);if(!g)return;
     var p=g.p;
-    var wiTitle="";
-    if(a.workItemId){
-      var wi=(normWorkItems(p)||[]).find(function(w){return w.id===a.workItemId});
-      if(wi)wiTitle=wi.title||"";
-    }
-    addItem(g,wiTitle||asgnInfo(a).title||p.name,a.workItemId||a.id);
-    addEmp(g,a.empId);
+    var title=lateWorkItemLabel(p,a);
+    var wi=a.workItemId?(normWorkItems(p)||[]).find(function(w){return w.id===a.workItemId}):null;
+    var it=ensureItem(g,itemKey(p,a,wi),title);
+    addEmpToItem(it,a.empId);
   });
-  return order.map(function(pid){return map[pid]}).filter(Boolean);
+  return order.map(function(pid){
+    var g=map[pid];
+    if(!g)return null;
+    g.lateItems=g.itemOrder.map(function(k){return g.items[k]}).filter(function(it){return it&&it.empIds.length});
+    // Hạng mục trễ nhưng chưa gán NV vẫn hiện
+    if(!g.lateItems.length){
+      g.lateItems=g.itemOrder.map(function(k){return g.items[k]}).filter(Boolean);
+    }
+    return g;
+  }).filter(function(g){return g&&g.lateItems&&g.lateItems.length});
+}
+/** Sửa dữ liệu cũ: việc còn hạn sớm hơn hạn dự án (sau gia hạn) → kéo theo hạn dự án. */
+function repairStaleAsgnDeadlines(){
+  var n=0;
+  S.asgn=(S.asgn||[]).map(function(a){
+    if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return a;
+    var pr=pById(a.projId);
+    if(!pr||pr.status==="done"||!pr.deadline)return a;
+    var end=a.endDate||"";
+    if(!end||end<pr.deadline){
+      n++;
+      return Object.assign({},a,{endDate:pr.deadline});
+    }
+    return a;
+  });
+  return n;
 }
 function lateAlertBannerHTML(){
   if(!hasFullUI())return"";
+  // Tự chữa hạn việc cũ sau khi đã gia hạn dự án — hết báo trễ sai
+  if(repairStaleAsgnDeadlines()>0){
+    try{sv();}catch(e){}
+  }
   var groups=lateAlertGrouped();
   if(!groups.length)return"";
   var h='<div class="late-alert card card-p">';
@@ -2104,16 +2164,18 @@ function lateAlertBannerHTML(){
   groups.slice(0,12).forEach(function(g){
     var p=g.p;
     var deadline=p.deadline||projTL(p).end||"";
-    var empNames=g.empIds.map(function(eid){var e=eById(eid);return e?e.name:null}).filter(Boolean);
+    var company=g.company||projCompanyName(p)||"—";
     h+='<div class="late-alert-item" onclick="A.projDet(\''+p.id+'\')">';
+    h+='<div class="late-alert-co">'+esc(company)+'</div>';
     h+='<div class="late-alert-name">'+esc(p.name||"Dự án")+'</div>';
-    h+='<div class="late-alert-deadline">Đến hạn dự án: '+esc(dFmtG(deadline))+(deadline&&td()>deadline?" · đã quá hạn":"")+'</div>';
-    if(g.itemTitles.length){
-      h+='<div class="late-alert-row"><b>Hạng mục trễ:</b> '+esc(g.itemTitles.join(" · "))+'</div>';
-    }else{
-      h+='<div class="late-alert-row"><b>Hạng mục trễ:</b> (chưa gắn hạng mục — dự án quá hạn)</div>';
-    }
-    h+='<div class="late-alert-row"><b>Nhân sự:</b> <span class="late-alert-emps">'+(empNames.length?esc(empNames.join(" · ")):"—")+'</span></div>';
+    h+='<div class="late-alert-deadline">Đến hạn: '+esc(dFmtG(deadline))+(deadline&&td()>deadline?" · đã quá hạn":"")+'</div>';
+    (g.lateItems||[]).forEach(function(it){
+      var names=it.empIds.map(function(eid){var e=eById(eid);return e?e.name:null}).filter(Boolean);
+      h+='<div class="late-alert-wi">';
+      h+='<div class="late-alert-wi-title"><b>Hạng mục:</b> '+esc(it.title||"Hạng mục")+'</div>';
+      h+='<div class="late-alert-emps"><b>Nhân sự:</b> '+(names.length?esc(names.join(" · ")):"—")+'</div>';
+      h+='</div>';
+    });
     h+='</div>';
   });
   if(groups.length>12)h+='<div style="font-size:12px;color:var(--c-muted4);margin-top:8px">… và '+(groups.length-12)+' dự án khác</div>';
@@ -7537,6 +7599,11 @@ window.A={
     }else{
       // Cập nhật cấu trúc hạng mục; tái tạo phân công đang mở theo % mới (giữ asgn đã done).
       if(!confirm("Lưu sẽ cập nhật hạng mục và giao việc theo % mới.\nCác hạng mục đang làm (chưa xong) sẽ được tạo lại theo cấu hình — tiến độ đang mở có thể bị đặt lại.\nTiếp tục?"))return;
+      // Gia hạn trước: kéo hạn việc cũ theo hạn dự án mới (tránh banner trễ theo lịch cũ)
+      if(before){
+        S.proj=S.proj.map(function(x){return x.id===f.id?Object.assign({},x,{startDate:f.startDate,deadline:f.deadline,durationDays:f.durationDays}):x});
+        syncAsgnsToProjPlan(f, before);
+      }
       var keepDone=(S.asgn||[]).filter(function(a){return a.projId===f.id&&a.status==="done"});
       S.asgn=(S.asgn||[]).filter(function(a){return a.projId!==f.id||a.status==="done"});
       S.proj=S.proj.map(function(x){return x.id===f.id?f:x});
