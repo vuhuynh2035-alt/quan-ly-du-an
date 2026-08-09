@@ -922,7 +922,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="81">
+<meta name="app-build" content="82">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -1988,6 +1988,49 @@ function syncProjStatusFromPlan(p){
   else p.status="in_progress";
   return p;
 }
+/** Khi gia hạn / đổi kế hoạch dự án: kéo lịch việc đang mở theo hạn mới. */
+function syncAsgnsToProjPlan(proj, before){
+  if(!proj||!proj.id||!before)return 0;
+  var oldStart=before.startDate||"";
+  var oldEnd=before.deadline||"";
+  var newStart=proj.startDate||"";
+  var newEnd=proj.deadline||"";
+  if(oldStart===newStart&&oldEnd===newEnd)return 0;
+  var n=0;
+  S.asgn=S.asgn.map(function(a){
+    if(a.projId!==proj.id)return a;
+    if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return a;
+    var next=Object.assign({},a);
+    var touched=false;
+    if(newStart&&(!next.startDate||next.startDate===oldStart)){
+      next.startDate=newStart;
+      touched=true;
+    }
+    if(newEnd){
+      var end=next.endDate||"";
+      // Gia hạn: cập nhật nếu chưa có hạn, trùng hạn cũ, hạn cũ đã trễ, hoặc hạn việc ≤ hạn dự án cũ
+      if(!end||end===oldEnd||(oldEnd&&end<=oldEnd)||(end&&td()>end)||(end&&newEnd>end)){
+        next.endDate=newEnd;
+        touched=true;
+      }else if(oldEnd&&newEnd<oldEnd&&end>newEnd){
+        next.endDate=newEnd;
+        touched=true;
+      }
+    }
+    if(next.startDate&&next.endDate&&next.endDate<next.startDate){
+      next.endDate=next.startDate;
+      touched=true;
+    }
+    if(touched){n++;return next;}
+    return a;
+  });
+  if(n){
+    logProjEvent(proj.id,"plan_sync",{
+      text:"Đồng bộ lịch "+n+" công việc theo kế hoạch mới ("+dFmtG(newStart)+" → "+dFmtG(newEnd)+")"
+    });
+  }
+  return n;
+}
 function lateProjects(){
   return S.proj.filter(function(p){return p.status!=="done"&&projPlanStatus(p).key==="late"});
 }
@@ -2008,7 +2051,8 @@ function lateAlertGrouped(){
   }
   function addItem(g,title,key){
     if(!g||!title)return;
-    var k=key||title;
+    var norm=String(title).trim().toLowerCase();
+    var k=norm||key||title;
     if(g.itemSeen[k])return;
     g.itemSeen[k]=1;
     g.itemTitles.push(title);
@@ -2857,7 +2901,14 @@ function custProjWorkLbl(p){
   return items.join(" · ");
 }
 function empActs(eid){return allAsgnForEmp(eid).filter(function(x){return x.status==="active"||x.status==="paused"||x.status==="queued"})}
-function asgnEndDate(a){var pr=pById(a.projId);return a.endDate||(pr&&pr.deadline)||a.startDate||""}
+function asgnEndDate(a){
+  var pr=pById(a.projId);
+  var own=a.endDate||"";
+  var projDl=(pr&&pr.deadline)||"";
+  // Hạn dự án mới hơn (sau gia hạn) luôn thắng hạn việc cũ — hết báo trễ theo lịch cũ
+  if(own&&projDl)return own>projDl?own:projDl;
+  return own||projDl||a.startDate||"";
+}
 function asgnDays(a){var s=dParse(a.startDate),e=dParse(asgnEndDate(a));if(!s||!e)return "—";return Math.max(1,Math.round((e-s)/86400000)+1)+" ngày"}
 function asgnTimePct(a){var s=dParse(a.startDate),e=dParse(asgnEndDate(a)),t=dParse(td());if(!s||!e)return 0;var span=e.getTime()-s.getTime();if(span<=0)return 100;if(!t||t<s)return 0;if(t>e)return 100;return Math.round((t.getTime()-s.getTime())/span*100)}
 function asgnSchedStatus(a){var prog=Math.max(0,Math.min(100,a.prog||0)),timePct=asgnTimePct(a),end=dParse(asgnEndDate(a)),today=dParse(td());if(prog>=100)return "ok";if(end&&today&&today>end)return "late";var gap=prog-timePct;if(gap>=0)return "ok";if(gap>=-12)return "risk";return "late"}
