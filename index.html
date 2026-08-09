@@ -2049,7 +2049,7 @@ function projWorkItemsBlockHTML(f){
     var parents=workItemParentIds(w);
     h+='<div class="wi-card" id="wi_card_'+w.id+'">';
     h+='<div class="wi-card-top"><span style="font-family:monospace;color:var(--c-muted4)">Khung '+(idx+1)+'</span>';
-    h+='<input type="text" id="wit_'+w.id+'" value="'+esc(w.title||"")+'" placeholder="Hạng mục '+(idx+1)+'" onchange="A.wiTitle(\''+w.id+'\')">';
+    h+='<input type="text" id="wit_'+w.id+'" value="'+esc(w.title||"")+'" placeholder="Hạng mục '+(idx+1)+'"'+(S._focusWiTitle===w.id?' autofocus':'')+' onchange="A.wiTitle(\''+w.id+'\')" onfocus="if(!this.value)this.select()">';
     if(f.workItems.length>1)h+=btn("btn-ghost btn-sm","Xoá","A.wiRemove('"+w.id+"')");
     h+='</div>';
     if(f.workItems.length>1){
@@ -7934,17 +7934,22 @@ window.A={
     var w=mkWorkItem("",S.form.workItems.length);
     S.form.workItems.push(w);
     S.form.itemStaff[w.id]={};
+    S._focusWiTitle=w.id;
     S.modal=projM(S.form);render();
-    // Cuộn tới khung mới và đưa con trỏ vào ô tên (placeholder mờ, không cần xoá)
-    requestAnimationFrame(function(){
-      var el=document.getElementById("wit_"+w.id);
-      var card=document.getElementById("wi_card_"+w.id);
-      if(card&&card.scrollIntoView)card.scrollIntoView({block:"center",behavior:"smooth"});
+    // Cuộn tới khung mới + focus ô tên (placeholder mờ — gõ ngay, không cần xoá)
+    var focusNew=function(){
+      var id=S._focusWiTitle;if(!id)return;
+      var el=document.getElementById("wit_"+id);
+      var card=document.getElementById("wi_card_"+id);
+      if(card&&card.scrollIntoView)try{card.scrollIntoView({block:"nearest",behavior:"auto"})}catch(e){}
       if(el){
-        el.focus({preventScroll:true});
-        try{el.setSelectionRange(0,0)}catch(e){}
+        try{el.focus({preventScroll:true})}catch(e2){try{el.focus()}catch(e3){}}
+        try{el.setSelectionRange(0,0)}catch(e4){}
       }
-    });
+      S._focusWiTitle="";
+    };
+    requestAnimationFrame(function(){requestAnimationFrame(focusNew)});
+    setTimeout(focusNew,50);
   },
   wiRemove:function(wid){
     if(!S.form)return;
