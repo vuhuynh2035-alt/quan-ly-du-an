@@ -49,7 +49,8 @@ function Show-Menu {
   Write-Host "========================================" -ForegroundColor Cyan
   Write-Host "           DEPLOY APP" -ForegroundColor Cyan
   Write-Host "========================================" -ForegroundColor Cyan
-  Write-Host "  Go SO -> tu dong: doi TK + pull + build + deploy" -ForegroundColor DarkGray
+  Write-Host "  Go SO -> doi TK + sync main (ff-only) + build + deploy" -ForegroundColor DarkGray
+  Write-Host "  Quan ly du an: luon hosting+functions; pull loi = DUNG (khong deploy code cu)" -ForegroundColor DarkGray
   Write-Host ""
 
   if (-not $Apps -or $Apps.Count -eq 0) {

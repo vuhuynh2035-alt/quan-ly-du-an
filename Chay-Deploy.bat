@@ -4,8 +4,9 @@ title Deploy App
 cd /d "%~dp0"
 
 REM ============================================================
-REM  CHAY DEPLOY — double-click file nay (khong can mo PowerShell)
-REM  Hoac double-click shortcut "Deploy App" tren Desktop
+REM  CHAY DEPLOY — double-click (khong can mo PowerShell)
+REM  Quan ly du an: uu tien Deploy-Full-QuanLyDuAn.bat
+REM  Tool nay bat buoc git sync ff-only truoc khi deploy
 REM ============================================================
 
 where powershell >nul 2>&1
