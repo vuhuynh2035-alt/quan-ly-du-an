@@ -24,16 +24,16 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/5] Kiem tra code co muc Hoan thanh / khoa du an ...
-findstr /C:"projView" /C:"isProjLocked" index.html >nul
+echo [2/5] Kiem tra code hoan thanh theo hang muc ...
+findstr /C:"projView" /C:"isProjLocked" /C:"saveProjCompleteItems" /C:"projCompleteItemsM" index.html >nul
 if errorlevel 1 (
   echo.
-  echo LOI: index.html chua co code Hoan thanh / khoa du an.
+  echo LOI: index.html chua co code tick hang muc hoan thanh.
   echo Hay merge PR va git pull lai.
   pause
   exit /b 1
 )
-echo OK — tim thay projView + isProjLocked.
+echo OK — tim thay projView + isProjLocked + saveProjCompleteItems.
 
 echo.
 echo [3/5] firebase use project ...
@@ -68,6 +68,7 @@ echo  XONG
 echo  Site: https://quan-ly-du-an-7d651.web.app
 echo  Mo app → Ctrl+F5 → tab Du an
 echo  Phai thay 2 nut:  Dang lam  |  Hoan thanh
-echo  Version can ^>= v1.077
+echo  Version can ^>= v1.079
+echo  Giam doc: Chi tiet du an -^> Hoan thanh -^> tick hang muc
 echo ========================================
 pause
