@@ -439,6 +439,18 @@ html[data-theme="light"] .tab.active{color:#fff}
 .proj-view-tab.on .proj-view-n{background:rgba(255,255,255,.18)}
 html[data-theme="light"] .proj-view-tabs{background:rgba(15,40,80,.04);border-color:rgba(15,40,80,.1)}
 html[data-theme="light"] .proj-view-tab.on{color:#fff}
+.late-alert{margin-bottom:14px;border:1px solid rgba(239,68,68,.45);background:rgba(239,68,68,.1);border-radius:14px;padding:14px 16px}
+.late-alert-hd{font-size:14px;font-weight:700;color:#f87171;margin-bottom:10px}
+.late-alert-item{padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.18);border:1px solid rgba(239,68,68,.22);margin-bottom:8px;cursor:pointer}
+.late-alert-item:last-child{margin-bottom:0}
+.late-alert-item:hover{border-color:rgba(248,113,113,.45);background:rgba(239,68,68,.12)}
+.late-alert-name{font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:6px}
+.late-alert-deadline{font-size:13px;font-family:monospace;color:#fca5a5;margin-bottom:6px}
+.late-alert-row{font-size:13px;color:var(--c-muted2);line-height:1.45;margin-bottom:4px}
+.late-alert-row b{color:#fecaca;font-weight:600}
+.late-alert-emps{font-size:13px;color:var(--c-text);line-height:1.45;white-space:normal;word-break:break-word}
+html[data-theme="light"] .late-alert-item{background:rgba(255,255,255,.55)}
+html[data-theme="light"] .late-alert-row b{color:#b91c1c}
 
 .field{display:block;margin-bottom:14px}
 .lab{font-size:11px;font-weight:600;color:var(--c-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;display:block}
@@ -910,7 +922,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="80">
+<meta name="app-build" content="81">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -1977,24 +1989,90 @@ function syncProjStatusFromPlan(p){
   return p;
 }
 function lateProjects(){
-  return S.proj.filter(function(p){return projPlanStatus(p).key==="late"});
+  return S.proj.filter(function(p){return p.status!=="done"&&projPlanStatus(p).key==="late"});
 }
 function lateAssignments(){
   return S.asgn.filter(function(a){return a.status==="active"||a.status==="paused"}).filter(function(a){return asgnPlanStatus(a).key==="late"});
 }
+/** Gom trễ theo dự án: tên · hạn · hạng mục trễ · nhân sự (1 hàng). */
+function lateAlertGrouped(){
+  var map={},order=[];
+  function ensure(pid){
+    var p=pById(pid);
+    if(!p||p.status==="done")return null;
+    if(!map[pid]){
+      map[pid]={p:p,itemTitles:[],itemSeen:{},empIds:[],empSeen:{}};
+      order.push(pid);
+    }
+    return map[pid];
+  }
+  function addItem(g,title,key){
+    if(!g||!title)return;
+    var k=key||title;
+    if(g.itemSeen[k])return;
+    g.itemSeen[k]=1;
+    g.itemTitles.push(title);
+  }
+  function addEmp(g,eid){
+    if(!g||!eid||g.empSeen[eid])return;
+    g.empSeen[eid]=1;
+    g.empIds.push(eid);
+  }
+  lateProjects().forEach(function(p){
+    var g=ensure(p.id);if(!g)return;
+    var items=normWorkItems(p);
+    if(items.length){
+      items.forEach(function(w){
+        if(workItemIsDone(p,w.id))return;
+        addItem(g,w.title||("Hạng mục "+((w.order||0)+1)),w.id);
+      });
+    }
+    (S.asgn||[]).forEach(function(a){
+      if(a.projId!==p.id)return;
+      if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return;
+      addEmp(g,a.empId);
+      if(!items.length){
+        var info=asgnInfo(a);
+        addItem(g,info.title||p.name,a.workItemId||a.id);
+      }
+    });
+    projPartIds(p).forEach(function(eid){addEmp(g,eid)});
+  });
+  lateAssignments().forEach(function(a){
+    var g=ensure(a.projId);if(!g)return;
+    var p=g.p;
+    var wiTitle="";
+    if(a.workItemId){
+      var wi=(normWorkItems(p)||[]).find(function(w){return w.id===a.workItemId});
+      if(wi)wiTitle=wi.title||"";
+    }
+    addItem(g,wiTitle||asgnInfo(a).title||p.name,a.workItemId||a.id);
+    addEmp(g,a.empId);
+  });
+  return order.map(function(pid){return map[pid]}).filter(Boolean);
+}
 function lateAlertBannerHTML(){
   if(!hasFullUI())return"";
-  var projs=lateProjects(),asgns=lateAssignments();
-  if(!projs.length&&!asgns.length)return"";
-  var h='<div class="card card-p" style="margin-bottom:14px;border:1px solid rgba(239,68,68,.45);background:rgba(239,68,68,.1)">';
-  h+='<div style="font-size:14px;font-weight:700;color:#f87171;margin-bottom:8px">⚠ Trễ kế hoạch ('+(projs.length+asgns.length)+')</div>';
-  projs.slice(0,8).forEach(function(p){
-    h+='<div style="font-size:13px;margin-bottom:4px;cursor:pointer;color:var(--c-text)" onclick="A.projDet(\''+p.id+'\')">Dự án «'+esc(p.name)+'» — hạn '+dFmtG(p.deadline)+'</div>';
+  var groups=lateAlertGrouped();
+  if(!groups.length)return"";
+  var h='<div class="late-alert card card-p">';
+  h+='<div class="late-alert-hd">⚠ Trễ kế hoạch ('+groups.length+' dự án)</div>';
+  groups.slice(0,12).forEach(function(g){
+    var p=g.p;
+    var deadline=p.deadline||projTL(p).end||"";
+    var empNames=g.empIds.map(function(eid){var e=eById(eid);return e?e.name:null}).filter(Boolean);
+    h+='<div class="late-alert-item" onclick="A.projDet(\''+p.id+'\')">';
+    h+='<div class="late-alert-name">'+esc(p.name||"Dự án")+'</div>';
+    h+='<div class="late-alert-deadline">Đến hạn dự án: '+esc(dFmtG(deadline))+(deadline&&td()>deadline?" · đã quá hạn":"")+'</div>';
+    if(g.itemTitles.length){
+      h+='<div class="late-alert-row"><b>Hạng mục trễ:</b> '+esc(g.itemTitles.join(" · "))+'</div>';
+    }else{
+      h+='<div class="late-alert-row"><b>Hạng mục trễ:</b> (chưa gắn hạng mục — dự án quá hạn)</div>';
+    }
+    h+='<div class="late-alert-row"><b>Nhân sự:</b> <span class="late-alert-emps">'+(empNames.length?esc(empNames.join(" · ")):"—")+'</span></div>';
+    h+='</div>';
   });
-  asgns.slice(0,8).forEach(function(a){
-    var e=eById(a.empId),info=asgnInfo(a);
-    h+='<div style="font-size:13px;margin-bottom:4px;color:var(--c-muted2)">'+esc(e?e.name:"?")+' · «'+esc(info.title)+'» — hạn '+dFmtG(asgnEndDate(a))+'</div>';
-  });
+  if(groups.length>12)h+='<div style="font-size:12px;color:var(--c-muted4);margin-top:8px">… và '+(groups.length-12)+' dự án khác</div>';
   h+='</div>';
   return h;
 }
@@ -5148,7 +5226,7 @@ function vMyWorkDet(asgnId,orgHint){
 function vDash(){
   var act=S.asgn.filter(function(a){return a.status==="active"});
   var open=S.proj.filter(function(p){return p.status!=="done"}).length;
-  var lateN=lateProjects().length+lateAssignments().length;
+  var lateN=lateAlertGrouped().length;
   var h=lateAlertBannerHTML();
   h+='<div class="stat-grid">';
   var stats=[[open,"Dự án","#38bdf8","proj"],[act.length,"Công việc","#fbbf24","prog"]];
