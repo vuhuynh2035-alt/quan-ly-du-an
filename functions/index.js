@@ -1571,6 +1571,213 @@ exports.submitDailyReport = onCall(async (request) => {
   return { ok: true, reportId, prog, orgId };
 });
 
+/** Nhân viên hoàn tất phần việc của mình (không đóng cả dự án). */
+exports.completeMyAssignment = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data();
+  const empId = String(user.empId || "");
+  if (user.role !== "employee" || !empId) {
+    throw new HttpsError(
+      "permission-denied",
+      "Chỉ nhân viên mới được hoàn tất phần việc của mình."
+    );
+  }
+
+  const data = request.data || {};
+  const preferredOrg = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
+  const allowedOrgs = userOrgIds(user);
+  if (!allowedOrgs.includes(preferredOrg)) {
+    throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
+  }
+  const asgnId = String(data.asgnId || "");
+  if (!asgnId) {
+    throw new HttpsError("invalid-argument", "Thiếu công việc.");
+  }
+
+  const searchOrgs = [preferredOrg].concat(
+    allowedOrgs.filter((o) => o !== preferredOrg)
+  );
+  let orgId = preferredOrg;
+  let wsRef = null;
+  let ws = null;
+  let asgnList = [];
+  let asgn = null;
+  for (const oid of searchOrgs) {
+    const ref = db.doc(`workspaces/${oid}/data/main`);
+    const snap = await ref.get();
+    if (!docExists(snap)) continue;
+    const dataWs = snap.data() || {};
+    const list = Array.isArray(dataWs.asgn) ? dataWs.asgn : [];
+    const found = list.find(
+      (a) => a && String(a.id) === asgnId && String(a.empId || "") === empId
+    );
+    if (found) {
+      orgId = oid;
+      wsRef = ref;
+      ws = dataWs;
+      asgnList = list;
+      asgn = found;
+      break;
+    }
+  }
+  if (!asgn || !wsRef) {
+    throw new HttpsError("permission-denied", "Không tìm thấy công việc của bạn.");
+  }
+  if (asgn.status === "done") {
+    return { ok: true, already: true, orgId };
+  }
+  if (asgn.status !== "active" && asgn.status !== "paused") {
+    throw new HttpsError("failed-precondition", "Công việc không còn đang thực hiện.");
+  }
+
+  let fromName = user.displayName || user.username || "";
+  const empLocal = (ws.emp || []).find((e) => e && String(e.id) === empId);
+  if (empLocal && empLocal.name) fromName = empLocal.name;
+
+  const today = new Date().toLocaleDateString("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+  });
+  const newAsgn = asgnList.map((a) =>
+    a && String(a.id) === asgnId
+      ? { ...a, status: "done", prog: 100, completedAt: a.completedAt || today }
+      : a
+  );
+  const projLogEntry = {
+    id: `asgn_done_${asgnId}_${Date.now().toString(36)}`,
+    projId: asgn.projId || "",
+    at: new Date().toISOString(),
+    type: "done",
+    empId,
+    empName: fromName,
+    by: fromName,
+    text: `${fromName} hoàn tất phần việc trong dự án`,
+    meta: { asgnId, scope: "self" },
+  };
+  const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
+  const patch = (ws.patch || 0) + 1;
+  await wsRef.set(
+    { asgn: newAsgn, projLog, patch, updatedAt: new Date() },
+    { merge: true }
+  );
+  return { ok: true, orgId, asgnId };
+});
+
+/** Giám đốc hoặc trưởng nhóm xác nhận hoàn tất cả dự án → đóng mọi việc còn lại. */
+exports.completeProject = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Cần đăng nhập.");
+  }
+  const uid = request.auth.uid;
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (!docExists(userSnap)) {
+    throw new HttpsError("permission-denied", "Tài khoản không hợp lệ.");
+  }
+  const user = userSnap.data();
+  const empId = String(user.empId || "");
+  const isDirector = user.role === "director";
+  if (!isDirector && (!empId || user.role !== "employee")) {
+    throw new HttpsError("permission-denied", "Không có quyền hoàn tất dự án.");
+  }
+
+  const data = request.data || {};
+  const preferredOrg = normalizeOrgId(data.orgId || user.activeOrgId || user.orgId);
+  const allowedOrgs = userOrgIds(user);
+  if (!allowedOrgs.includes(preferredOrg)) {
+    throw new HttpsError("permission-denied", "Bạn không thuộc đơn vị này.");
+  }
+  const projId = String(data.projId || "");
+  if (!projId) {
+    throw new HttpsError("invalid-argument", "Thiếu dự án.");
+  }
+
+  const searchOrgs = [preferredOrg].concat(
+    allowedOrgs.filter((o) => o !== preferredOrg)
+  );
+  let orgId = preferredOrg;
+  let wsRef = null;
+  let ws = null;
+  for (const oid of searchOrgs) {
+    const ref = db.doc(`workspaces/${oid}/data/main`);
+    const snap = await ref.get();
+    if (!docExists(snap)) continue;
+    const dataWs = snap.data() || {};
+    const projs = Array.isArray(dataWs.proj) ? dataWs.proj : [];
+    if (projs.some((p) => p && String(p.id) === projId)) {
+      orgId = oid;
+      wsRef = ref;
+      ws = dataWs;
+      break;
+    }
+  }
+  if (!ws || !wsRef) {
+    throw new HttpsError("not-found", "Không tìm thấy dự án.");
+  }
+
+  const projs = Array.isArray(ws.proj) ? ws.proj : [];
+  const proj = projs.find((p) => p && String(p.id) === projId);
+  if (!proj) {
+    throw new HttpsError("not-found", "Không tìm thấy dự án.");
+  }
+  if (proj.status === "done") {
+    return { ok: true, already: true, orgId };
+  }
+
+  const isLead = empId && String(proj.toTruongId || "") === empId;
+  if (!isDirector && !isLead) {
+    throw new HttpsError(
+      "permission-denied",
+      "Chỉ giám đốc hoặc trưởng nhóm của dự án mới được hoàn tất dự án."
+    );
+  }
+
+  let fromName = user.displayName || user.username || (isDirector ? "Giám đốc" : "");
+  if (!isDirector) {
+    const empLocal = (ws.emp || []).find((e) => e && String(e.id) === empId);
+    if (empLocal && empLocal.name) fromName = empLocal.name;
+  }
+
+  const today = new Date().toLocaleDateString("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+  });
+  const asgnList = Array.isArray(ws.asgn) ? ws.asgn : [];
+  let closed = 0;
+  const newAsgn = asgnList.map((a) => {
+    if (!a || String(a.projId || "") !== projId) return a;
+    if (a.status !== "active" && a.status !== "paused") return a;
+    closed += 1;
+    return { ...a, status: "done", prog: 100, completedAt: a.completedAt || today };
+  });
+  const newProj = projs.map((p) =>
+    p && String(p.id) === projId ? { ...p, status: "done" } : p
+  );
+  const roleLbl = isDirector ? "Giám đốc" : "Trưởng nhóm";
+  const projLogEntry = {
+    id: `proj_done_${projId}_${Date.now().toString(36)}`,
+    projId,
+    at: new Date().toISOString(),
+    type: "proj_done",
+    empId: isDirector ? "" : empId,
+    empName: fromName,
+    by: fromName,
+    text: `${roleLbl} ${fromName} xác nhận hoàn tất dự án «${proj.name || ""}» (${closed} việc đóng)`,
+    meta: { closed, byRole: isDirector ? "director" : "to_truong" },
+  };
+  const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
+  const patch = (ws.patch || 0) + 1;
+  await wsRef.set(
+    { proj: newProj, asgn: newAsgn, projLog, patch, updatedAt: new Date() },
+    { merge: true }
+  );
+  return { ok: true, orgId, closed };
+});
+
 function vnMinsOfDay(d) {
   const m = d.toLocaleTimeString("en-GB", {
     timeZone: "Asia/Ho_Chi_Minh",

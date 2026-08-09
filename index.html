@@ -1646,16 +1646,44 @@ function projDurationDays(p){
   if(p&&p.startDate&&p.deadline)return asgnDaySpan(p.startDate,p.deadline);
   return 7;
 }
-/** Trạng thái hiển thị theo kế hoạch — không tự chuyển «Hoàn thành». */
+/** Trạng thái hiển thị theo kế hoạch — dự án chỉ «Hoàn thành» khi giám đốc/trưởng nhóm xác nhận. */
 function projPlanStatus(p){
   if(!p)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(p.status==="done")return{key:"done",label:"Hoàn thành",c:"#4ade80"};
   var asgns=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused"||a.status==="done")});
-  if(asgns.length&&asgns.every(function(a){return a.status==="done"}))return{key:"done",label:"Hoàn thành",c:"#4ade80"};
+  var openAsgn=asgns.filter(function(a){return a.status==="active"||a.status==="paused"});
+  if(asgns.length&&!openAsgn.length)return{key:"await_close",label:"Chờ xác nhận hoàn tất",c:"#38bdf8"};
   var today=td(),start=p.startDate||"",end=p.deadline||"";
   if(start&&today<start)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(end&&today>end)return{key:"late",label:"Trễ hạn",c:"#ef4444"};
   return{key:"doing",label:"Đang làm",c:"#fbbf24"};
+}
+function canConfirmProjDone(p){
+  if(!p||p.status==="done")return false;
+  if(isDir())return true;
+  return !!(S.auth&&S.auth.empId&&p.toTruongId&&S.auth.empId===p.toTruongId);
+}
+function applyCompleteProjectLocal(projId, meta){
+  meta=meta||{};
+  var p=pById(projId);if(!p||p.status==="done")return 0;
+  var closed=0;
+  S.asgn=S.asgn.map(function(a){
+    if(a.projId!==projId)return a;
+    if(a.status!=="active"&&a.status!=="paused")return a;
+    closed++;
+    return Object.assign({},a,{status:"done",prog:100,completedAt:a.completedAt||td()});
+  });
+  p=Object.assign({},p,{status:"done"});
+  S.proj=S.proj.map(function(x){return x.id===projId?p:x});
+  var by=meta.byName||logActorName();
+  var role=meta.byRole||(isDir()?"Giám đốc":"Trưởng nhóm");
+  logProjEvent(projId,"proj_done",{
+    empId:meta.empId||(isDir()?"":(S.auth&&S.auth.empId)||""),
+    empName:by,
+    text:role+" "+by+" xác nhận hoàn tất dự án «"+p.name+"»"+(closed?" ("+closed+" việc đóng)":""),
+    meta:{closed:closed,byRole:isDir()?"director":"to_truong"}
+  });
+  return closed;
 }
 /** Danh sách dự án: chưa hoàn thành trước; trong nhóm giữ startDate → tên. */
 function projListCmp(a,b){
@@ -1706,14 +1734,8 @@ function lateAlertBannerHTML(){
   h+='</div>';
   return h;
 }
-function maybeMarkProjDone(projId){
-  var p=pById(projId);if(!p||p.status==="done")return;
-  var asgns=S.asgn.filter(function(a){return a.projId===projId&&(a.status==="active"||a.status==="paused"||a.status==="done")});
-  if(!asgns.length||!asgns.every(function(a){return a.status==="done"}))return;
-  p.status="done";
-  S.proj=S.proj.map(function(x){return x.id===p.id?p:x});
-  logProjEvent(projId,"done",{text:"Dự án hoàn thành (tất cả việc đã xong)"});
-}
+/** Không tự đóng dự án khi mọi người xong phần mình — cần giám đốc / trưởng nhóm xác nhận. */
+function maybeMarkProjDone(projId){ /* intentionally no-op */ }
 function projTL(p){
   var acts=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused")});
   var starts=acts.map(function(a){return a.startDate}).filter(Boolean).sort();
@@ -2047,8 +2069,8 @@ if(migrateWorkspace()){ps2("cv3_e",S.emp);bumpPatch()}
 var _fbSv=null;
 var PROJ_LOG_MAX=500;
 var AUDIT_MAX=800,UNDO_MAX=40,TRASH_DAYS=30;
-var PROJ_LOG_LBL={assign:"Giao việc",transfer:"Chuyển dự án",pause:"Tạm dừng",handoff:"Bàn giao",resume:"Quay lại",done:"Hoàn thành",report:"Báo cáo",arrival:"Đến vị trí",attendance:"Chấm công",role:"Chức vụ",proj_create:"Tạo dự án",proj_edit:"Cập nhật"};
-var PROJ_LOG_COL={assign:"#38bdf8",transfer:"#fbbf24",pause:"#fbbf24",handoff:"#a78bfa",resume:"#38c9ff",done:"#4ade80",report:"#60a5fa",arrival:"#4ade80",attendance:"#34d399",role:"#f472b6",proj_create:"#94a3b8",proj_edit:"#94a3b8"};
+var PROJ_LOG_LBL={assign:"Giao việc",transfer:"Chuyển dự án",pause:"Tạm dừng",handoff:"Bàn giao",resume:"Quay lại",done:"Hoàn tất việc",proj_done:"Hoàn tất dự án",report:"Báo cáo",arrival:"Đến vị trí",attendance:"Chấm công",role:"Chức vụ",proj_create:"Tạo dự án",proj_edit:"Cập nhật"};
+var PROJ_LOG_COL={assign:"#38bdf8",transfer:"#fbbf24",pause:"#fbbf24",handoff:"#a78bfa",resume:"#38c9ff",done:"#4ade80",proj_done:"#4ade80",report:"#60a5fa",arrival:"#4ade80",attendance:"#34d399",role:"#f472b6",proj_create:"#94a3b8",proj_edit:"#94a3b8"};
 function logActorName(){if(S.auth&&S.auth.role==="director")return S.auth.displayName||S.auth.username||"Giám đốc";if(S.auth&&S.auth.empId){var e=eById(S.auth.empId);return e?e.name:S.auth.username||"";}return "Hệ thống";}
 function actorInfo(){
   var name=logActorName(),au=S.auth||{},uid=au.uid||"",role="";
@@ -4820,7 +4842,16 @@ function vMyWorkDet(asgnId,orgHint){
   if(asgnHandoffLine(a))h+='<div class="asgn-handoff-note" style="margin-top:12px">'+asgnHandoffLine(a)+'</div>';
   if(p&&p.note)h+='<div style="margin-top:14px"><div class="lab">Ghi chú dự án</div><div class="emp-detail-note">'+esc(p.note)+'</div></div>';
   h+='<div class="row" style="gap:8px;margin-top:16px;flex-wrap:wrap">'+btn("btn-primary","Báo cáo tiến độ hôm nay","A.goReport('"+a.id+"')");
-  if(a.status==="active"||a.status==="paused")h+=btn("btn-accent","Báo cáo hoàn thành","A.empFin('"+a.id+"')");
+  if(a.status==="active"||a.status==="paused"){
+    h+=btn("btn-accent","Hoàn tất phần việc","A.empFin('"+a.id+"')");
+    h+='<div style="width:100%;font-size:12px;color:var(--c-muted4);margin-top:2px">Chỉ kết thúc phần việc của bạn — dự án vẫn có thể tiếp tục với người khác.</div>';
+  }
+  if(p&&canConfirmProjDone(p)&&(a.status==="active"||a.status==="paused"||a.status==="done")){
+    h+='<div style="width:100%;margin-top:10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)">';
+    h+='<div style="font-size:12px;color:var(--c-muted2);margin-bottom:8px">Bạn là trưởng nhóm — có thể xác nhận đóng cả dự án.</div>';
+    h+=btn("btn-primary","Hoàn tất dự án","A.completeProj('"+p.id+"')");
+    h+='</div>';
+  }
   h+='</div>';
   h+=renderReportsBlock(asgnId,5);
   h+='</div>';
@@ -5108,9 +5139,14 @@ function vProjDet(id){
   var c=p.custId?cById(p.custId):null,pl=pLoc(p),tl=projTL(p);
   var acts=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused")});
   var pr=PRI[p.priority]||PRI.normal,ps=projPlanStatus(p);
-  var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","projBack")+'<div class="row" style="gap:8px;align-items:stretch">'+(canGiao()?actBtn("btn-primary","Giao việc","giaoOpen",p.id):"")+(canOperate()?btn("btn-ghost","Sửa","A.op('"+p.id+"')"):"")+'</div></div>';
+  var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","projBack")+'<div class="row" style="gap:8px;align-items:stretch">'+(canGiao()?actBtn("btn-primary","Giao việc","giaoOpen",p.id):"")+(canOperate()?btn("btn-ghost","Sửa","A.op('"+p.id+"')"):"")+(canConfirmProjDone(p)?btn("btn-accent","Hoàn tất","A.completeProj('"+p.id+"')"):"")+'</div></div>';
   h+='<div class="card card-p"><h2 style="font-size:22px;font-weight:700;margin-bottom:10px">'+esc(p.name)+'</h2>';
   h+='<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">'+bdg(p.group,groupColor(p.group))+bdg(p.type==="repair"?"Sửa chữa":"Dự án mới",p.type==="repair"?"#fbbf24":"#38bdf8")+bdg(ps.label,ps.c,ps.c+"18")+bdg(pr[0],pr[1])+'</div>';
+  if(canConfirmProjDone(p)){
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.28);font-size:13px;color:var(--c-muted2);line-height:1.45">Bấm <b style="color:#4ade80">Hoàn tất</b> để đóng cả dự án — mọi thành viên còn việc sẽ được chuyển sang đã hoàn tất và sẵn sàng nhận việc mới.</div>';
+  }else if(p.status==="done"){
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.35);font-size:13px;color:#4ade80">Dự án đã được xác nhận hoàn tất.</div>';
+  }
   h+='<div style="margin-bottom:16px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:5px">Tiến độ</div><div class="row" style="gap:10px;align-items:center"><div style="flex:1;height:9px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:'+tl.prog+'%;background:linear-gradient(90deg,#38bdf8,#60a5fa);border-radius:999px"></div></div><span style="font-family:monospace;font-weight:700;color:#38bdf8">'+tl.prog+'%</span></div></div>';
   h+='<div class="grid2" style="gap:14px;margin-bottom:14px"><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Khách hàng</div><div style="font-size:14px">'+(cn?esc(cn):"—")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Địa điểm</div><div style="font-size:14px">📍 '+esc(pl?pl.name:p.province)+(c&&c.lat!=null?' <span style="font-family:monospace;font-size:12px;color:var(--c-muted4)">('+c.lat.toFixed(4)+", "+c.lng.toFixed(4)+')</span>':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Thời gian</div><div style="font-family:monospace;font-size:13px">'+dFmtG(tl.start)+' → '+dFmtG(tl.end)+(p.durationDays?' · '+p.durationDays+' ngày':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Đội tham gia</div><div style="font-family:monospace;font-size:13px">'+projPartIds(p).length+' người'+(p.toTruongId||p.vatTuId?" · đã phân chức vụ":"")+'</div></div></div>';
   if(p.note)h+='<div style="margin-bottom:14px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Mô tả</div><div style="font-size:14px;color:rgba(200,220,255,.8)">'+esc(p.note)+'</div></div>';
@@ -5298,7 +5334,7 @@ function progCard(a){
   }
   if(canEdit){
     h+='<div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">'+btn("btn-ghost btn-sm","Sắp xếp lại","A.sxm('"+a.id+"')")+'</div>';
-    h+='<div class="row" style="gap:12px"><input type="range" min="0" max="100" step="5" value="'+a.prog+'" style="flex:1;accent-color:#38bdf8" oninput="A.pl(\''+a.id+'\',this.value)" onchange="A.ps2a(\''+a.id+'\',this.value)"><span id="pg_'+a.id+'" style="font-family:monospace;font-weight:700;width:46px;text-align:right;color:#38bdf8;font-size:15px">'+a.prog+'%</span>'+btn("btn-accent btn-sm"+(a.prog<100?" disabled":""),"Hoàn thành","A.fin('"+a.id+"')")+'</div>';
+    h+='<div class="row" style="gap:12px"><input type="range" min="0" max="100" step="5" value="'+a.prog+'" style="flex:1;accent-color:#38bdf8" oninput="A.pl(\''+a.id+'\',this.value)" onchange="A.ps2a(\''+a.id+'\',this.value)"><span id="pg_'+a.id+'" style="font-family:monospace;font-weight:700;width:46px;text-align:right;color:#38bdf8;font-size:15px">'+a.prog+'%</span>'+btn("btn-accent btn-sm"+(a.prog<100?" disabled":""),"Hoàn tất","A.fin('"+a.id+"')")+'</div>';
   }else{
     h+='<div class="row" style="gap:8px;margin-bottom:8px;align-items:center"><span style="font-family:monospace;font-weight:700;color:#38bdf8">'+a.prog+'%</span><span style="font-size:12px;color:var(--c-muted4)">Giám sát chỉ xem</span></div>';
   }
@@ -6995,18 +7031,45 @@ window.A={
   fin:function(id){
     var a=asgnById(id);if(!a||a.status==="done")return;
     var e=eById(a.empId);
-    logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" hoàn thành công việc",meta:{asgnId:id,prog:100}});
+    logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" hoàn tất phần việc",meta:{asgnId:id,prog:100,scope:"self"}});
     S.asgn=S.asgn.map(function(x){return x.id===id?Object.assign({},x,{status:"done",prog:100,completedAt:x.completedAt||td()}):x});
-    maybeMarkProjDone(a.projId);
+    // Không tự đóng dự án — chỉ giám đốc / trưởng nhóm được hoàn tất dự án.
     sv();render();
   },
   empFin:function(id){
     var a=asgnById(id);
-    if(!a||a.empId!==S.auth.empId)return alert("Chỉ nhân viên được giao việc mới báo cáo hoàn thành.");
-    if(a.status==="done")return alert("Công việc đã hoàn thành.");
-    if(!confirm("Xác nhận báo cáo hoàn thành công việc này?"))return;
+    if(!a||a.empId!==S.auth.empId)return alert("Chỉ nhân viên được giao việc mới hoàn tất phần việc của mình.");
+    if(a.status==="done")return alert("Phần việc của bạn đã hoàn tất.");
+    if(!confirm("Hoàn tất phần việc của bạn trong dự án này?\n\nBạn sẽ sẵn sàng nhận việc mới. Các thành viên khác và dự án vẫn có thể tiếp tục."))return;
     S.selMyAsgn="";S.selMyAsgnOrg="";
     A.fin(id);
+    if(typeof window.__CV3_completeMyAssignment==="function"){
+      window.__CV3_completeMyAssignment(id, a._orgId||currentOrgId()).catch(function(err){
+        alert((err&&err.message)||"Đã lưu trên máy nhưng chưa đồng bộ cloud. Thử lại khi có mạng.");
+      });
+    }
+  },
+  completeProj:function(id){
+    var p=pById(id);
+    if(!p)return alert("Không tìm thấy dự án.");
+    if(p.status==="done")return alert("Dự án đã hoàn tất.");
+    if(!canConfirmProjDone(p))return alert("Chỉ giám đốc hoặc trưởng nhóm của dự án mới được xác nhận hoàn tất dự án.");
+    var openN=S.asgn.filter(function(a){return a.projId===id&&(a.status==="active"||a.status==="paused")}).length;
+    var msg="Xác nhận hoàn tất dự án «"+p.name+"»?\n\nToàn bộ "+openN+" thành viên còn việc sẽ được chuyển sang đã hoàn tất và có thể nhận dự án khác.";
+    if(!confirm(msg))return;
+    applyCompleteProjectLocal(id,{
+      byName:logActorName(),
+      byRole:isDir()?"Giám đốc":"Trưởng nhóm",
+      empId:isDir()?"":(S.auth&&S.auth.empId)||""
+    });
+    sv();
+    render();
+    // Trưởng nhóm (employee) không ghi workspace trực tiếp — đồng bộ qua Cloud Function.
+    if(!canOperate()&&typeof window.__CV3_completeProject==="function"){
+      window.__CV3_completeProject(id, currentOrgId()).catch(function(err){
+        alert((err&&err.message)||"Đã lưu trên máy nhưng chưa đồng bộ cloud. Báo giám đốc kiểm tra hoặc thử lại khi có mạng.");
+      });
+    }
   },
   sxm:function(id){var a=asgnById(id);if(!a||a.status!=="active")return;S.form={type:"sapxep",asgnId:id,mode:"transfer",note:"",targetProj:"",targetEmp:""};S.modal=sapXepM(S.form);render()},
   sxmMode:function(mode){if(!S.form||S.form.type!=="sapxep")return;S.form.mode=mode;S.modal=sapXepM(S.form);render()},

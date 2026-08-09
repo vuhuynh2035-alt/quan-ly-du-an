@@ -1290,6 +1290,47 @@ async function callSubmitReport(payload) {
   }
 }
 
+function callableUserMsg(err, fallback) {
+  var msg = (err && err.message) || String(err || "");
+  if (err && err.details) msg = String(err.details);
+  msg = String(msg)
+    .replace(/^Firebase:\s*/i, "")
+    .replace(/^[A-Z_]+:\s*/, "");
+  return msg || fallback || "Thao tác thất bại.";
+}
+
+async function callCompleteMyAssignment(asgnId, forOrg) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app, "us-central1"), "completeMyAssignment");
+  try {
+    var res = await fn({
+      asgnId: asgnId,
+      orgId: normalizeOrgId(forOrg || orgId),
+    });
+    return res.data || {};
+  } catch (err) {
+    throw new Error(callableUserMsg(err, "Không hoàn tất được phần việc."));
+  }
+}
+
+async function callCompleteProject(projId, forOrg) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var fn = httpsCallable(getFunctions(app, "us-central1"), "completeProject");
+  try {
+    var res = await fn({
+      projId: projId,
+      orgId: normalizeOrgId(forOrg || orgId),
+    });
+    return res.data || {};
+  } catch (err) {
+    throw new Error(callableUserMsg(err, "Không hoàn tất được dự án."));
+  }
+}
+
 function isDirectorRole() {
   return window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
 }
@@ -3491,6 +3532,8 @@ async function bootOnline(cv3) {
   window.__CV3_updateProfile = updateMyProfile;
   window.__CV3_updateUsername = updateMyUsername;
   window.__CV3_submitReport = callSubmitReport;
+  window.__CV3_completeMyAssignment = callCompleteMyAssignment;
+  window.__CV3_completeProject = callCompleteProject;
   window.__CV3_submitAttendance = callSubmitAttendance;
   window.__CV3_confirmArrival = callConfirmArrival;
   window.__CV3_ensureAttendanceRange = ensureAttendanceRange;
