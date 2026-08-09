@@ -2049,7 +2049,7 @@ function projWorkItemsBlockHTML(f){
     var parents=workItemParentIds(w);
     h+='<div class="wi-card" id="wi_card_'+w.id+'">';
     h+='<div class="wi-card-top"><span style="font-family:monospace;color:var(--c-muted4)">Khung '+(idx+1)+'</span>';
-    h+='<input type="text" id="wit_'+w.id+'" value="'+esc(w.title||"")+'" placeholder="Hạng mục '+(idx+1)+'"'+(S._focusWiTitle===w.id?' autofocus':'')+' onchange="A.wiTitle(\''+w.id+'\')" onfocus="if(!this.value)this.select()">';
+    h+='<input type="text" id="wit_'+w.id+'" value="'+esc(w.title||"")+'" placeholder="Hạng mục '+(idx+1)+'"'+(S._focusWiTitle===w.id?' autofocus':'')+' onchange="A.wiTitle(\''+w.id+'\')">';
     if(f.workItems.length>1)h+=btn("btn-ghost btn-sm","Xoá","A.wiRemove('"+w.id+"')");
     h+='</div>';
     if(f.workItems.length>1){
