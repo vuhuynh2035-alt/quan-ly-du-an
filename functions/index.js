@@ -1755,7 +1755,9 @@ exports.completeProject = onCall(async (request) => {
     return { ...a, status: "done", prog: 100, completedAt: a.completedAt || today };
   });
   const newProj = projs.map((p) =>
-    p && String(p.id) === projId ? { ...p, status: "done" } : p
+    p && String(p.id) === projId
+      ? { ...p, status: "done", completedAt: p.completedAt || today }
+      : p
   );
   const roleLbl = isDirector ? "Giám đốc" : "Trưởng nhóm";
   const projLogEntry = {

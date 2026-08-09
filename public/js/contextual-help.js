@@ -111,6 +111,7 @@
         c("Giao việc", "Mở màn hình chọn người tham gia dự án và lưu phân công."),
         c("Sửa", "Điều hành / Giám đốc: sửa thông tin dự án."),
         c("Hoàn tất", "Giám đốc (hoặc trưởng nhóm): xác nhận đóng cả dự án — mọi thành viên còn việc được chuyển sang đã hoàn tất."),
+        c("Đang làm / Hoàn thành", "Tab lọc: dự án đang làm riêng; dự án đã hoàn tất vào mục Hoàn thành (chỉ xem, đã khoá)."),
         c("Thanh tiến độ", "Tiến độ tổng hợp từ các công việc của dự án."),
         c("Đội dự án", "Danh sách người đã vào đội; badge chức vụ cạnh tên — chỉ xem trên trang này. Đổi chức vụ trong «Giao việc»."),
         c("Timeline dự án", "Nhật ký giao việc, báo cáo, đến vị trí, hoàn tất…"),
