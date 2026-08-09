@@ -494,6 +494,7 @@ textarea{min-height:60px;resize:vertical}
 .wi-card{padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);margin-bottom:10px}
 .wi-card-top{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .wi-card-top input[type="text"]{flex:1;min-width:0}
+.wi-card-top input[type="text"]::placeholder{color:var(--c-muted4);opacity:.75}
 .wi-emp{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:10px;border:1px solid var(--c-border);background:var(--c-input);margin-bottom:6px;cursor:pointer}
 .wi-emp.sel{border-color:rgba(56,189,248,.5);background:rgba(56,189,248,.1)}
 .wi-emp-pct{width:72px;padding:6px 8px;font-size:13px;text-align:right}
@@ -1722,7 +1723,13 @@ function projDurationDays(p){
 
 /* ===== Hạng mục công việc (work items) ===== */
 function mkWorkItem(title,order){
-  return{id:uid(),title:title||("Hạng mục "+((order||0)+1)),order:order||0,parentIds:[]};
+  // title rỗng = hiện placeholder mờ trên form; khi lưu sẽ gán mặc định nếu vẫn trống
+  return{id:uid(),title:title==null?"":String(title),order:order||0,parentIds:[]};
+}
+function workItemLabel(w,idx){
+  var t=w&&w.title!=null?String(w.title).trim():"";
+  if(t)return t;
+  return "Hạng mục "+((idx!=null?idx:((w&&w.order)||0))+1);
 }
 function workItemParentIds(w){
   if(!w)return[];
@@ -1740,12 +1747,21 @@ function normWorkItems(p){
   var legacySeq=!anyParents&&p&&p.workFlow==="sequence"&&list.length>1;
   list.forEach(function(w,i){
     w.order=i;
-    if(!w.title)w.title="Hạng mục "+(i+1);
+    // Giữ title rỗng trên form (placeholder); chỉ mặc định khi null/undefined
+    if(w.title==null)w.title="";
     if(!Array.isArray(w.parentIds))w.parentIds=[];
     if(legacySeq&&i>0)w.parentIds=[list[i-1].id];
     w.parentIds=w.parentIds.filter(function(pid){return pid&&pid!==w.id&&idSet[pid]});
   });
   return list;
+}
+function finalizeWorkItemTitles(items){
+  (items||[]).forEach(function(w,i){
+    if(!w)return;
+    w.order=i;
+    if(!String(w.title||"").trim())w.title="Hạng mục "+(i+1);
+  });
+  return items||[];
 }
 /** Legacy helper — còn dùng chỗ cũ; suy ra từ phụ thuộc. */
 function projWorkFlow(p){
@@ -1784,7 +1800,7 @@ function wiWouldCycle(items,childId,parentId){
 function ensureFormWorkItems(f){
   if(!f)return;
   if(!Array.isArray(f.workItems)||!f.workItems.length){
-    f.workItems=[mkWorkItem(f.name||"Hạng mục 1",0)];
+    f.workItems=[mkWorkItem("",0)];
   }
   f.workItems=normWorkItems(f);
   if(!f.itemStaff||typeof f.itemStaff!=="object")f.itemStaff={};
@@ -1855,7 +1871,7 @@ function collectFormItemStaff(f){
       staff[w.id][eid]={pct:(pct===""||pct==null)?"":pct};
     });
     var titleEl=document.getElementById("wit_"+w.id);
-    if(titleEl)w.title=titleEl.value.trim()||w.title;
+    if(titleEl)w.title=titleEl.value.trim();
     // parents từ checkbox
     var parents=[];
     (f.workItems||[]).forEach(function(other){
@@ -2033,7 +2049,7 @@ function projWorkItemsBlockHTML(f){
     var parents=workItemParentIds(w);
     h+='<div class="wi-card" id="wi_card_'+w.id+'">';
     h+='<div class="wi-card-top"><span style="font-family:monospace;color:var(--c-muted4)">Khung '+(idx+1)+'</span>';
-    h+='<input type="text" id="wit_'+w.id+'" value="'+esc(w.title||"")+'" placeholder="Tên hạng mục" onchange="A.wiTitle(\''+w.id+'\')">';
+    h+='<input type="text" id="wit_'+w.id+'" value="'+esc(w.title||"")+'" placeholder="Hạng mục '+(idx+1)+'" onchange="A.wiTitle(\''+w.id+'\')">';
     if(f.workItems.length>1)h+=btn("btn-ghost btn-sm","Xoá","A.wiRemove('"+w.id+"')");
     h+='</div>';
     if(f.workItems.length>1){
@@ -2044,7 +2060,7 @@ function projWorkItemsBlockHTML(f){
         if(wiWouldCycle(f.workItems,w.id,other.id))return;
         anyDep=true;
         var on=parents.indexOf(other.id)>=0;
-        h+='<label class="wi-dep"><input type="checkbox" id="wipar_'+w.id+'_'+other.id+'"'+(on?" checked":"")+' onchange="A.wiParentToggle(\''+w.id+'\',\''+other.id+'\',this.checked)"> <span>'+(oi+1)+'. '+esc(other.title||("Hạng mục "+(oi+1)))+'</span></label>';
+        h+='<label class="wi-dep"><input type="checkbox" id="wipar_'+w.id+'_'+other.id+'"'+(on?" checked":"")+' onchange="A.wiParentToggle(\''+w.id+'\',\''+other.id+'\',this.checked)"> <span>'+(oi+1)+'. '+esc(workItemLabel(other,oi))+'</span></label>';
       });
       if(!anyDep)h+='<div style="font-size:12px;color:var(--c-muted4)">Không có hạng mục khác để chọn làm cha.</div>';
       else if(parents.length)h+='<div style="font-size:12px;color:#fde68a;margin-top:4px">Chờ xong '+parents.length+' hạng mục cha.</div>';
@@ -2113,7 +2129,7 @@ function projWorkItemsDetailHTML(p){
     var wait=workItemWaitLabel(p,w.id);
     var st=done?"Hoàn thành":(unlocked?"Đang mở":"Chờ hạng mục cha");
     var sc=done?"#4ade80":(unlocked?"#fbbf24":"#94a3b8");
-    h+='<div class="wi-det-item"><div class="wi-det-title">'+(idx+1)+'. '+esc(w.title)+' '+bdg(st,sc,sc+"22")+'</div>';
+    h+='<div class="wi-det-item"><div class="wi-det-title">'+(idx+1)+'. '+esc(workItemLabel(w,idx))+' '+bdg(st,sc,sc+"22")+'</div>';
     if(wait)h+='<div class="wi-det-meta" style="color:#fbbf24">'+esc(wait)+'</div>';
     if(!acts.length)h+='<div class="wi-det-meta">Chưa giao nhân viên (0%)</div>';
     else{
@@ -7891,7 +7907,7 @@ window.A={
       });
     }else{
       var st=defaultProjStart();
-      S.form={name:"",custId:"",province:DP,type:"new",group:defaultFieldGroup(),priority:"normal",startDate:st,deadline:deadlineFromDuration(st,7),durationDays:7,status:"open",note:"",participantIds:[],toTruongId:"",vatTuId:"",workItems:[mkWorkItem("Hạng mục 1",0)],itemStaff:{},wiOpenGrp:{}};
+      S.form={name:"",custId:"",province:DP,type:"new",group:defaultFieldGroup(),priority:"normal",startDate:st,deadline:deadlineFromDuration(st,7),durationDays:7,status:"open",note:"",participantIds:[],toTruongId:"",vatTuId:"",workItems:[mkWorkItem("",0)],itemStaff:{},wiOpenGrp:{}};
       ensureFormWorkItems(S.form);
     }
     S.teamToTruong=S.form.toTruongId||"";
@@ -7913,13 +7929,22 @@ window.A={
   wiFlow:function(){/* legacy no-op — phụ thuộc theo từng hạng mục */},
   wiAdd:function(){
     if(!S.form)return;
-    var y=captureModalScroll();
     A.projSyncForm();
     ensureFormWorkItems(S.form);
-    var w=mkWorkItem("Hạng mục "+(S.form.workItems.length+1),S.form.workItems.length);
+    var w=mkWorkItem("",S.form.workItems.length);
     S.form.workItems.push(w);
     S.form.itemStaff[w.id]={};
-    S.modal=projM(S.form);render();restoreModalScroll(y);
+    S.modal=projM(S.form);render();
+    // Cuộn tới khung mới và đưa con trỏ vào ô tên (placeholder mờ, không cần xoá)
+    requestAnimationFrame(function(){
+      var el=document.getElementById("wit_"+w.id);
+      var card=document.getElementById("wi_card_"+w.id);
+      if(card&&card.scrollIntoView)card.scrollIntoView({block:"center",behavior:"smooth"});
+      if(el){
+        el.focus({preventScroll:true});
+        try{el.setSelectionRange(0,0)}catch(e){}
+      }
+    });
   },
   wiRemove:function(wid){
     if(!S.form)return;
@@ -7938,7 +7963,7 @@ window.A={
     if(!S.form)return;
     var el=document.getElementById("wit_"+wid);
     var w=(S.form.workItems||[]).find(function(x){return x.id===wid});
-    if(w&&el)w.title=el.value.trim()||w.title;
+    if(w&&el)w.title=el.value.trim();
   },
   wiParentToggle:function(wid,pid,on){
     if(!S.form)return;
@@ -8081,9 +8106,8 @@ window.A={
     f.workItems=normWorkItems(f);
     if(!f.workItems.length)return alert("Cần ít nhất 1 hạng mục công việc.");
     f.workItems=normWorkItems(f);
-    f.workItems.forEach(function(w,i){
-      if(!w.title||!String(w.title).trim())w.title="Hạng mục "+(i+1);
-      w.order=i;
+    finalizeWorkItemTitles(f.workItems);
+    f.workItems.forEach(function(w){
       w.parentIds=workItemParentIds(w);
     });
     // Không còn workFlow toàn cục — phụ thuộc theo parentIds
