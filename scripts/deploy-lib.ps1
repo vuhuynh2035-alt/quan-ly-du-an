@@ -96,7 +96,7 @@ function Repair-DeployConfigObject {
     $goodApps = @(
       [pscustomobject]@{
         id = "quan-ly-du-an"; label = "Quan ly du an"; path = ""; branch = "main"
-        firebaseProject = "quan-ly-du-an-7d651"; deploy = "hosting"
+        firebaseProject = "quan-ly-du-an-7d651"; deploy = "all"
         siteUrl = "https://quan-ly-du-an-7d651.web.app"
       }
     ) + $goodApps
@@ -404,12 +404,37 @@ function New-DiscoveredApp {
   if (-not $id) { $id = "app" }
   $project = Get-FirebaseProjectId $Path
   $email = Get-AccountEmailForPath $Config $Path
+  $deployKind = "hosting"
+  if ($project -eq "quan-ly-du-an-7d651") { $deployKind = "all" }
   return [pscustomobject]@{
     id = $id; label = $name; path = $Path; branch = "main"
-    firebaseProject = $project; accountEmail = $email; deploy = "hosting"
+    firebaseProject = $project; accountEmail = $email; deploy = $deployKind
     siteUrl = $(if ($project) { "https://$project.web.app" } else { "" })
     source = $Source
   }
+}
+
+function Get-AppPreferScore {
+  param([object]$App, [string]$DeployRoot)
+  [int64]$score = 0
+  if ([string]$App.source -eq "config") { $score += 1000000000 }
+  try {
+    $p = [System.IO.Path]::GetFullPath([string]$App.path)
+    $r = [System.IO.Path]::GetFullPath($DeployRoot)
+    if ($p.Equals($r, [System.StringComparison]::OrdinalIgnoreCase)) { $score += 500000000 }
+  } catch {}
+  $pathLow = ([string]$App.path).ToLowerInvariant()
+  if ($pathLow -like "*quan ly du an*" -or $pathLow -like "*quan-ly-du-an*") { $score += 200000000 }
+  try {
+    Push-Location -LiteralPath ([string]$App.path)
+    $ct = (& git log -1 --format=%ct 2>$null)
+    if ($ct) { $score += [int64]$ct }
+  } catch {
+  } finally {
+    try { Pop-Location } catch {}
+  }
+  if ($App.rank) { $score += [int64]$App.rank }
+  return $score
 }
 
 function Resolve-AppPath {
@@ -525,22 +550,31 @@ function Get-DeployApps {
   $list = @()
   foreach ($k in $order) { $list += $byPath[$k] }
 
-  # 1 project Firebase = 1 app trong menu
+  # 1 project Firebase = 1 app trong menu (uu tien: config / thu muc deploy / commit moi)
+  $deployRoot = Get-DeployRoot
   $byProject = @{}
   $noProject = @()
   foreach ($app in $list) {
     $proj = [string]$app.firebaseProject
+    if ($proj -eq "quan-ly-du-an-7d651") {
+      $app | Add-Member deploy "all" -Force
+      if (-not $app.branch) { $app | Add-Member branch "main" -Force }
+    }
     if (-not $proj) { $noProject += $app; continue }
+    $score = Get-AppPreferScore -App $app -DeployRoot $deployRoot
+    $app | Add-Member preferScore $score -Force
     if (-not $byProject.ContainsKey($proj)) {
       $byProject[$proj] = $app
-    } elseif ([int64]$app.rank -gt [int64]$byProject[$proj].rank) {
+    } elseif ([int64]$score -gt [int64]$byProject[$proj].preferScore) {
+      Write-Host ("Uu tien thu muc moi hon cho {0}: {1}" -f $proj, $app.path) -ForegroundColor DarkYellow
       try { Add-ExcludeRule -Config $Config -Rule ([string]$byProject[$proj].path) } catch {}
       $byProject[$proj] = $app
     } else {
+      Write-Host ("Bo qua ban sao cu: {0}" -f $app.path) -ForegroundColor DarkGray
       try { Add-ExcludeRule -Config $Config -Rule ([string]$app.path) } catch {}
     }
   }
-  return @((@($byProject.Values) + $noProject) | Sort-Object @{ Expression = { [int64]$_.rank }; Descending = $true })
+  return @((@($byProject.Values) + $noProject) | Sort-Object @{ Expression = { [int64]$_.preferScore }; Descending = $true }, @{ Expression = { [int64]$_.rank }; Descending = $true })
 }
 
 # ----- Account mapping -----
@@ -702,19 +736,76 @@ function Use-FirebaseProject {
 
 function Sync-Git {
   param([string]$RepoRoot, [string]$Branch, [switch]$SkipPull)
-  if ($SkipPull) { Write-Host "Bo qua git pull" -ForegroundColor DarkYellow; return }
+  if ($SkipPull) { Write-Host "Bo qua git pull (nguy co deploy code cu!)" -ForegroundColor DarkYellow; return }
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot ".git"))) {
-    Write-Host "Khong phai git repo — bo qua pull" -ForegroundColor DarkYellow
-    return
+    throw "Khong phai git repo: $RepoRoot — khong the dam bao code moi nhat. Dung deploy."
   }
+  if (-not $Branch) { $Branch = "main" }
   Push-Location -LiteralPath $RepoRoot
   try {
-    Write-Host "Git pull origin $Branch..." -ForegroundColor Yellow
+    Write-Host "Dong bo git -> origin/$Branch (ff-only)..." -ForegroundColor Yellow
     $fc = Invoke-External -AllowFail -Command { git fetch origin $Branch }
-    if ($fc -ne 0) { Write-Host "git fetch loi — deploy code local" -ForegroundColor Yellow; return }
-    $pc = Invoke-External -AllowFail -Command { git pull origin $Branch }
-    if ($pc -ne 0) { Write-Host "git pull loi — deploy code local" -ForegroundColor Yellow }
+    if ($fc -ne 0) {
+      throw "git fetch origin $Branch that bai — DUNG deploy code cu. Kiem tra mang / remote."
+    }
+
+    $cc = Invoke-External -AllowFail -Command { git checkout $Branch }
+    if ($cc -ne 0) {
+      throw "Khong checkout duoc branch '$Branch'. Commit hoac stash thay doi local roi chay lai."
+    }
+
+    $mc = Invoke-External -AllowFail -Command { git merge --ff-only "origin/$Branch" }
+    if ($mc -ne 0) {
+      $pc = Invoke-External -AllowFail -Command { git pull --ff-only origin $Branch }
+      if ($pc -ne 0) {
+        throw "Local lech origin/$Branch (khong ff-only). Xu ly conflict/stash truoc — KHONG deploy code cu."
+      }
+    }
+
+    $sha = (& git rev-parse --short HEAD 2>$null)
+    $remote = (& git rev-parse --short "origin/$Branch" 2>$null)
+    if (-not $sha -or -not $remote -or "$sha" -ne "$remote") {
+      throw "HEAD ($sha) khac origin/$Branch ($remote) — chua dong bo. Dung deploy."
+    }
+    $msg = (& git log -1 --pretty=format:"%s" 2>$null)
+    Write-Host "OK git: $Branch @$sha — $msg" -ForegroundColor Green
   } finally { Pop-Location }
+}
+
+function Assert-RepoDeployReady {
+  param([string]$RepoRoot, [string]$ProjectId)
+  if ($ProjectId -ne "quan-ly-du-an-7d651") { return }
+  $index = Join-Path $RepoRoot "index.html"
+  if (-not (Test-Path -LiteralPath $index)) { throw "Thieu index.html trong $RepoRoot" }
+  $text = Get-Content -LiteralPath $index -Raw -Encoding UTF8
+  foreach ($marker in @("projView", "isProjLocked")) {
+    if ($text -notlike "*$marker*") {
+      throw "index.html thieu '$marker' — chua co code moi. Merge PR + git pull roi deploy lai."
+    }
+  }
+  Write-Host "OK kiem tra index.html (projView / isProjLocked)." -ForegroundColor Green
+}
+
+function Assert-DistBuilt {
+  param([string]$RepoRoot, [string]$ProjectId)
+  $distIndex = Join-Path $RepoRoot "dist\index.html"
+  if (-not (Test-Path -LiteralPath $distIndex)) {
+    $distIndex = Join-Path $RepoRoot "dist/index.html"
+  }
+  if (-not (Test-Path -LiteralPath $distIndex)) {
+    throw "Thieu dist/index.html sau build — khong deploy ban cu trong dist."
+  }
+  if ($ProjectId -eq "quan-ly-du-an-7d651") {
+    $text = Get-Content -LiteralPath $distIndex -Raw -Encoding UTF8
+    foreach ($marker in @("projView", "isProjLocked")) {
+      if ($text -notlike "*$marker*") {
+        throw "dist/index.html thieu '$marker' — build sai / dist cu. Xoa dist roi build lai."
+      }
+    }
+  }
+  $ver = Get-VersionLabel $RepoRoot
+  if ($ver) { Write-Host "OK dist build — $ver" -ForegroundColor Green }
+  else { Write-Host "OK dist/index.html co mat." -ForegroundColor Green }
 }
 
 function Get-VersionLabel {
@@ -787,12 +878,14 @@ function Invoke-DeployCommands {
       if (-not $AllowFail) { throw "build that bai (exit $code)" }
       return $code
     }
+    Assert-DistBuilt -RepoRoot $RepoRoot -ProjectId $ProjectId
 
-    $wantFull = $FullDeploy -or ($Kind -eq "all")
-    Write-Host "[3/3] firebase deploy --project $ProjectId ..." -ForegroundColor Yellow
+    $wantFull = $FullDeploy -or ($Kind -eq "all") -or ($ProjectId -eq "quan-ly-du-an-7d651")
     if ($wantFull) {
-      $code = Invoke-External -AllowFail -Command { firebase deploy --project $ProjectId }
+      Write-Host "[3/3] firebase deploy HOSTING + FUNCTIONS --project $ProjectId ..." -ForegroundColor Yellow
+      $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting,functions --project $ProjectId }
     } else {
+      Write-Host "[3/3] firebase deploy --only hosting --project $ProjectId ..." -ForegroundColor Yellow
       $code = Invoke-External -AllowFail -Command { firebase deploy --only hosting --project $ProjectId }
     }
     if (-not $AllowFail -and $code -ne 0) { throw "firebase deploy that bai (exit $code)" }
@@ -845,13 +938,16 @@ function Invoke-AppDeploy {
   if ($App.firebaseProject) { Write-Host " Project: $($App.firebaseProject)" -ForegroundColor Cyan }
   if ($account) { Write-Host " Account: $($account.email)" -ForegroundColor Cyan }
   Write-Host "========================================" -ForegroundColor Cyan
-  Write-Host "Tu dong: doi TK -> git pull -> build -> hosting" -ForegroundColor DarkGray
+  $kind = [string]$App.deploy
+  if ([string]$App.firebaseProject -eq "quan-ly-du-an-7d651") { $kind = "all"; $FullDeploy = $true }
+  Write-Host "Tu dong: doi TK -> checkout/pull ff-only -> build -> deploy ($kind)" -ForegroundColor DarkGray
   Write-Host ""
 
-  Write-Host ">> Git pull..." -ForegroundColor Cyan
+  Write-Host ">> Git sync (bat buoc moi nhat)..." -ForegroundColor Cyan
   Sync-Git -RepoRoot $root -Branch $branch -SkipPull:$SkipPull
+  Assert-RepoDeployReady -RepoRoot $root -ProjectId ([string]$App.firebaseProject)
   $ver = Get-VersionLabel $root
-  if ($ver) { Write-Host "Version: $ver" -ForegroundColor Green }
+  if ($ver) { Write-Host "Version file: $ver (build se bump them 1)" -ForegroundColor Green }
 
   Write-Host ">> Kiem tra npm..." -ForegroundColor Cyan
   Ensure-Ready $root
@@ -867,7 +963,7 @@ function Invoke-AppDeploy {
   Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root -Interactive:$Interactive
 
   Write-Host ">> Build + Deploy..." -ForegroundColor Cyan
-  $code = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
+  $code = Invoke-DeployCommands -RepoRoot $root -Kind $kind -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
 
   if ($code -ne 0) {
     Write-Host "Deploy that bai — thu account khac..." -ForegroundColor Yellow
@@ -880,7 +976,7 @@ function Invoke-AppDeploy {
       Write-Host "Thu: $email" -ForegroundColor Yellow
       if (-not (Invoke-FirebaseLoginUse -Email $email -AutoAdd)) { continue }
       if (-not (Test-FirebaseProjectAccess -ProjectId $App.firebaseProject -RepoRoot $root)) { continue }
-      $code2 = Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
+      $code2 = Invoke-DeployCommands -RepoRoot $root -Kind $kind -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy -AllowFail
       if ($code2 -eq 0) {
         Set-AccountMapping -Config $Config -App $App -Email $email
         $ok = $true; break
@@ -895,7 +991,7 @@ function Invoke-AppDeploy {
         Set-AccountMapping -Config $Config -App $App -Email $email
         Invoke-FirebaseLoginUse -Email $email -AutoAdd | Out-Null
         Use-FirebaseProject -ProjectId $App.firebaseProject -Config $Config -App $App -RepoRoot $root
-        Invoke-DeployCommands -RepoRoot $root -Kind ([string]$App.deploy) -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy | Out-Null
+        Invoke-DeployCommands -RepoRoot $root -Kind $kind -ProjectId ([string]$App.firebaseProject) -FullDeploy:$FullDeploy | Out-Null
         $ok = $true
       }
     }
@@ -906,8 +1002,18 @@ function Invoke-AppDeploy {
 
   $ver2 = Get-VersionLabel $root
   $url = if ($App.siteUrl) { $App.siteUrl } elseif ($App.firebaseProject) { "https://$($App.firebaseProject).web.app" } else { "" }
+  $sha2 = ""
+  try {
+    Push-Location -LiteralPath $root
+    $sha2 = (& git rev-parse --short HEAD 2>$null)
+  } catch {
+  } finally {
+    try { Pop-Location } catch {}
+  }
   Write-Host ""
   Write-Host "XONG — $($App.label)" -ForegroundColor Green
+  if ($sha2) { Write-Host "  Commit: $sha2" -ForegroundColor Green }
   if ($ver2) { Write-Host "  Version: $ver2" -ForegroundColor Green }
   if ($url) { Write-Host "  Site: $url" -ForegroundColor Green }
+  Write-Host "  Mo app → Ctrl+F5 (xoá cache) rồi kiểm tra tính năng mới." -ForegroundColor DarkGray
 }

@@ -11,7 +11,7 @@
       "path": "",
       "branch": "main",
       "firebaseProject": "quan-ly-du-an-7d651",
-      "deploy": "hosting",
+      "deploy": "all",
       "siteUrl": "https://quan-ly-du-an-7d651.web.app"
     }
   ]
