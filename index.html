@@ -2350,7 +2350,7 @@ function projListCmp(a,b){
 function asgnPlanStatus(a){
   if(!a)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(a.status==="done")return{key:"done",label:"Hoàn thành",c:"#4ade80"};
-  if(a.status==="queued")return{key:"queued",label:"Chờ hạng mục trước",c:"#94a3b8"};
+  if(a.status==="queued")return{key:"queued",label:"Chờ hạng mục cha",c:"#94a3b8"};
   if(a.status==="paused")return{key:"paused",label:"Tạm dừng",c:"#ef4444"};
   var today=td(),start=a.startDate||"",end=asgnEndDate(a)||"";
   if(start&&today<start)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
@@ -5787,7 +5787,7 @@ function vMyWorkDet(asgnId,orgHint){
   if(p&&p.note)h+='<div style="margin-top:14px"><div class="lab">Ghi chú dự án</div><div class="emp-detail-note">'+esc(p.note)+'</div></div>';
   h+='<div class="row" style="gap:8px;margin-top:16px;flex-wrap:wrap">';
   if(a.status==="queued"){
-    h+='<div style="width:100%;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.35);color:#cbd5e1;font-size:13px;line-height:1.45">Hạng mục này đang <b>chờ hạng mục trước</b> (quy trình nối tiếp). Khi hạng mục trước xong, việc sẽ tự mở.</div>';
+    h+='<div style="width:100%;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.35);color:#cbd5e1;font-size:13px;line-height:1.45">Hạng mục này đang <b>chờ hạng mục cha</b>. Khi mọi hạng mục phụ thuộc đã xong, việc sẽ tự mở.</div>';
   }else{
     h+=btn("btn-primary","Báo cáo tiến độ hôm nay","A.goReport('"+a.id+"')");
   }
@@ -8331,7 +8331,7 @@ window.A={
   },
   fin:function(id){
     var a=asgnById(id);if(!a||a.status==="done")return;
-    if(a.status==="queued")return alert("Hạng mục này chưa tới lượt — hoàn thành hạng mục trước đó trước.");
+    if(a.status==="queued")return alert("Hạng mục này chưa tới lượt — cần hoàn thành các hạng mục cha trước.");
     if(!projLockedGuard(pById(a.projId)))return;
     var e=eById(a.empId);
     var info=asgnInfo(a);
