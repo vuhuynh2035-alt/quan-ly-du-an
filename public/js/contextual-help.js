@@ -98,11 +98,12 @@
         p("Tạo dự án mới", [
           "Bấm «+ Thêm dự án».",
           "Điền tên, khách hàng, ngày bắt đầu và số ngày hoàn thành.",
-          "Thêm các hạng mục công việc; chọn Song song hoặc Nối tiếp.",
-          "Trong mỗi hạng mục: tick nhân viên thi công và (tuỳ chọn) nhập % công việc của họ.",
-          "Phần % chưa nhập được chia đều cho các hạng mục còn lại (tổng 100%/người).",
-          "Khối «Chỉ huy trưởng — giao kiểm tra»: tick Chỉ huy để giao việc kiểm tra / báo cáo — không tính tiến độ dự án.",
-          "Lưu dự án — nhân viên thấy từng hạng mục; Chỉ huy thấy việc kiểm tra riêng.",
+          "Mỗi khung = 1 hạng mục; bấm «+ Thêm hạng mục» nếu cần thêm.",
+          "Không tick phụ thuộc = các hạng mục làm song song. Tick một/nhiều hạng mục cha = chỉ mở khi mọi cha đã xong (có thể nhiều tầng).",
+          "Bấm tên nhóm (Điện, Hàn…) để xổ danh sách nhân viên; chọn người và % tải.",
+          "Phân Trưởng nhóm / Thủ kho ở cuối khối hạng mục (khi đã chọn đủ người).",
+          "Khối «Chỉ huy trưởng — giao kiểm tra» nếu cần giao kiểm tra riêng.",
+          "Lưu dự án.",
         ]),
       ]
     ),
@@ -130,10 +131,10 @@
           "Bấm «Lưu». Người được giao sẽ thấy việc ở tab Công việc.",
         ]),
         p("Hạng mục & hoàn tất", [
-          "Chi tiết dự án hiện danh sách hạng mục (song song / nối tiếp) và % từng người.",
-          "Nối tiếp: hạng mục sau chỉ mở khi hạng mục trước đã xong.",
+          "Chi tiết dự án hiện hạng mục, % từng người và phụ thuộc (chờ hạng mục cha).",
+          "Hạng mục có cha chỉ mở khi mọi hạng mục cha đã xong.",
           "Nhân viên thi công bấm «Hoàn tất phần việc của tôi» chỉ xong phần của họ — dự án vẫn có thể Đang làm.",
-          "Chỉ huy trưởng bấm «Hoàn tất việc kiểm tra» để rảnh nhận kiểm tra dự án khác — không ảnh hưởng tiến độ / hoàn thành dự án.",
+          "Chỉ huy trưởng bấm «Hoàn tất việc kiểm tra» để rảnh nhận kiểm tra dự án khác.",
           "Chỉ Giám đốc hoặc Trưởng nhóm bấm «Xác nhận hoàn thành dự án» mới chuyển dự án sang mục Hoàn thành.",
         ]),
         p("Mở lại dự án đã hoàn thành (Giám đốc)", [
