@@ -929,7 +929,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="86">
+<meta name="app-build" content="87">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -6137,6 +6137,38 @@ function reworkM(f){
     +fld("Ghi chú",'<textarea id="rw-note" rows="3" placeholder="VD: Hỏng sớm — quay lại sửa máy nén, khắc phục cho việc …">'+esc(f.note||"")+'</textarea>');
   return mw("Ghi nhận khắc phục / bảo hành",body,btn("btn-primary","Lưu","A.saveRework()"),"");
 }
+/** Modal đổi / hạ % tiến độ phần việc (thay prompt — mobile thường chặn prompt). */
+function asgnProgM(f){
+  f=f||{};
+  var a=asgnById(f.asgnId);
+  var info=a?asgnInfo(a):{title:"?"};
+  var e=a?eById(a.empId):null;
+  var reopen=f.mode==="reopen";
+  var max=reopen?99:100;
+  var def=f.prog!=null?f.prog:(reopen?80:(a&&a.prog!=null?a.prog:0));
+  var body='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:12px;line-height:1.45">'+esc(e?e.name:"?")+' — '+esc(info.title)+'</div>'
+    +fld("Tiến độ (%)",'<input type="number" id="ap-prog" min="0" max="'+max+'" step="1" value="'+esc(String(def))+'" inputmode="numeric" style="font-size:18px;font-family:monospace">')
+    +'<div style="font-size:12px;color:var(--c-muted4);margin-top:8px;line-height:1.4">'+(reopen?"Mở lại việc đã xong — nhập từ 0 đến 99.":"Nhập từ 0 đến 100. Đặt dưới 100% nếu việc đã xong sẽ mở lại việc đó.")+'</div>'
+    +'<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">'
+    +[0,50,80,90,100].filter(function(x){return x<=max}).map(function(x){
+      return'<button type="button" class="btn btn-ghost btn-sm" onclick="var el=document.getElementById(\'ap-prog\');if(el)el.value=\''+x+'\'">'+x+'%</button>';
+    }).join("")
+    +'</div>';
+  return mw(reopen?"Mở lại · hạ %":"Đổi tiến độ %",body,btn("btn-primary","Lưu","A.saveAsgnProg()"),"");
+}
+function reopenProjProgM(f){
+  f=f||{};
+  var p=pById(f.projId);
+  var body='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:12px;line-height:1.45">Mở lại «'+esc(p?p.name:"?")+'». Để trống ô % nếu chỉ thêm hạng mục mới (giữ việc đã xong).</div>'
+    +fld("Hạ tiến độ việc đã xong về (%)",'<input type="number" id="rp-prog" min="0" max="99" step="1" value="'+(f.prog!=null?esc(String(f.prog)):"80")+'" inputmode="numeric" placeholder="Để trống = không hạ %" style="font-size:18px;font-family:monospace">')
+    +'<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">'
+    +'<button type="button" class="btn btn-ghost btn-sm" onclick="var el=document.getElementById(\'rp-prog\');if(el)el.value=\'\'">Không hạ %</button>'
+    +[50,80,90].map(function(x){
+      return'<button type="button" class="btn btn-ghost btn-sm" onclick="var el=document.getElementById(\'rp-prog\');if(el)el.value=\''+x+'\'">'+x+'%</button>';
+    }).join("")
+    +'</div>';
+  return mw("Mở lại dự án",body,btn("btn-primary","Mở lại","A.confirmReopenProj()"),"");
+}
 
 function vHist(){
   if(!canViewHist())return"";
@@ -8000,11 +8032,18 @@ window.A={
     var p=pById(id);
     if(!p)return alert("Không tìm thấy dự án.");
     if(p.status!=="done")return alert("Dự án chưa ở trạng thái hoàn thành.");
-    if(!confirm("Mở lại dự án «"+p.name+"» để làm bổ sung?\n\n• Chuyển khỏi mục Hoàn thành → Đang làm (bỏ khoá)\n• Có thể thêm hạng mục mới hoặc hạ tiến độ hạng mục đã xong (VD 80–90%)\n\nTiếp tục?"))return;
-    var raw=prompt("Hạ tiến độ các phần việc thi công đã xong về % nào? (0–99)\n\n• Nhập 80 hoặc 90 nếu cần làm lại / làm tiếp\n• Để trống nếu chỉ mở dự án để thêm hạng mục mới","80");
-    if(raw===null)return;
+    S.form={type:"reopen_proj",projId:id,prog:80};
+    S.modal=reopenProjProgM(S.form);render();
+  },
+  confirmReopenProj:function(){
+    if(!S.form||S.form.type!=="reopen_proj")return;
+    if(!isDir())return alert("Chỉ giám đốc được mở lại dự án đã hoàn thành.");
+    var id=S.form.projId;
+    var p=pById(id);
+    if(!p||p.status!=="done"){S.modal=null;S.form=null;render();return alert("Dự án không còn ở trạng thái hoàn thành.");}
+    var el=document.getElementById("rp-prog");
+    var t=el?String(el.value||"").trim():"";
     var opts={byName:logActorName()};
-    var t=String(raw).trim();
     if(t!==""){
       var n=parseInt(t,10);
       if(isNaN(n)||n<0||n>99)return alert("Nhập số từ 0 đến 99, hoặc để trống.");
@@ -8012,6 +8051,7 @@ window.A={
     }
     var res=applyReopenProjectLocal(id,opts);
     if(!res)return alert("Không mở lại được dự án.");
+    S.modal=null;S.form=null;
     sv();
     auditLog("action","reopen_proj","Mở lại dự án «"+p.name+"»"+(res.reopened?" · hạ "+res.reopened+" việc về "+res.progTarget+"%":" · giữ việc đã xong"),{id:id,reopened:res.reopened,progTarget:res.progTarget});
     if(confirm("Đã mở lại dự án.\n\nMở form Sửa để thêm hạng mục bổ sung ngay bây giờ?")){
@@ -8027,22 +8067,36 @@ window.A={
     if(isChiefAsgn(a))return alert("Việc kiểm tra Chỉ huy trưởng quản lý riêng — không dùng nút này.");
     var p=pById(a.projId);
     if(p&&p.status==="done")return alert("Hãy mở lại dự án trước (nút «Mở lại để làm bổ sung»).");
-    var raw=prompt("Hạ tiến độ phần việc «"+asgnInfo(a).title+"» về % nào? (0–99)","80");
-    if(raw===null)return;
-    var n=parseInt(String(raw).trim(),10);
-    if(isNaN(n)||n<0||n>99)return alert("Nhập số từ 0 đến 99.");
-    if(!applyReopenAsgnLocal(id,n))return alert("Không mở lại được phần việc.");
-    sv();render();
+    S.form={type:"asgn_prog",asgnId:id,mode:"reopen",prog:80};
+    S.modal=asgnProgM(S.form);render();
   },
   setAsgnProg:function(id){
     if(!isDir())return alert("Chỉ giám đốc được chỉnh tiến độ phần việc này.");
     var a=asgnById(id);
-    if(!a)return;
+    if(!a)return alert("Không tìm thấy phần việc.");
     if(isProjLocked(pById(a.projId)))return alert("Dự án đang khoá — mở lại dự án trước.");
-    var raw=prompt("Đặt tiến độ phần việc «"+asgnInfo(a).title+"» (%):",String(a.prog!=null?a.prog:0));
-    if(raw===null)return;
-    var n=parseInt(String(raw).trim(),10);
-    if(isNaN(n)||n<0||n>100)return alert("Nhập số từ 0 đến 100.");
+    S.form={type:"asgn_prog",asgnId:id,mode:"set",prog:a.prog!=null?a.prog:0};
+    S.modal=asgnProgM(S.form);render();
+  },
+  saveAsgnProg:function(){
+    if(!S.form||S.form.type!=="asgn_prog")return;
+    if(!isDir())return alert("Chỉ giám đốc được chỉnh tiến độ phần việc này.");
+    var id=S.form.asgnId;
+    var mode=S.form.mode==="reopen"?"reopen":"set";
+    var el=document.getElementById("ap-prog");
+    var n=parseInt(el?String(el.value||"").trim():"",10);
+    var max=mode==="reopen"?99:100;
+    if(isNaN(n)||n<0||n>max)return alert("Nhập số từ 0 đến "+max+".");
+    var a=asgnById(id);
+    if(!a){S.modal=null;S.form=null;render();return alert("Không tìm thấy phần việc.");}
+    if(isProjLocked(pById(a.projId)))return alert("Dự án đang khoá — mở lại dự án trước.");
+    S.modal=null;S.form=null;
+    if(mode==="reopen"){
+      if(a.status!=="done")return alert("Phần việc này không ở trạng thái đã xong.");
+      if(!applyReopenAsgnLocal(id,n))return alert("Không mở lại được phần việc.");
+      sv();render();
+      return;
+    }
     A.ps2a(id,n);
   },
   sxm:function(id){var a=asgnById(id);if(!a||a.status!=="active")return;S.form={type:"sapxep",asgnId:id,mode:"transfer",note:"",targetProj:"",targetEmp:""};S.modal=sapXepM(S.form);render()},
