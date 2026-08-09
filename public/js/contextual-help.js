@@ -72,10 +72,11 @@
       ],
       [
         p("Giao việc từ hồ sơ nhân sự", [
-          "Mở hồ sơ nhân viên thi công (không phải Giám sát / Điều hành). Chỉ huy trưởng vẫn nhận giao việc như nhân viên thi công.",
+          "Mở hồ sơ nhân viên thi công (không phải Giám sát / Điều hành).",
+          "Chỉ huy trưởng: giao việc kiểm tra / báo cáo — hoàn tất chỉ giải phóng họ nhận việc tiếp theo, không tính vào tiến độ dự án.",
           "Bấm «Giao việc».",
           "Nhập nội dung, thời gian, khách hàng / liên hệ nếu có.",
-          "Bấm «Lưu giao việc» — việc xuất hiện trên Công việc của nhân viên và Tiến độ.",
+          "Bấm «Lưu giao việc» — việc xuất hiện trên Công việc của nhân viên.",
         ]),
         p("Chỉnh đội tham gia", [
           "Chỉ Giám đốc: trong khung Đội tham gia, tick/bỏ tick đội.",
@@ -96,10 +97,12 @@
       [
         p("Tạo dự án mới", [
           "Bấm «+ Thêm dự án».",
-          "Điền tên, chọn tổ chuyên môn, loại (Dự án mới / Sửa chữa), ưu tiên.",
-          "Gắn khách hàng (nên có sẵn toạ độ để bản đồ / gợi ý khoảng cách chính xác).",
-          "Nhập ngày bắt đầu và số ngày hoàn thành — hệ thống tính ngày kết thúc.",
-          "Lưu dự án, rồi vào Chi tiết → «Giao việc» để bố trí đội thi công.",
+          "Điền tên, khách hàng, ngày bắt đầu và số ngày hoàn thành.",
+          "Mỗi khung = 1 hạng mục; bấm «+ Thêm hạng mục» nếu cần thêm.",
+          "Không tick phụ thuộc = các hạng mục làm song song. Tick một/nhiều hạng mục cha = chỉ mở khi mọi cha đã xong (có thể nhiều tầng).",
+          "Bấm tên nhóm (Điện, Hàn…) để xổ danh sách nhân viên; chọn người và % tải.",
+          "Phân Trưởng nhóm / Thủ kho ở cuối khối hạng mục (khi đã chọn đủ người).",
+          "Lưu dự án.",
         ]),
       ]
     ),
@@ -110,26 +113,33 @@
         c("← Quay lại", "Về danh sách dự án hoặc trang trước."),
         c("Giao việc", "Mở màn hình chọn người tham gia dự án và lưu phân công."),
         c("Sửa", "Điều hành / Giám đốc: sửa thông tin dự án."),
-        c("Hoàn tất", "Giám đốc (hoặc trưởng nhóm): xác nhận đóng cả dự án — mọi thành viên còn việc được chuyển sang đã hoàn tất."),
-        c("Đang làm / Hoàn thành", "Tab lọc: dự án đang làm riêng; dự án đã hoàn tất vào mục Hoàn thành (chỉ xem, đã khoá)."),
-        c("Thanh tiến độ", "Tiến độ tổng hợp từ các công việc của dự án."),
+        c("Hoàn tất", "Giám đốc (hoặc trưởng nhóm): xác nhận đóng cả dự án — đóng phần việc thi công còn mở."),
+        c("Mở lại để làm bổ sung", "Chỉ Giám đốc: mở dự án đã hoàn thành khi phát sinh hư hỏng / khách yêu cầu làm thêm — thêm hạng mục hoặc hạ tiến độ (VD 80–90%)."),
+        c("Đang làm / Hoàn thành", "Tab lọc: dự án đang làm riêng; dự án đã hoàn tất vào mục Hoàn thành (khoá — Giám đốc có thể mở lại)."),
+        c("Thanh tiến độ", "Tiến độ tổng hợp từ việc thi công theo hạng mục."),
         c("Đội dự án", "Danh sách người đã vào đội; badge chức vụ cạnh tên — chỉ xem trên trang này. Đổi chức vụ trong «Giao việc»."),
         c("Timeline dự án", "Nhật ký giao việc, báo cáo, đến vị trí, hoàn tất…"),
       ],
       [
         p("Giao việc / bố trí đội cho dự án", [
-          "Vào Chi tiết dự án → bấm «Giao việc».",
-          "Tick nhân viên theo từng tổ chuyên môn (tổ dự án được đánh dấu).",
-          "Tuỳ chọn: đặt giờ có mặt tại điểm cho người mới giao; chỉnh ngày bắt đầu / hoàn thành từng người nếu cảnh báo trùng lịch.",
+          "Vào Chi tiết dự án → bấm «Giao việc» hoặc Sửa dự án.",
+          "Tick nhân viên thi công theo từng hạng mục / tổ chuyên môn.",
           "Chọn Trưởng nhóm / Thủ kho ở khối «Bố trí chức vụ» (khi đội đủ người).",
-          "Bấm «Lưu giao việc». Nếu trùng lịch, chọn Dời việc mới hoặc Tạm dừng việc đang làm rồi xác nhận.",
-          "Người được giao sẽ thấy việc ở tab Công việc và nhận nhắc / push (nếu đã bật).",
+          "Bấm «Lưu». Người được giao sẽ thấy việc ở tab Công việc.",
         ]),
-        p("Hoàn tất dự án", [
-          "Chỉ Giám đốc hoặc Trưởng nhóm được xác nhận hoàn tất cả dự án.",
-          "Vào Chi tiết dự án → bấm «Hoàn tất» (trưởng nhóm cũng thấy nút trong Công việc của mình).",
-          "Xác nhận: mọi việc còn mở của thành viên sẽ đóng; họ sẵn sàng nhận dự án khác.",
-          "Nhân viên bấm «Hoàn tất phần việc» chỉ kết thúc phần của họ — không đóng cả dự án.",
+        p("Hạng mục & hoàn tất", [
+          "Chi tiết dự án hiện hạng mục, % từng người và phụ thuộc (chờ hạng mục cha).",
+          "Hạng mục có cha chỉ mở khi mọi hạng mục cha đã xong.",
+          "Nhân viên thi công bấm «Hoàn tất phần việc của tôi» chỉ xong phần của họ — dự án vẫn có thể Đang làm.",
+          "Chỉ Giám đốc hoặc Trưởng nhóm bấm «Xác nhận hoàn thành dự án» mới chuyển dự án sang mục Hoàn thành.",
+        ]),
+        p("Mở lại dự án đã hoàn thành (Giám đốc)", [
+          "Vào mục Hoàn thành → Chi tiết dự án đã khoá.",
+          "Bấm «Mở lại để làm bổ sung».",
+          "Nhập % muốn hạ các phần việc đã xong (VD 80) — hoặc để trống nếu chỉ thêm hạng mục mới.",
+          "Có thể mở form Sửa ngay để thêm hạng mục bổ sung / giao người.",
+          "Trên chi tiết: «Mở lại · hạ %» từng phần việc, hoặc «Đổi %» việc đang làm.",
+          "Khi xong phần bổ sung, Giám đốc/Trưởng nhóm xác nhận hoàn thành dự án lại.",
         ]),
       ]
     ),
