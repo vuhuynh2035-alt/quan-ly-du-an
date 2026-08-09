@@ -129,8 +129,8 @@
         p("Hạng mục & hoàn tất", [
           "Chi tiết dự án hiện danh sách hạng mục (song song / nối tiếp) và % từng người.",
           "Nối tiếp: hạng mục sau chỉ mở khi hạng mục trước đã xong.",
-          "Nhân viên hoàn tất từng hạng mục; chỉ khi hết hạng mục có % > 0 của họ thì họ rảnh nhận việc khác.",
-          "Giám đốc / Trưởng nhóm bấm «Hoàn tất» để đóng cả dự án vào mục Hoàn thành.",
+          "Nhân viên (kể cả chỉ huy trưởng) bấm «Hoàn tất phần việc của tôi» chỉ xong phần của họ — giải phóng nhận việc khác; dự án vẫn có thể Đang làm.",
+          "Chỉ Giám đốc hoặc Trưởng nhóm bấm «Xác nhận hoàn thành dự án» mới chuyển dự án sang mục Hoàn thành.",
         ]),
       ]
     ),

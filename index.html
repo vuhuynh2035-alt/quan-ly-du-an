@@ -910,7 +910,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="78">
+<meta name="app-build" content="80">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -1902,13 +1902,13 @@ function projAssignBlockHTML(f){
   // Tạo mới: dùng hạng mục. Sửa: vẫn cho chỉnh hạng mục + nhân sự %.
   return projWorkItemsBlockHTML(f);
 }
-/** Trạng thái hiển thị theo kế hoạch — dự án chỉ «Hoàn thành» khi giám đốc/trưởng nhóm xác nhận. */
+/** Trạng thái hiển thị — «Hoàn thành» CHỈ khi GD/TN đã xác nhận (p.status=done). NV xong phần việc ≠ dự án xong. */
 function projPlanStatus(p){
   if(!p)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(p.status==="done")return{key:"done",label:"Hoàn thành",c:"#4ade80"};
-  var asgns=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused"||a.status==="done")});
-  var openAsgn=asgns.filter(function(a){return a.status==="active"||a.status==="paused"});
-  if(asgns.length&&!openAsgn.length)return{key:"await_close",label:"Chờ xác nhận hoàn tất",c:"#38bdf8"};
+  var asgns=S.asgn.filter(function(a){return a.projId===p.id&&(a.status==="active"||a.status==="paused"||a.status==="done"||a.status==="queued")});
+  var openAsgn=asgns.filter(function(a){return a.status==="active"||a.status==="paused"||a.status==="queued"});
+  if(asgns.length&&!openAsgn.length)return{key:"await_close",label:"Chờ GD/TN xác nhận",c:"#38bdf8"};
   var today=td(),start=p.startDate||"",end=p.deadline||"";
   if(start&&today<start)return{key:"planned",label:"Lên kế hoạch",c:"#38bdf8"};
   if(end&&today>end)return{key:"late",label:"Trễ hạn",c:"#ef4444"};
@@ -1917,9 +1917,10 @@ function projPlanStatus(p){
 function isProjLocked(p){return !!(p&&p.status==="done")}
 function projLockedGuard(p){
   if(!isProjLocked(p))return true;
-  alert("Dự án đã hoàn tất — chỉ lưu trữ để tham khảo, không chỉnh sửa được.");
+  alert("Dự án đã hoàn thành (đã được giám đốc/trưởng nhóm xác nhận) — chỉ lưu trữ tham khảo, không chỉnh sửa được.");
   return false;
 }
+/** Chỉ Giám đốc hoặc Trưởng nhóm (toTruongId) của dự án — không phải chỉ huy trưởng / NV thường. */
 function canConfirmProjDone(p){
   if(!p||isProjLocked(p))return false;
   if(isDir())return true;
@@ -1931,7 +1932,7 @@ function applyCompleteProjectLocal(projId, meta){
   var closed=0;
   S.asgn=S.asgn.map(function(a){
     if(a.projId!==projId)return a;
-    if(a.status!=="active"&&a.status!=="paused")return a;
+    if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return a;
     closed++;
     return Object.assign({},a,{status:"done",prog:100,completedAt:a.completedAt||td()});
   });
@@ -1942,8 +1943,8 @@ function applyCompleteProjectLocal(projId, meta){
   logProjEvent(projId,"proj_done",{
     empId:meta.empId||(isDir()?"":(S.auth&&S.auth.empId)||""),
     empName:by,
-    text:role+" "+by+" xác nhận hoàn tất dự án «"+p.name+"»"+(closed?" ("+closed+" việc đóng)":""),
-    meta:{closed:closed,byRole:isDir()?"director":"to_truong"}
+    text:role+" "+by+" xác nhận hoàn thành cả dự án «"+p.name+"»"+(closed?" ("+closed+" phần việc đóng)":""),
+    meta:{closed:closed,byRole:isDir()?"director":"to_truong",scope:"project"}
   });
   return closed;
 }
@@ -1968,9 +1969,9 @@ function asgnPlanStatus(a){
   return{key:"doing",label:"Đang làm",c:"#fbbf24"};
 }
 function syncProjStatusFromPlan(p){
+  // Không bao giờ tự đặt status=done từ tiến độ/NV — chỉ GD/TN qua completeProj.
   if(!p||p.status==="done")return p;
   var ps=projPlanStatus(p);
-  if(ps.key==="done"){p.status="done";return p;}
   if(ps.key==="planned")p.status="open";
   else p.status="in_progress";
   return p;
@@ -5127,13 +5128,13 @@ function vMyWorkDet(asgnId,orgHint){
     h+=btn("btn-primary","Báo cáo tiến độ hôm nay","A.goReport('"+a.id+"')");
   }
   if(a.status==="active"||a.status==="paused"){
-    h+=btn("btn-accent","Hoàn tất hạng mục","A.empFin('"+a.id+"')");
-    h+='<div style="width:100%;font-size:12px;color:var(--c-muted4);margin-top:2px">Chỉ kết thúc hạng mục này. Bạn chỉ rảnh nhận việc mới khi mọi hạng mục có tỷ lệ &gt; 0% của bạn trong dự án đã xong.</div>';
+    h+=btn("btn-accent","Hoàn tất phần việc của tôi","A.empFin('"+a.id+"')");
+    h+='<div style="width:100%;font-size:12px;color:var(--c-muted4);margin-top:2px">Chỉ hoàn tất <b>phần việc của bạn</b> (kể cả khi bạn là chỉ huy trưởng). Dự án vẫn có thể đang làm — không chuyển sang Hoàn thành.</div>';
   }
-  if(p&&canConfirmProjDone(p)&&(a.status==="active"||a.status==="paused"||a.status==="done")){
+  if(p&&canConfirmProjDone(p)&&!isDir()&&(a.status==="active"||a.status==="paused"||a.status==="done")){
     h+='<div style="width:100%;margin-top:10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)">';
-    h+='<div style="font-size:12px;color:var(--c-muted2);margin-bottom:8px">Bạn là trưởng nhóm — có thể xác nhận đóng cả dự án.</div>';
-    h+=btn("btn-primary","Hoàn tất dự án","A.completeProj('"+p.id+"')");
+    h+='<div style="font-size:12px;color:#fbbf24;margin-bottom:8px;line-height:1.4">Riêng quyền <b>Trưởng nhóm</b>: xác nhận hoàn thành <b>cả dự án</b> (khác với hoàn tất phần việc ở trên).</div>';
+    h+=btn("btn-primary","Xác nhận hoàn thành dự án","A.completeProj('"+p.id+"')");
     h+='</div>';
   }
   h+='</div>';
@@ -5432,15 +5433,18 @@ function vProjDet(id){
   if(!locked){
     if(canGiao())actions+=actBtn("btn-primary","Giao việc","giaoOpen",p.id);
     if(canOperate())actions+=btn("btn-ghost","Sửa","A.op('"+p.id+"')");
-    if(canConfirmProjDone(p))actions+=btn("btn-accent","Hoàn tất","A.completeProj('"+p.id+"')");
+    if(canConfirmProjDone(p))actions+=btn("btn-accent","Xác nhận hoàn thành dự án","A.completeProj('"+p.id+"')");
   }
   var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","projBack")+'<div class="row" style="gap:8px;align-items:stretch">'+actions+'</div></div>';
   h+='<div class="card card-p"><h2 style="font-size:22px;font-weight:700;margin-bottom:10px">'+esc(p.name)+'</h2>';
   h+='<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">'+bdg(p.group,groupColor(p.group))+bdg(p.type==="repair"?"Sửa chữa":"Dự án mới",p.type==="repair"?"#fbbf24":"#38bdf8")+bdg(ps.label,ps.c,ps.c+"18")+bdg(pr[0],pr[1])+(locked?bdg("Đã khoá","#94a3b8","rgba(148,163,184,.15)"):"")+'</div>';
+  if(ps.key==="await_close"){
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.28);font-size:13px;color:#7dd3fc;line-height:1.45">Mọi thành viên đã xong <b>phần việc của họ</b> — dự án vẫn <b>chưa hoàn thành</b> cho đến khi giám đốc hoặc trưởng nhóm bấm <b>Xác nhận hoàn thành dự án</b>.</div>';
+  }
   if(canConfirmProjDone(p)){
-    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.28);font-size:13px;color:var(--c-muted2);line-height:1.45">Bấm <b style="color:#4ade80">Hoàn tất</b> để đóng cả dự án — mọi thành viên còn việc sẽ được chuyển sang đã hoàn tất và sẵn sàng nhận việc mới.</div>';
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.28);font-size:13px;color:var(--c-muted2);line-height:1.45">Nút <b style="color:#4ade80">Xác nhận hoàn thành dự án</b> mới chuyển dự án sang mục Hoàn thành và khoá. Nhân viên (kể cả chỉ huy trưởng) hoàn tất phần việc chỉ giải phóng họ — <b>không</b> đóng cả dự án.</div>';
   }else if(locked){
-    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.35);font-size:13px;color:#cbd5e1;line-height:1.45">Dự án đã hoàn tất và <b>khoá</b> — chỉ xem / lưu trữ tham khảo. Không sửa, giao việc hay thay đổi đội.</div>';
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.35);font-size:13px;color:#cbd5e1;line-height:1.45">Dự án đã được giám đốc/trưởng nhóm xác nhận hoàn thành và <b>khoá</b> — chỉ xem tham khảo.</div>';
   }
   h+='<div style="margin-bottom:16px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:5px">Tiến độ</div><div class="row" style="gap:10px;align-items:center"><div style="flex:1;height:9px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:'+tl.prog+'%;background:linear-gradient(90deg,#38bdf8,#60a5fa);border-radius:999px"></div></div><span style="font-family:monospace;font-weight:700;color:#38bdf8">'+tl.prog+'%</span></div></div>';
   h+='<div class="grid2" style="gap:14px;margin-bottom:14px"><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Khách hàng</div><div style="font-size:14px">'+(cn?esc(cn):"—")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Địa điểm</div><div style="font-size:14px">📍 '+esc(pl?pl.name:p.province)+(c&&c.lat!=null?' <span style="font-family:monospace;font-size:12px;color:var(--c-muted4)">('+c.lat.toFixed(4)+", "+c.lng.toFixed(4)+')</span>':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Thời gian</div><div style="font-family:monospace;font-size:13px">'+dFmtG(tl.start)+' → '+dFmtG(tl.end)+(p.durationDays?' · '+p.durationDays+' ngày':"")+'</div></div><div><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Đội tham gia</div><div style="font-family:monospace;font-size:13px">'+projPartIds(p).length+' người'+(p.toTruongId||p.vatTuId?" · đã phân chức vụ":"")+'</div></div></div>';
@@ -5569,12 +5573,12 @@ function vProj(){
   h+='</div>';
   if(view==="active"){
     h+=lateAlertBannerHTML();
-    if(awaitN)h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.28);font-size:13px;color:#7dd3fc;line-height:1.45">Có <b>'+awaitN+'</b> dự án đang <b>Chờ xác nhận hoàn tất</b> — mở Chi tiết → bấm <b>Hoàn tất</b> để khoá và chuyển vào mục Hoàn thành.</div>';
+    if(awaitN)h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.28);font-size:13px;color:#7dd3fc;line-height:1.45">Có <b>'+awaitN+'</b> dự án <b>Chờ GD/TN xác nhận</b> (NV đã xong phần việc, dự án chưa đóng). Mở Chi tiết → <b>Xác nhận hoàn thành dự án</b>.</div>';
   }else{
-    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.3);font-size:13px;color:#cbd5e1;line-height:1.45">Kho lưu trữ dự án đã hoàn tất — <b>đã khoá</b> (không sửa / giao việc). Chỉ xem tham khảo.</div>';
+    h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.3);font-size:13px;color:#cbd5e1;line-height:1.45">Kho dự án đã được giám đốc/trưởng nhóm xác nhận hoàn thành — <b>đã khoá</b>.</div>';
   }
   if(!list.length){
-    h+='<div class="card card-p" style="color:var(--c-muted)">'+(view==="done"?"Chưa có dự án hoàn thành. Khi giám đốc/trưởng nhóm bấm «Hoàn tất», dự án sẽ xuất hiện ở đây.":"Chưa có dự án đang làm.")+'</div>';
+    h+='<div class="card card-p" style="color:var(--c-muted)">'+(view==="done"?"Chưa có dự án hoàn thành. Chỉ khi giám đốc hoặc trưởng nhóm xác nhận hoàn thành dự án thì mới xuất hiện ở đây.":"Chưa có dự án đang làm.")+'</div>';
     return h;
   }
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">';
@@ -5657,7 +5661,7 @@ function progCard(a){
   }
   if(canEdit){
     h+='<div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">'+btn("btn-ghost btn-sm","Sắp xếp lại","A.sxm('"+a.id+"')")+'</div>';
-    h+='<div class="row" style="gap:12px"><input type="range" min="0" max="100" step="5" value="'+a.prog+'" style="flex:1;accent-color:#38bdf8" oninput="A.pl(\''+a.id+'\',this.value)" onchange="A.ps2a(\''+a.id+'\',this.value)"><span id="pg_'+a.id+'" style="font-family:monospace;font-weight:700;width:46px;text-align:right;color:#38bdf8;font-size:15px">'+a.prog+'%</span>'+btn("btn-accent btn-sm"+(a.prog<100?" disabled":""),"Hoàn tất","A.fin('"+a.id+"')")+'</div>';
+    h+='<div class="row" style="gap:12px"><input type="range" min="0" max="100" step="5" value="'+a.prog+'" style="flex:1;accent-color:#38bdf8" oninput="A.pl(\''+a.id+'\',this.value)" onchange="A.ps2a(\''+a.id+'\',this.value)"><span id="pg_'+a.id+'" style="font-family:monospace;font-weight:700;width:46px;text-align:right;color:#38bdf8;font-size:15px">'+a.prog+'%</span>'+btn("btn-accent btn-sm"+(a.prog<100?" disabled":""),"Hoàn tất phần việc","A.fin('"+a.id+"')")+'</div>';
   }else{
     h+='<div class="row" style="gap:8px;margin-bottom:8px;align-items:center"><span style="font-family:monospace;font-weight:700;color:#38bdf8">'+a.prog+'%</span><span style="font-size:12px;color:var(--c-muted4)">Giám sát chỉ xem</span></div>';
   }
@@ -7444,15 +7448,15 @@ window.A={
     var a=asgnById(id);if(!a||a.status==="done")return;
     if(a.status==="queued")return alert("Hạng mục này chưa tới lượt — hoàn thành hạng mục trước đó trước.");
     if(!projLockedGuard(pById(a.projId)))return;
+    // Chỉ đóng phần việc (asgn) — không đổi status dự án sang done.
     var e=eById(a.empId);
     var info=asgnInfo(a);
-    logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" hoàn tất «"+info.title+"»"+(a.loadPct!=null?" ("+a.loadPct+"%)":""),meta:{asgnId:id,prog:100,scope:"self",workItemId:a.workItemId||"",loadPct:a.loadPct}});
+    logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" hoàn tất phần việc «"+info.title+"»"+(a.loadPct!=null?" ("+a.loadPct+"%)":""),meta:{asgnId:id,prog:100,scope:"self",workItemId:a.workItemId||"",loadPct:a.loadPct}});
     S.asgn=S.asgn.map(function(x){return x.id===id?Object.assign({},x,{status:"done",prog:100,completedAt:x.completedAt||td()}):x});
     activateQueuedWorkItems(a.projId);
     if(a.empId&&empFinishedOnProj(a.empId,a.projId)){
-      logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" đã xong toàn bộ hạng mục được giao trong dự án — có thể nhận việc khác",meta:{scope:"emp_proj_done"}});
+      logProjEvent(a.projId,"done",{empId:a.empId,empName:e?e.name:"",text:(e?e.name:"Nhân viên")+" đã xong phần việc trong dự án — có thể nhận việc khác (dự án vẫn có thể chưa hoàn thành)",meta:{scope:"emp_proj_done"}});
     }
-    // Không tự đóng dự án — giám đốc/trưởng nhóm xác nhận hoàn tất dự án.
     sv();render();
   },
   empFin:function(id){
@@ -7462,8 +7466,8 @@ window.A={
     if(a.status==="queued")return alert("Hạng mục này chưa tới lượt (quy trình nối tiếp).");
     var left=empOpenLoadOnProj(a.empId,a.projId).filter(function(x){return x.id!==id}).length;
     var msg=left
-      ?"Hoàn tất hạng mục này?\n\nBạn còn "+left+" hạng mục khác trong dự án — chỉ khi xong hết các hạng mục có tỷ lệ > 0% mới được nhận việc mới."
-      :"Hoàn tất hạng mục cuối của bạn trong dự án này?\n\nSau khi xác nhận bạn có thể nhận công việc khác.";
+      ?"Hoàn tất phần việc này của bạn?\n\nBạn còn "+left+" phần việc khác trong dự án. Dự án vẫn có thể đang làm — chỉ giám đốc/trưởng nhóm mới xác nhận hoàn thành cả dự án."
+      :"Hoàn tất phần việc cuối của bạn trong dự án này?\n\nBạn sẽ rảnh để nhận việc khác.\nDự án chỉ chuyển Hoàn thành khi giám đốc hoặc trưởng nhóm xác nhận.";
     if(!confirm(msg))return;
     S.selMyAsgn="";S.selMyAsgnOrg="";
     A.fin(id);
@@ -7476,19 +7480,19 @@ window.A={
   completeProj:function(id){
     var p=pById(id);
     if(!p)return alert("Không tìm thấy dự án.");
-    if(p.status==="done")return alert("Dự án đã hoàn tất.");
-    if(!canConfirmProjDone(p))return alert("Chỉ giám đốc hoặc trưởng nhóm của dự án mới được xác nhận hoàn tất dự án.");
-    var openN=S.asgn.filter(function(a){return a.projId===id&&(a.status==="active"||a.status==="paused")}).length;
-    var msg="Xác nhận hoàn tất dự án «"+p.name+"»?\n\nToàn bộ "+openN+" thành viên còn việc sẽ được chuyển sang đã hoàn tất và có thể nhận dự án khác.";
+    if(p.status==="done")return alert("Dự án đã hoàn thành.");
+    if(!canConfirmProjDone(p))return alert("Chỉ giám đốc hoặc trưởng nhóm của dự án mới được xác nhận hoàn thành cả dự án.\n\nChỉ huy trưởng / nhân viên chỉ hoàn tất phần việc của mình.");
+    var openN=S.asgn.filter(function(a){return a.projId===id&&(a.status==="active"||a.status==="paused"||a.status==="queued")}).length;
+    var msg="Xác nhận hoàn thành CẢ DỰ ÁN «"+p.name+"»?\n\n• Dự án sẽ chuyển sang mục Hoàn thành và bị khoá.\n• "+openN+" phần việc còn mở sẽ được đóng.\n\nĐây không phải hoàn tất phần việc cá nhân.";
     if(!confirm(msg))return;
     applyCompleteProjectLocal(id,{
       byName:logActorName(),
       byRole:isDir()?"Giám đốc":"Trưởng nhóm",
       empId:isDir()?"":(S.auth&&S.auth.empId)||""
     });
+    if(S.projView)S.projView="done";
     sv();
     render();
-    // Trưởng nhóm (employee) không ghi workspace trực tiếp — đồng bộ qua Cloud Function.
     if(!canOperate()&&typeof window.__CV3_completeProject==="function"){
       window.__CV3_completeProject(id, currentOrgId()).catch(function(err){
         alert((err&&err.message)||"Đã lưu trên máy nhưng chưa đồng bộ cloud. Báo giám đốc kiểm tra hoặc thử lại khi có mạng.");

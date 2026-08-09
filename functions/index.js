@@ -1750,7 +1750,7 @@ exports.completeProject = onCall(async (request) => {
   let closed = 0;
   const newAsgn = asgnList.map((a) => {
     if (!a || String(a.projId || "") !== projId) return a;
-    if (a.status !== "active" && a.status !== "paused") return a;
+    if (a.status !== "active" && a.status !== "paused" && a.status !== "queued") return a;
     closed += 1;
     return { ...a, status: "done", prog: 100, completedAt: a.completedAt || today };
   });
@@ -1768,8 +1768,8 @@ exports.completeProject = onCall(async (request) => {
     empId: isDirector ? "" : empId,
     empName: fromName,
     by: fromName,
-    text: `${roleLbl} ${fromName} xác nhận hoàn tất dự án «${proj.name || ""}» (${closed} việc đóng)`,
-    meta: { closed, byRole: isDirector ? "director" : "to_truong" },
+    text: `${roleLbl} ${fromName} xác nhận hoàn thành cả dự án «${proj.name || ""}» (${closed} phần việc đóng)`,
+    meta: { closed, byRole: isDirector ? "director" : "to_truong", scope: "project" },
   };
   const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
   const patch = (ws.patch || 0) + 1;
