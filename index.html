@@ -929,7 +929,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="84">
+<meta name="app-build" content="86">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
@@ -1678,20 +1678,8 @@ function deadlineWarnStyle(iso){
   if(isDeadlinePast(iso))return{box:"margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.45)",color:"#ef4444"};
   return{box:"margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.22)",color:"#38bdf8"};
 }
-function projOversightNoteHTML(){
-  var list=oversightEmpList();
-  var h='<div style="margin:12px 0 4px;padding:12px 14px;border-radius:12px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.28)">';
-  h+='<div style="font-size:12px;font-weight:700;color:#a5b4fc;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Giám sát &amp; Điều hành</div>';
-  if(!list.length)h+='<div style="font-size:12px;color:var(--c-muted4)">Chưa có nhân sự Giám sát / Điều hành trong đội này.</div>';
-  else{
-    h+='<div class="row" style="gap:8px;flex-wrap:wrap">';
-    list.forEach(function(e){
-      h+='<span class="badge" style="font-size:12px;padding:6px 10px;color:var(--c-text);background:rgba(255,255,255,.06);border-color:'+groupColor(e.group)+'55;cursor:pointer" onclick="A.empDet(\''+e.id+'\')">'+esc(e.name)+' · '+esc(e.group)+' · '+empOrgIds(e).map(orgLabelOf).join("+")+'</span>';
-    });
-    h+='</div>';
-  }
-  return h+'</div>';
-}
+/** Không còn hiển thị khối Giám sát & Điều hành trên dự án (luôn có sẵn theo đội). */
+function projOversightNoteHTML(){return""}
 function deriveProjGroupFromAssign(assignMap,fallback){
   var counts={},best=fallback||defaultFieldGroup(),bc=0;
   Object.keys(assignMap||{}).forEach(function(eid){
@@ -1939,8 +1927,7 @@ function projChiefInspectHTML(p){
   var list=projChiefAsgns(p.id);
   var open=list.filter(function(a){return a.status==="active"||a.status==="paused"||a.status==="queued"});
   var h='<div class="wi-det" style="border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.06)">';
-  h+='<div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:6px">Chỉ huy trưởng — việc kiểm tra</div>';
-  h+='<div style="font-size:12px;color:var(--c-muted2);line-height:1.45;margin-bottom:10px">Theo dõi / báo cáo tình trạng thi công. <b>Không tính vào tiến độ hay hoàn thành dự án</b> — chỉ để biết Chỉ huy đang kiểm tra đâu và khi nào xong để giao việc tiếp.</div>';
+  h+='<div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:8px">Chỉ huy trưởng — việc kiểm tra</div>';
   if(!list.length){
     h+='<div style="font-size:13px;color:var(--c-muted4)">Chưa giao việc kiểm tra cho Chỉ huy trưởng.</div>';
     return h+'</div>';
@@ -1961,8 +1948,7 @@ function projChiefAssignBlockHTML(f){
   var chiefs=chiefEmpList().filter(function(e){return e.status!=="leave"});
   if(!chiefs.length)return"";
   var h='<div class="wi-box" style="border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.06)">';
-  h+='<div class="wi-box-hd" style="color:#fbbf24">Chỉ huy trưởng — giao kiểm tra (không tính tiến độ dự án)</div>';
-  h+='<p class="wi-hint">Chỉ huy được giao kiểm tra / báo cáo chất lượng, tình trạng thi công. Hoàn tất phần việc của họ chỉ giải phóng họ sang dự án khác — <b>không ảnh hưởng tiến độ dự án</b>.</p>';
+  h+='<div class="wi-box-hd" style="color:#fbbf24">Chỉ huy trưởng — giao kiểm tra</div>';
   chiefs.forEach(function(e){
     var sel=!!f.chiefMap[e.id];
     var note=sel?(f.chiefMap[e.id].note||""):"";
@@ -5492,7 +5478,6 @@ function vMyWorkDet(asgnId,orgHint){
   if(a.status==="active"||a.status==="paused"){
     if(isChiefAsgn(a)){
       h+=btn("btn-accent","Hoàn tất việc kiểm tra","A.empFin('"+a.id+"')");
-      h+='<div style="width:100%;font-size:12px;color:#fbbf24;margin-top:2px">Việc kiểm tra của Chỉ huy trưởng — hoàn tất chỉ để nhận việc kiểm tra tiếp theo. <b>Không ảnh hưởng tiến độ dự án</b>.</div>';
     }else{
       h+=btn("btn-accent","Hoàn tất phần việc của tôi","A.empFin('"+a.id+"')");
       h+='<div style="width:100%;font-size:12px;color:var(--c-muted4);margin-top:2px">Chỉ hoàn tất <b>phần việc thi công của bạn</b>. Dự án vẫn có thể đang làm — không chuyển sang Hoàn thành.</div>';
@@ -5824,7 +5809,6 @@ function vProjDet(id){
   if(p.note)h+='<div style="margin-bottom:14px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Mô tả</div><div style="font-size:14px;color:rgba(200,220,255,.8)">'+esc(p.note)+'</div></div>';
   h+=projWorkItemsDetailHTML(p);
   h+=projChiefInspectHTML(p);
-  h+=projOversightNoteHTML();
   h+=projRoleEditCardHTML(p);
   h+='<div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px;margin-top:4px">Đội dự án (thi công)</div>';
   h+=projTeamListHTML(p,{link:canViewEmpTab(),acts:acts});
@@ -5847,7 +5831,6 @@ function vGiaoViec(id){
   var arriveVal=(S.giaoArriveAt!=null&&S.giaoArriveAt!=="")?S.giaoArriveAt:(defArr.getFullYear()+"-"+pad2(defArr.getMonth()+1)+"-"+pad2(defArr.getDate())+"T"+pad2(defArr.getHours())+":"+pad2(defArr.getMinutes()));
   h+=fld("Giờ có mặt tại điểm (người mới giao)",'<input type="datetime-local" id="giao-arrive" value="'+esc(arriveVal)+'" onchange="A.giaoArriveChange()">');
   h+=projGiaoMembersHTML(p);
-  h+=projOversightNoteHTML();
   h+='</div>';
   h+=teamRolePickBlock("Bố trí chức vụ",eff);
   fieldGroups().forEach(function(g){
@@ -5909,7 +5892,6 @@ function vTeamEdit(id){
   var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","giaoBack")+actBtn("btn-primary","Lưu giao việc","teamSave")+'</div>';
   h+='<div class="card card-p" style="margin-bottom:16px"><h2 style="font-size:18px;font-weight:700;margin-bottom:6px">Giao việc — '+esc(p.name)+'</h2>';
   h+='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:8px">Thêm hoặc bỏ nhân viên tham gia dự án này. <b style="color:#fbbf24">Bố trí vào dự án = đã giao việc</b> — bấm «Lưu giao việc» để hoàn tất.</div>';
-  h+=projOversightNoteHTML();
   h+='</div>';
   h+=teamRolePickBlock("Bố trí chức vụ",curGiaoPartIds());
   fieldGroups().forEach(function(g){
