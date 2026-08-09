@@ -494,7 +494,7 @@ textarea{min-height:60px;resize:vertical}
 .wi-card{padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);margin-bottom:10px}
 .wi-card-top{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .wi-card-top input[type="text"]{flex:1;min-width:0}
-.wi-card-top input[type="text"]::placeholder{color:var(--c-muted4);opacity:.75}
+.wi-card-top input[type="text"]::placeholder{color:var(--c-muted4);opacity:.55;font-style:italic}
 .wi-emp{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:10px;border:1px solid var(--c-border);background:var(--c-input);margin-bottom:6px;cursor:pointer}
 .wi-emp.sel{border-color:rgba(56,189,248,.5);background:rgba(56,189,248,.1)}
 .wi-emp-pct{width:72px;padding:6px 8px;font-size:13px;text-align:right}
@@ -8269,7 +8269,7 @@ window.A={
     var a=asgnById(id);
     if(!a||a.empId!==S.auth.empId)return alert("Chỉ nhân viên được giao việc mới hoàn tất phần việc của mình.");
     if(a.status==="done")return alert("Phần việc của bạn đã hoàn tất.");
-    if(a.status==="queued")return alert("Hạng mục này chưa tới lượt (quy trình nối tiếp).");
+    if(a.status==="queued")return alert("Hạng mục này chưa tới lượt — cần hoàn thành các hạng mục cha trước.");
     var chief=isChiefAsgn(a);
     var msg;
     if(chief){
