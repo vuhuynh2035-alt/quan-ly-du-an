@@ -2073,7 +2073,8 @@ function projWorkItemsBlockHTML(f){
       var open=!!(f.wiOpenGrp&&f.wiOpenGrp[gkey]);
       var selN=list.filter(function(e){return f.itemStaff[w.id]&&f.itemStaff[w.id][e.id]}).length;
       h+='<div class="wi-grp">';
-      h+='<div class="wi-grp-hd" onclick="A.wiToggleGrp(\''+w.id+'\','+JSON.stringify(g)+')">';
+      // esc(JSON…) để dấu " không cắt đứt thuộc tính onclick="…"
+      h+='<div class="wi-grp-hd" onclick="A.wiToggleGrp(\''+esc(w.id)+'\','+esc(JSON.stringify(g))+')">';
       h+='<span class="wi-grp-chev">'+(open?"▾":"▸")+'</span>';
       h+='<div class="gdot" style="background:'+groupColor(g)+';color:'+groupColor(g)+'"></div>';
       h+='<span style="font-size:13px;font-weight:600;flex:1">'+esc(g)+'</span>';
