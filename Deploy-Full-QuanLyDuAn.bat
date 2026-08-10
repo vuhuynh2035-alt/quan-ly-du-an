@@ -25,15 +25,17 @@ if errorlevel 1 (
 
 echo.
 echo [2/5] Kiem tra code co muc Hoan thanh / khoa du an ...
-findstr /C:"projView" /C:"isProjLocked" index.html >nul
+set "APP_JS=js\app.js"
+if not exist "%APP_JS%" set "APP_JS=index.html"
+findstr /C:"projView" /C:"isProjLocked" "%APP_JS%" >nul
 if errorlevel 1 (
   echo.
-  echo LOI: index.html chua co code Hoan thanh / khoa du an.
+  echo LOI: %APP_JS% chua co code Hoan thanh / khoa du an.
   echo Hay merge PR va git pull lai.
   pause
   exit /b 1
 )
-echo OK — tim thay projView + isProjLocked.
+echo OK — tim thay projView + isProjLocked trong %APP_JS%.
 
 echo.
 echo [3/5] firebase use project ...
