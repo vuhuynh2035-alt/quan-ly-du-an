@@ -7,6 +7,9 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title Deploy Tu Dong — Quan ly du an
 
+REM Timeout discovery Cloud Functions (mac dinh 10s thuong that bai tren Windows)
+set FUNCTIONS_DISCOVERY_TIMEOUT=60
+
 echo.
 echo ========================================
 echo   DEPLOY TU DONG

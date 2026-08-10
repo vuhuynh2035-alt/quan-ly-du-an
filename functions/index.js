@@ -1,3 +1,4 @@
+const { onInit } = require("firebase-functions/v2/core");
 const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
@@ -7,11 +8,17 @@ const { getAuth } = require("firebase-admin/auth");
 const { getMessaging } = require("firebase-admin/messaging");
 const { getStorage } = require("firebase-admin/storage");
 
-initializeApp();
+// Defer Admin SDK init — tranh timeout discovery khi firebase deploy (10s).
+let db;
+let adminAuth;
+let adminStorage;
 
-const db = getFirestore();
-const adminAuth = getAuth();
-const adminStorage = getStorage();
+onInit(() => {
+  initializeApp();
+  db = getFirestore();
+  adminAuth = getAuth();
+  adminStorage = getStorage();
+});
 
 function sanitizeUsername(name) {
   return String(name || "")

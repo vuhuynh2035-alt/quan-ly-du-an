@@ -15,7 +15,7 @@
     "deploy": "npm run build && npx -y firebase-tools@latest deploy",
     "deploy:hosting": "npm run build && npx -y firebase-tools@latest deploy --only hosting",
     "deploy:rules": "npx -y firebase-tools@latest deploy --only firestore:rules",
-    "deploy:functions": "npx -y firebase-tools@latest deploy --only functions",
+    "deploy:functions": "node scripts/deploy-functions.js",
     "deploy:storage-lifecycle": "node scripts/apply-storage-lifecycle.cjs",
     "deploy:photo-retention": "npx -y firebase-tools@latest deploy --only functions:purgeExpiredPhotos,storage && node scripts/apply-storage-lifecycle.cjs"
   },

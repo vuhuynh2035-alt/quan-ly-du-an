@@ -788,8 +788,23 @@ function Invoke-DeployCommands {
       return $code
     }
 
+    # Functions discovery tren Windows thuong > 10s (mac dinh) → timeout
+    if (-not $env:FUNCTIONS_DISCOVERY_TIMEOUT) {
+      $env:FUNCTIONS_DISCOVERY_TIMEOUT = "60"
+    }
+
+    $fnDir = Join-Path $RepoRoot "functions"
+    if ((Test-Path -LiteralPath (Join-Path $fnDir "package.json")) -and -not (Test-Path -LiteralPath (Join-Path $fnDir "node_modules"))) {
+      Write-Host "npm install (functions)..." -ForegroundColor Yellow
+      Push-Location -LiteralPath $fnDir
+      try {
+        Invoke-External -FailMessage "npm install functions that bai" -Command { npm install } | Out-Null
+      } finally { Pop-Location }
+    }
+
     $wantFull = $FullDeploy -or ($Kind -eq "all")
     Write-Host "[3/3] firebase deploy --project $ProjectId ..." -ForegroundColor Yellow
+    Write-Host "  FUNCTIONS_DISCOVERY_TIMEOUT=$($env:FUNCTIONS_DISCOVERY_TIMEOUT)" -ForegroundColor DarkGray
     if ($wantFull) {
       $code = Invoke-External -AllowFail -Command { firebase deploy --project $ProjectId }
     } else {

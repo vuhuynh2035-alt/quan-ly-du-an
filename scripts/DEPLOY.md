@@ -12,6 +12,8 @@ Tu dong chay het:
 4. Kiem tra code (`projView` / `isProjLocked`)
 5. Build + deploy Firebase (hosting + functions)
 
+Neu loi **Timeout after 10000** khi load Functions: script da set `FUNCTIONS_DISCOVERY_TIMEOUT=60` va Admin SDK dung `onInit()` (khong init luc discovery).
+
 Tuy chon PowerShell:
 
 ```powershell
