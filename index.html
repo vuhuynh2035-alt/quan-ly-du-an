@@ -5888,12 +5888,56 @@ function empMapMarkerHtml(flags, isLeave){
   var bg = flags.hasHcm ? MAP_ORG_COL_HCM : MAP_ORG_COL_TINH;
   return '<div style="width:12px;height:12px;border-radius:50%;border:1.5px solid '+border+';box-shadow:'+shadow+';background:'+bg+'"></div>';
 }
+/** Sơ đồ: luôn gom NV thi công cả 2 đội (không lọc theo đội đang chọn). */
+function mapEmpPool(){
+  var pool=(S.empAll&&S.empAll.length)?S.empAll:S.emp;
+  return fieldEmp(pool);
+}
+function mapAsgnPool(){
+  var out=(S.asgn||[]).slice();
+  (S.asgnOther||[]).forEach(function(a){
+    out.push(Object.assign({},a,{_orgId:a._orgId||S.otherOrgId||""}));
+  });
+  return out;
+}
+function mapProjPool(){
+  var out=(S.proj||[]).slice();
+  (S.projOther||[]).forEach(function(p){
+    out.push(Object.assign({},p,{_orgId:p._orgId||S.otherOrgId||""}));
+  });
+  return out;
+}
+function mapEmpLoc(emp){
+  var acts=mapAsgnPool().filter(function(a){return a.empId===emp.id&&a.status==="active"});
+  var ca=null;
+  if(acts.length){
+    ca=acts.reduce(function(b,a){
+      if(!b)return a;
+      if(a.prog!==b.prog)return a.prog>b.prog?a:b;
+      return(a.startDate||"")>=(b.startDate||"")?a:b;
+    },null);
+  }
+  if(ca){
+    var pr=pById(ca.projId);
+    if(pr){
+      var pl=pLoc(pr);
+      if(pl&&pl.lat!=null)return{loc:{lat:pl.lat,lng:pl.lng},src:"nhà máy KH · "+esc(pl.name)};
+    }
+  }
+  if(homeBasis()||!emp.lastLoc||emp.lastLoc.lat==null){
+    var p=PM[emp.province];
+    return{loc:p?{lat:p.lat,lng:p.lng}:null,src:"nhà · "+esc(emp.province)};
+  }
+  return{loc:{lat:emp.lastLoc.lat,lng:emp.lastLoc.lng},src:"gần nhất · "+(emp.lastLoc.label||"?")+(emp.lastLoc.date?" ("+emp.lastLoc.date+")":"")};
+}
 function vMap(){
   var h='<div class="row" style="justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px"><h2 style="font-size:20px;font-weight:700">Sơ đồ vị trí</h2><div class="row" style="gap:8px"><button class="btn" onclick="A.mapRefresh()">Làm mới</button></div></div>';
+  h+='<div style="font-size:12px;color:var(--c-muted);margin-bottom:8px">Hiển thị toàn bộ nhân viên và dự án — cả Công trình tỉnh và Công trình HCM.</div>';
   h+='<div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:var(--c-muted)">';
   h+='<span class="row" style="gap:6px;align-items:center"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+MAP_ORG_COL_HCM+';border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.15)"></span> Công trình HCM</span>';
   h+='<span class="row" style="gap:6px;align-items:center"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+MAP_ORG_COL_TINH+';border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.15)"></span> Công trình tỉnh</span>';
   h+='<span class="row" style="gap:6px;align-items:center"><span style="display:inline-flex;width:12px;height:12px;border-radius:50%;overflow:hidden;border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.15)"><span style="width:50%;background:'+MAP_ORG_COL_HCM+'"></span><span style="width:50%;background:'+MAP_ORG_COL_TINH+'"></span></span> Cả 2 đội</span>';
+  h+='<span class="row" style="gap:6px;align-items:center"><svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#f97316"><path d="M3 21h18M5 21V9l7-5 7 5v12"/></svg> Dự án đang mở</span>';
   h+='</div>';
   h+='<div id="map-container" style="width: 100%; height: calc(100vh - 160px); min-height: 500px; border-radius: 12px; overflow: hidden; background: #e5e5e5; z-index: 1; position: relative; border: 1px solid var(--c-border);"></div>';
   setTimeout(function(){ensureLeaflet().then(function(){initMapLeaflet();});}, 50);
@@ -5946,22 +5990,40 @@ function initMapLeaflet(force) {
   var bounds = [];
   var factorySvg = '<svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:#3b82f6;stroke:white;stroke-width:1.5;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5))"><path d="M2 22 L2 10 L8 6 L8 12 L14 8 L14 14 L20 10 L20 22 Z"/><rect x="4" y="14" width="2" height="3" fill="white"/><rect x="10" y="16" width="2" height="3" fill="white"/><rect x="16" y="14" width="2" height="3" fill="white"/></svg>';
   var custIcon = L.divIcon({className: 'custom-div-icon', html: factorySvg, iconSize: [28, 28], iconAnchor: [14, 14]});
+  var projSvg = '<svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:#f97316;stroke:white;stroke-width:1.2;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.45))"><path d="M3 21h18M5 21V9l7-5 7 5v12M9 21v-6h6v6"/></svg>';
+  var projIcon = L.divIcon({className: 'custom-div-icon', html: projSvg, iconSize: [24, 24], iconAnchor: [12, 12]});
+  var placedKeys = {};
 
   S.cust.forEach(function(c){
     var la = c.lat, ln = c.lng;
     if(la==null && PM[c.province]) { la = PM[c.province].lat; ln = PM[c.province].lng; }
     if(la!=null) {
       bounds.push([la, ln]);
+      placedKeys[la.toFixed(4)+"_"+ln.toFixed(4)]=1;
       var marker = L.marker([la, ln], {icon: custIcon, zIndexOffset: 50}).addTo(mapInstance);
       marker.bindPopup("<b style='color:#000'>Khách hàng:</b> <span style='color:#000'>" + esc(custDisplayName(c)) + "</span>" + (custFullName(c)&&custFullName(c)!==custDisplayName(c) ? "<br><span style='color:#333;font-size:12px'>" + esc(custFullName(c)) + "</span>" : "") + (c.phone ? "<br><span style='color:#000'>ĐT: " + esc(c.phone) + "</span>" : "") + "<br><span style='color:#000'>Địa chỉ: " + esc(c.address||c.province) + "</span>");
     }
   });
 
-  var acts = S.asgn.filter(function(a){return a.status==="active"||a.status==="paused"});
+  mapProjPool().forEach(function(p){
+    if(!p||p.status==="done")return;
+    var pl=pLoc(p);
+    if(!pl||pl.lat==null)return;
+    var key=pl.lat.toFixed(4)+"_"+pl.lng.toFixed(4);
+    if(placedKeys[key])return;
+    placedKeys[key]=1;
+    bounds.push([pl.lat, pl.lng]);
+    var orgLbl=p._orgId?orgLabelOf(p._orgId):(currentOrgId()==="nha-may"?"Công trình HCM":"Công trình tỉnh");
+    var ps=projPlanStatus(p);
+    var marker=L.marker([pl.lat, pl.lng], {icon: projIcon, zIndexOffset: 40}).addTo(mapInstance);
+    marker.bindPopup("<b style='color:#000'>Dự án:</b> <span style='color:#000'>"+esc(p.name)+"</span><br><span style='color:#666'>"+esc(orgLbl)+"</span><br><span style='color:#000'>Trạng thái: </span><span style='color:"+ps.c+"'>"+esc(ps.label)+"</span><br><span style='color:#000'>📍 "+esc(pl.name)+"</span><br><button type='button' class='btn btn-sm btn-ghost' style='margin-top:8px' onclick=\"A.projDet('"+p.id+"')\">Xem dự án</button>");
+  });
+
+  var acts = mapAsgnPool().filter(function(a){return a.status==="active"||a.status==="paused"});
   var locCounts = {};
   
-  fieldEmp().forEach(function(e){
-    var el = eLoc(e);
+  mapEmpPool().forEach(function(e){
+    var el = mapEmpLoc(e);
     if(el && el.loc && el.loc.lat!=null) {
       bounds.push([el.loc.lat, el.loc.lng]);
       var isWorking = acts.some(function(a){return a.empId===e.id});
@@ -8793,7 +8855,7 @@ window.__CV3={
     S.asgnOther=asgn||[];
     S.projOther=proj||[];
     S.otherOrgId=otherId||"";
-    if(S.tab==="emp"||S.selEmp||S.tab==="kpi"||S.tab==="mywork"||S.tab==="report"||S.tab==="prog"||S.tab==="dash")scheduleRender();
+    if(S.tab==="map"||S.tab==="emp"||S.selEmp||S.tab==="kpi"||S.tab==="mywork"||S.tab==="report"||S.tab==="prog"||S.tab==="dash")scheduleRender();
   },
   mergeEmpAuthFromRemote:function(remoteEmp){
     if(!remoteEmp||!remoteEmp.length)return false;
