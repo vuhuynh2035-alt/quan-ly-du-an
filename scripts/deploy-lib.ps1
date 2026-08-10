@@ -56,7 +56,9 @@ function Save-DeployConfig {
 
 function Repair-DeployConfigObject {
   param([object]$Config)
-  $keep = @("xuanquynh", "xuan-quynh", "apartment", "hotel_app_firebase", "hotel-xuan-quynh")
+  # Khong an bang keyword ngan (se an het). Duoc an tung PATH copy cu.
+  # Bao ve ban GitHub XUANQUYNH — khong cho exclude path do.
+  $neverKeyword = @("xuanquynh", "xuan-quynh", "apartment", "hotel-xuan-quynh")
   $goodApps = @()
   $extraEx = @()
 
@@ -67,9 +69,15 @@ function Repair-DeployConfigObject {
       if (-not $s) { continue }
       $low = $s.ToLowerInvariant()
       if ($low -eq "hotel") { continue }
-      $keepHit = $false
-      foreach ($k in $keep) { if ($low.Contains($k)) { $keepHit = $true; break } }
-      if (-not $keepHit) { $extraEx += $s }
+      $isPath = ($s -match '^[A-Za-z]:[\\/]') -or ($s.Contains('\')) -or ($s.Contains('/'))
+      if ($isPath) {
+        if ($low -match 'xuanquynh' -and $low -match 'github') { continue }
+        $extraEx += $s
+      } else {
+        $keepHit = $false
+        foreach ($k in $neverKeyword) { if ($low.Contains($k)) { $keepHit = $true; break } }
+        if (-not $keepHit) { $extraEx += $s }
+      }
       continue
     }
     try {
@@ -83,8 +91,15 @@ function Repair-DeployConfigObject {
     $s = [string]$r
     $low = $s.ToLowerInvariant()
     if ($low -eq "hotel") { continue }
+    $isPath = ($s -match '^[A-Za-z]:[\\/]') -or ($s.Contains('\')) -or ($s.Contains('/'))
+    if ($isPath) {
+      # Bao ve ban chinh GitHub
+      if ($low -match 'xuanquynh' -and $low -match 'github') { continue }
+      $ex += $s
+      continue
+    }
     $keepHit = $false
-    foreach ($k in $keep) { if ($low.Contains($k)) { $keepHit = $true; break } }
+    foreach ($k in $neverKeyword) { if ($low.Contains($k)) { $keepHit = $true; break } }
     if ($keepHit) { continue }
     $ex += $s
   }
@@ -378,22 +393,49 @@ function Get-AccountEmailForPath {
   return ""
 }
 
+function Get-GitCommitRank {
+  param([string]$Path)
+  if (-not $Path -or -not (Test-Path -LiteralPath (Join-Path $Path ".git"))) { return 0L }
+  try {
+    Push-Location -LiteralPath $Path
+    $unix = (& git log -1 --format=%ct 2>$null)
+    if ($unix -match '^\d+$') { return [int64]$unix }
+  } catch {
+  } finally {
+    Pop-Location
+  }
+  return 0L
+}
+
 function Get-AppRank {
   param([object]$App, [hashtable]$CursorTimes)
+  # Chat luong thu muc >> thoi gian mo Cursor (tranh chon ban copy cu).
   $score = 0L
-  $recency = [datetime]::MinValue
-  if ($CursorTimes -and $CursorTimes.ContainsKey($App.path)) {
-    $recency = [datetime]$CursorTimes[$App.path]
-  } elseif (Test-Path -LiteralPath $App.path) {
-    try { $recency = (Get-Item -LiteralPath $App.path).LastWriteTime } catch {}
-  }
-  $score += [int64]($recency.Ticks / 10000000)
   $p = ([string]$App.path).ToLowerInvariant()
   $src = if ($App.source) { [string]$App.source } else { "" }
-  if ($src -eq "cursor") { $score += 100000000 }
-  if ($p -match 'github') { $score += 50000000 }
-  if ($p -match 'xuanquynh') { $score += 40000000 }
-  if ($p -match '^[a-z]:\\hotel_app_firebase') { $score -= 30000000 }
+
+  # Ban chinh Xuan Quynh / GitHub luon thang ban C:\hotel_app_firebase
+  if ($p -match 'xuanquynh') { $score += 5000000000000L }
+  if ($p -match 'github') { $score += 1000000000000L }
+  if ($p -match '(^|[\\/])hotel_app_firebase([\\/]|$)') { $score -= 5000000000000L }
+  if ($src -eq "cursor") { $score += 100000000L }
+
+  # Commit git moi hon = uu tien (tie-break)
+  $gitTs = Get-GitCommitRank $App.path
+  if ($gitTs -gt 0) {
+    $score += $gitTs
+  } else {
+    $recency = [datetime]::MinValue
+    if ($CursorTimes -and $CursorTimes.ContainsKey($App.path)) {
+      $recency = [datetime]$CursorTimes[$App.path]
+    } elseif (Test-Path -LiteralPath $App.path) {
+      try { $recency = (Get-Item -LiteralPath $App.path).LastWriteTime } catch {}
+    }
+    if ($recency -gt [datetime]::MinValue) {
+      $epoch = [datetime]'1970-01-01'
+      $score += [int64]($recency.ToUniversalTime() - $epoch).TotalSeconds
+    }
+  }
   return $score
 }
 
@@ -436,6 +478,16 @@ function Add-ExcludeRule {
     $Config | Add-Member exclude $list -Force
     Save-DeployConfig $Config
   }
+}
+
+function Test-ShouldAutoExcludeDuplicate {
+  param([object]$Winner, [object]$Loser)
+  # Chi tu dong an ban copy ro rang (hotel_app_firebase), khong an Xuan Quynh.
+  $loserPath = ([string]$Loser.path).ToLowerInvariant()
+  if ($loserPath -match '(^|[\\/])hotel_app_firebase([\\/]|$)') { return $true }
+  $winnerPath = ([string]$Winner.path).ToLowerInvariant()
+  if ($winnerPath -match 'xuanquynh' -and $loserPath -notmatch 'xuanquynh') { return $true }
+  return $false
 }
 
 function Get-DeployApps {
@@ -525,7 +577,7 @@ function Get-DeployApps {
   $list = @()
   foreach ($k in $order) { $list += $byPath[$k] }
 
-  # 1 project Firebase = 1 app trong menu
+  # 1 project Firebase = 1 app trong menu (uu tien ban tot hon)
   $byProject = @{}
   $noProject = @()
   foreach ($app in $list) {
@@ -534,10 +586,20 @@ function Get-DeployApps {
     if (-not $byProject.ContainsKey($proj)) {
       $byProject[$proj] = $app
     } elseif ([int64]$app.rank -gt [int64]$byProject[$proj].rank) {
-      try { Add-ExcludeRule -Config $Config -Rule ([string]$byProject[$proj].path) } catch {}
+      $loser = $byProject[$proj]
+      if (Test-ShouldAutoExcludeDuplicate -Winner $app -Loser $loser) {
+        try { Add-ExcludeRule -Config $Config -Rule ([string]$loser.path) } catch {}
+      }
+      Write-Host "Gop trung project $proj -> dung: $($app.path)" -ForegroundColor DarkGray
+      Write-Host "  (bo qua ban cu: $($loser.path))" -ForegroundColor DarkGray
       $byProject[$proj] = $app
     } else {
-      try { Add-ExcludeRule -Config $Config -Rule ([string]$app.path) } catch {}
+      $winner = $byProject[$proj]
+      if (Test-ShouldAutoExcludeDuplicate -Winner $winner -Loser $app) {
+        try { Add-ExcludeRule -Config $Config -Rule ([string]$app.path) } catch {}
+      }
+      Write-Host "Gop trung project $proj -> dung: $($winner.path)" -ForegroundColor DarkGray
+      Write-Host "  (bo qua ban cu: $($app.path))" -ForegroundColor DarkGray
     }
   }
   return @((@($byProject.Values) + $noProject) | Sort-Object @{ Expression = { [int64]$_.rank }; Descending = $true })
@@ -700,20 +762,84 @@ function Use-FirebaseProject {
   throw "Khong truy cap duoc project '$ProjectId'. Thu: firebase login --reauth"
 }
 
+function Get-GitHeadInfo {
+  param([string]$RepoRoot)
+  if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot ".git"))) { return $null }
+  Push-Location -LiteralPath $RepoRoot
+  try {
+    $line = (& git log -1 --format="%h|%ci|%s" 2>$null)
+    if (-not $line) { return $null }
+    $parts = ($line -split '\|', 3)
+    $branch = (& git rev-parse --abbrev-ref HEAD 2>$null)
+    return [pscustomobject]@{
+      Hash = $parts[0]
+      Date = $(if ($parts.Count -gt 1) { $parts[1] } else { "" })
+      Subject = $(if ($parts.Count -gt 2) { $parts[2] } else { "" })
+      Branch = $branch
+    }
+  } catch {
+    return $null
+  } finally {
+    Pop-Location
+  }
+}
+
+function Resolve-GitBranch {
+  param([string]$RepoRoot, [string]$Preferred)
+  Push-Location -LiteralPath $RepoRoot
+  try {
+    if ($Preferred) {
+      & git show-ref --verify --quiet "refs/remotes/origin/$Preferred" 2>$null
+      if ($LASTEXITCODE -eq 0) { return $Preferred }
+      & git show-ref --verify --quiet "refs/heads/$Preferred" 2>$null
+      if ($LASTEXITCODE -eq 0) { return $Preferred }
+    }
+    $cur = (& git rev-parse --abbrev-ref HEAD 2>$null)
+    if ($cur -and $cur -ne "HEAD") { return $cur }
+    foreach ($b in @("main", "master")) {
+      & git show-ref --verify --quiet "refs/remotes/origin/$b" 2>$null
+      if ($LASTEXITCODE -eq 0) { return $b }
+    }
+  } catch {}
+  finally { Pop-Location }
+  if ($Preferred) { return $Preferred }
+  return "main"
+}
+
 function Sync-Git {
   param([string]$RepoRoot, [string]$Branch, [switch]$SkipPull)
   if ($SkipPull) { Write-Host "Bo qua git pull" -ForegroundColor DarkYellow; return }
   if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot ".git"))) {
-    Write-Host "Khong phai git repo — bo qua pull" -ForegroundColor DarkYellow
+    Write-Host "Khong phai git repo — deploy dung dung code trong thu muc nay" -ForegroundColor Yellow
+    Write-Host "  Neu day la ban copy cu, hay mo dung thu muc GitHub roi deploy lai." -ForegroundColor Yellow
     return
   }
   Push-Location -LiteralPath $RepoRoot
   try {
-    Write-Host "Git pull origin $Branch..." -ForegroundColor Yellow
+    $Branch = Resolve-GitBranch -RepoRoot $RepoRoot -Preferred $Branch
+    Write-Host "Git fetch + pull origin $Branch ..." -ForegroundColor Yellow
     $fc = Invoke-External -AllowFail -Command { git fetch origin $Branch }
-    if ($fc -ne 0) { Write-Host "git fetch loi — deploy code local" -ForegroundColor Yellow; return }
-    $pc = Invoke-External -AllowFail -Command { git pull origin $Branch }
-    if ($pc -ne 0) { Write-Host "git pull loi — deploy code local" -ForegroundColor Yellow }
+    if ($fc -ne 0) {
+      throw "git fetch that bai — KHONG deploy (tranh len version cu). Kiem tra mang / remote."
+    }
+    $before = Get-GitHeadInfo $RepoRoot
+    $pc = Invoke-External -AllowFail -Command { git pull --ff-only origin $Branch }
+    if ($pc -ne 0) {
+      Write-Host "ff-only that bai — thu merge pull..." -ForegroundColor Yellow
+      $pc = Invoke-External -AllowFail -Command { git pull origin $Branch }
+    }
+    if ($pc -ne 0) {
+      throw "git pull that bai — KHONG deploy. Xu ly conflict / commit local trong: $RepoRoot"
+    }
+    $after = Get-GitHeadInfo $RepoRoot
+    if ($after) {
+      Write-Host ("Git HEAD: {0} ({1}) {2}" -f $after.Hash, $after.Date, $after.Subject) -ForegroundColor Green
+      if ($before -and $before.Hash -ne $after.Hash) {
+        Write-Host "Da cap nhat: $($before.Hash) -> $($after.Hash)" -ForegroundColor Green
+      } else {
+        Write-Host "Da dong bo remote (khong co commit moi)." -ForegroundColor DarkGray
+      }
+    }
   } finally { Pop-Location }
 }
 
@@ -842,6 +968,10 @@ function Invoke-AppDeploy {
   Write-Host "========================================" -ForegroundColor Cyan
   Write-Host " Deploy: $($App.label)" -ForegroundColor Cyan
   Write-Host " Thu muc: $root" -ForegroundColor Cyan
+  if ($root -match '(?i)hotel_app_firebase') {
+    Write-Host " CANH BAO: day co the la ban COPY CU." -ForegroundColor Yellow
+    Write-Host " Nen dung: ...\GitHub\XUANQUYNH_HOTEL" -ForegroundColor Yellow
+  }
   if ($App.firebaseProject) { Write-Host " Project: $($App.firebaseProject)" -ForegroundColor Cyan }
   if ($account) { Write-Host " Account: $($account.email)" -ForegroundColor Cyan }
   Write-Host "========================================" -ForegroundColor Cyan
@@ -850,6 +980,10 @@ function Invoke-AppDeploy {
 
   Write-Host ">> Git pull..." -ForegroundColor Cyan
   Sync-Git -RepoRoot $root -Branch $branch -SkipPull:$SkipPull
+  $head = Get-GitHeadInfo $root
+  if ($head) {
+    Write-Host ("Commit se deploy: {0} | {1} | {2}" -f $head.Hash, $head.Date, $head.Subject) -ForegroundColor Green
+  }
   $ver = Get-VersionLabel $root
   if ($ver) { Write-Host "Version: $ver" -ForegroundColor Green }
 
@@ -905,9 +1039,13 @@ function Invoke-AppDeploy {
   }
 
   $ver2 = Get-VersionLabel $root
+  $head2 = Get-GitHeadInfo $root
   $url = if ($App.siteUrl) { $App.siteUrl } elseif ($App.firebaseProject) { "https://$($App.firebaseProject).web.app" } else { "" }
   Write-Host ""
   Write-Host "XONG — $($App.label)" -ForegroundColor Green
+  Write-Host "  Thu muc: $root" -ForegroundColor Green
+  if ($head2) { Write-Host ("  Commit: {0} | {1}" -f $head2.Hash, $head2.Subject) -ForegroundColor Green }
   if ($ver2) { Write-Host "  Version: $ver2" -ForegroundColor Green }
   if ($url) { Write-Host "  Site: $url" -ForegroundColor Green }
+  Write-Host "  Neu van thay ban cu: Ctrl+F5 hoac mo tab an danh." -ForegroundColor DarkGray
 }
