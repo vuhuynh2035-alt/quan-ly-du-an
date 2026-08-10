@@ -1,26 +1,38 @@
 # Deploy Firebase — huong dan
 
-## Cach dung (khong can go lenh)
+## Cach dung 1 cham (khuyen nghi)
 
-1. Vao thu muc `C:\Quan ly du an` (File Explorer)
-2. Double-click **`Tao-Shortcut-Desktop.bat`** (1 lan)
-3. Tren Desktop xuat hien **Deploy App** / **Chay Deploy**
-4. Lan sau: double-click icon Desktop → go so app → Enter
+Double-click **`Deploy-TuDong.bat`** (hoac shortcut **Deploy Tu Dong** tren Desktop).
 
-Hoac double-click **`Chay-Deploy.bat`** ngay trong thu muc du an.
+Tu dong chay het:
 
-## Tool tu lam khi chon so
+1. Commit thay doi local (neu co) — file bi `.gitignore` (vd. `firebase-config.js`) khong commit
+2. `git fetch` + checkout `main` + pull/merge
+3. `git push` neu local dang ahead
+4. Kiem tra code (`projView` / `isProjLocked`)
+5. Build + deploy Firebase (hosting + functions)
 
-- Doi tai khoan Firebase dung app
-- git pull
-- build
-- firebase deploy --project dung-id
+Tuy chon PowerShell:
+
+```powershell
+.\scripts\deploy-auto.ps1 -SkipCommit          # khong commit
+.\scripts\deploy-auto.ps1 -HostingOnly         # chi hosting
+.\scripts\deploy-auto.ps1 -CommitMessage "..." # message commit
+```
+
+## Menu chon nhieu app
+
+1. Double-click **`Tao-Shortcut-Desktop.bat`** (1 lan) → tao icon Desktop
+2. **Deploy App** / **Chay-Deploy.bat** → go so app → Enter
 
 ## File
 
 | File | Viec |
 |------|------|
-| `Chay-Deploy.bat` | Bam chay menu deploy |
-| `Tao-Shortcut-Desktop.bat` | Tao icon tren Desktop |
+| `Deploy-TuDong.bat` | **1 cham**: commit + git + deploy full |
+| `Deploy-Full-QuanLyDuAn.bat` | Goi Deploy-TuDong |
+| `Chay-Deploy.bat` | Menu chon app |
+| `Tao-Shortcut-Desktop.bat` | Tao icon Desktop |
+| `scripts/deploy-auto.ps1` | Logic deploy tu dong |
 | `sua-config-deploy.bat` | Sua config bi hong |
 | `deploy.bat` | Goi Chay-Deploy.bat |
