@@ -28,20 +28,33 @@ import {
   getDocs,
   writeBatch,
 } from "firebase/firestore";
-import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import {
-  isBiometricAvailable,
-  isBiometricEnabled,
-  getBiometricStatus,
-  enableBiometric,
-  disableBiometric,
-  authenticateBiometric,
-  updateBiometricPassword,
-  updateBiometricUsername,
-  formatBiometricError,
-} from "./biometric-auth.js";
+
+/** Lazy SDK chunks — messaging / storage / functions / bio không chặn first paint. */
+var _fnModP = null;
+var _stModP = null;
+var _msgModP = null;
+var _bioModP = null;
+function loadFunctionsMod() {
+  if (!_fnModP) _fnModP = import("firebase/functions");
+  return _fnModP;
+}
+function loadStorageMod() {
+  if (!_stModP) _stModP = import("firebase/storage");
+  return _stModP;
+}
+function loadMessagingMod() {
+  if (!_msgModP) _msgModP = import("firebase/messaging");
+  return _msgModP;
+}
+function loadBioMod() {
+  if (!_bioModP) _bioModP = import("./biometric-auth.js");
+  return _bioModP;
+}
+async function cloudCallable(name, region) {
+  var mod = await loadFunctionsMod();
+  var fns = region ? mod.getFunctions(app, region) : mod.getFunctions(app);
+  return mod.httpsCallable(fns, name);
+}
 
 var cfg = window.FIREBASE_CONFIG;
 var vapidKey = window.FIREBASE_VAPID_KEY;
@@ -208,11 +221,40 @@ var provisionRetryCount = 0;
 var PROVISION_RETRY_MAX = 4;
 var secondarySubsReady = false;
 var secondarySubsTimer = null;
+var masterSubsReady = false;
+var masterSubsTimer = null;
 
 function paintCv3(cv3) {
   if (!cv3) return;
   if (typeof cv3.scheduleRender === "function") cv3.scheduleRender();
   else if (typeof cv3.render === "function") cv3.render();
+}
+
+/** Emp/cust master + đội kia — sau first workspace paint, tránh 4 snapshot cùng lúc. */
+function scheduleMasterSubs(cv3) {
+  if (masterSubsReady) return;
+  if (masterSubsTimer) return;
+  masterSubsTimer = setTimeout(function () {
+    masterSubsTimer = null;
+    if (masterSubsReady) return;
+    if (!auth || !auth.currentUser) return;
+    masterSubsReady = true;
+    try {
+      subscribeEmpMaster(cv3);
+    } catch (e1) {
+      console.warn("subscribeEmpMaster:", e1);
+    }
+    try {
+      subscribeCustMaster(cv3);
+    } catch (e2) {
+      console.warn("subscribeCustMaster:", e2);
+    }
+    try {
+      subscribeOtherOrgAsgn(cv3);
+    } catch (e3) {
+      console.warn("subscribeOtherOrgAsgn:", e3);
+    }
+  }, 60);
 }
 
 /** Chat / báo cáo / chấm công sau paint workspace — giảm tranh CPU lúc mở app. */
@@ -229,16 +271,18 @@ function scheduleSecondarySubs(cv3) {
     } catch (e1) {
       console.warn("subscribeChat:", e1);
     }
-    try {
-      subscribeReports();
-    } catch (e2) {
-      console.warn("subscribeReports:", e2);
-    }
-    try {
-      subscribeAttendance();
-    } catch (e3) {
-      console.warn("subscribeAttendance:", e3);
-    }
+    setTimeout(function () {
+      try {
+        subscribeReports();
+      } catch (e2) {
+        console.warn("subscribeReports:", e2);
+      }
+      try {
+        subscribeAttendance();
+      } catch (e3) {
+        console.warn("subscribeAttendance:", e3);
+      }
+    }, 180);
     var wantPush =
       typeof Notification !== "undefined" &&
       (Notification.permission === "granted" ||
@@ -249,12 +293,12 @@ function scheduleSecondarySubs(cv3) {
         registerMessaging(cv3, { request: true }).catch(function () {});
       };
       if (typeof requestIdleCallback === "function") {
-        requestIdleCallback(startPush, { timeout: 4000 });
+        requestIdleCallback(startPush, { timeout: 5000 });
       } else {
-        setTimeout(startPush, 1200);
+        setTimeout(startPush, 1600);
       }
     }
-  }, 350);
+  }, 420);
 }
 
 function resetSecondarySubs() {
@@ -262,6 +306,14 @@ function resetSecondarySubs() {
   if (secondarySubsTimer) {
     clearTimeout(secondarySubsTimer);
     secondarySubsTimer = null;
+  }
+}
+
+function resetMasterSubsState() {
+  masterSubsReady = false;
+  if (masterSubsTimer) {
+    clearTimeout(masterSubsTimer);
+    masterSubsTimer = null;
   }
 }
 
@@ -493,7 +545,7 @@ async function ackAssignment(asgnId, kind) {
   if (ackAsgnIds[key]) return null;
   ackAsgnIds[key] = 1;
   try {
-    var fn = httpsCallable(getFunctions(app), "ackAssignment");
+    var fn = await cloudCallable("ackAssignment");
     var res = await fn({ asgnId: asgnId, kind: kind === "read" ? "read" : "delivered" });
     return res.data || null;
   } catch (err) {
@@ -596,6 +648,7 @@ function stopSubscriptions() {
   lastAuthUid = null;
   subsUid = null;
   resetSecondarySubs();
+  resetMasterSubsState();
 }
 
 function subscribeChat() {
@@ -1057,7 +1110,8 @@ async function uploadReportPhotos(files, asgnId, date, reportOrgId) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
   }
-  var storage = getStorage(app);
+  var st = await loadStorageMod();
+  var storage = st.getStorage(app);
   var targetOrg = normalizeOrgId(reportOrgId || orgId);
   var urls = [];
   var max = Math.min(files.length, 8);
@@ -1087,10 +1141,10 @@ async function uploadReportPhotos(files, asgnId, date, reportOrgId) {
       i +
       "." +
       ext;
-    var storageRef = ref(storage, path);
+    var storageRef = st.ref(storage, path);
     try {
-      await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-      urls.push(await getDownloadURL(storageRef));
+      await st.uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
+      urls.push(await st.getDownloadURL(storageRef));
     } catch (err) {
       var why = (err && err.message) || String(err);
       throw new Error("Không tải được ảnh lên máy chủ. " + why);
@@ -1104,7 +1158,8 @@ async function uploadAttendancePhotos(files, kind, punchId, date) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
   }
-  var storage = getStorage(app);
+  var st = await loadStorageMod();
+  var storage = st.getStorage(app);
   var urls = [];
   var max = Math.min(files.length, kind === "work" ? 12 : 1);
   var pid = String(punchId || Date.now());
@@ -1136,9 +1191,9 @@ async function uploadAttendancePhotos(files, kind, punchId, date) {
       i +
       "." +
       ext;
-    var storageRef = ref(storage, path);
-    await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-    urls.push(await getDownloadURL(storageRef));
+    var storageRef = st.ref(storage, path);
+    await st.uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
+    urls.push(await st.getDownloadURL(storageRef));
   }
   return urls;
 }
@@ -1157,7 +1212,7 @@ async function submitAttendance(payload) {
   if (payload.type === "out") {
     workUrls = await uploadAttendancePhotos(payload.workPhotos || [], "work", punchId, date);
   }
-  var fn = httpsCallable(getFunctions(app), "submitAttendance");
+  var fn = await cloudCallable("submitAttendance");
   var res = await fn({
     orgId: orgId,
     type: payload.type,
@@ -1203,7 +1258,8 @@ async function uploadArrivalPhoto(file, asgnId) {
   if (file.size > 8 * 1024 * 1024) {
     throw new Error("Ảnh quá 8MB.");
   }
-  var storage = getStorage(app);
+  var st = await loadStorageMod();
+  var storage = st.getStorage(app);
   var ext = "jpg";
   if (file.type && file.type.indexOf("jpeg") < 0) {
     ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
@@ -1219,9 +1275,9 @@ async function uploadArrivalPhoto(file, asgnId) {
     Date.now() +
     "." +
     ext;
-  var storageRef = ref(storage, path);
-  await uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-  return await getDownloadURL(storageRef);
+  var storageRef = st.ref(storage, path);
+  await st.uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
+  return await st.getDownloadURL(storageRef);
 }
 
 async function confirmArrival(payload) {
@@ -1229,7 +1285,7 @@ async function confirmArrival(payload) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var photoUrl = await uploadArrivalPhoto(payload.photo, payload.asgnId);
-  var fn = httpsCallable(getFunctions(app), "confirmArrival");
+  var fn = await cloudCallable("confirmArrival");
   var res = await fn({
     orgId: orgId,
     asgnId: payload.asgnId,
@@ -1264,7 +1320,7 @@ async function submitDailyReport(payload) {
     date,
     reportOrg
   );
-  var fn = httpsCallable(getFunctions(app, "us-central1"), "submitDailyReport");
+  var fn = await cloudCallable("submitDailyReport", "us-central1");
   var res = await fn({
     orgId: reportOrg,
     asgnId: payload.asgnId,
@@ -1303,7 +1359,7 @@ async function callCompleteMyAssignment(asgnId, forOrg) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app, "us-central1"), "completeMyAssignment");
+  var fn = await cloudCallable("completeMyAssignment", "us-central1");
   try {
     var res = await fn({
       asgnId: asgnId,
@@ -1319,7 +1375,7 @@ async function callCompleteProject(projId, forOrg) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app, "us-central1"), "completeProject");
+  var fn = await cloudCallable("completeProject", "us-central1");
   try {
     var res = await fn({
       projId: projId,
@@ -1384,7 +1440,7 @@ async function syncEmpGroupToUserDoc(empId, group) {
 async function hasDirectorInOrg(org) {
   if (!app) return true;
   try {
-    var fn = httpsCallable(getFunctions(app), "hasDirectorInOrg");
+    var fn = await cloudCallable("hasDirectorInOrg");
     var res = await fn({ orgId: org || defaultOrg });
     return !!(res.data && res.data.hasDirector);
   } catch (err) {
@@ -1394,7 +1450,7 @@ async function hasDirectorInOrg(org) {
 }
 
 async function claimDirectorRole(username, org) {
-  var fn = httpsCallable(getFunctions(app), "claimDirectorRole");
+  var fn = await cloudCallable("claimDirectorRole");
   await fn({ username: username, orgId: org || defaultOrg });
 }
 
@@ -1411,7 +1467,7 @@ async function provisionEmployeeAccount(payload) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "provisionEmployee");
+  var fn = await cloudCallable("provisionEmployee");
   try {
     var res = await fn(payload || {});
     return res.data || {};
@@ -1478,7 +1534,7 @@ async function provisionAllEmployees(cv3, options) {
   provisionBusy = true;
   setSync("syncing", "Đang tạo tài khoản nhân viên…");
   try {
-    var fn = httpsCallable(getFunctions(app), "provisionAllEmployees");
+    var fn = await cloudCallable("provisionAllEmployees");
     var res = await fn({ orgId: orgId });
     var data = res.data || {};
     mergeProvisionIntoApp(cv3, data);
@@ -1585,15 +1641,16 @@ async function changeMyPassword(payload) {
     }
     throw new Error((err2 && err2.message) || "Không đổi được mật khẩu.");
   }
-  if (isBiometricEnabled()) {
-    try {
+  try {
+    var bioPw = await loadBioMod();
+    if (bioPw.isBiometricEnabled()) {
       var un =
         (window.__CV3_AUTH && window.__CV3_AUTH.username) ||
         emailToUsername((auth.currentUser && auth.currentUser.email) || "");
-      await updateBiometricPassword(newPassword, un);
-    } catch (bioErr) {
-      console.warn("updateBiometricPassword:", bioErr);
+      await bioPw.updateBiometricPassword(newPassword, un);
     }
+  } catch (bioErr) {
+    console.warn("updateBiometricPassword:", bioErr);
   }
   return { ok: true };
 }
@@ -1602,7 +1659,7 @@ async function updateMyProfile(payload) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "updateMyProfile");
+  var fn = await cloudCallable("updateMyProfile");
   try {
     var res = await fn(payload || {});
     var data = res.data || {};
@@ -1629,15 +1686,16 @@ async function updateMyUsername(payload) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "updateMyUsername");
+  var fn = await cloudCallable("updateMyUsername");
   try {
     var res = await fn(payload || {});
     var data = res.data || {};
     var cur = window.__CV3_AUTH || {};
     publishAuth(Object.assign({}, cur, { username: data.username || cur.username }));
-    if (data.username && isBiometricEnabled()) {
+    if (data.username) {
       try {
-        await updateBiometricUsername(data.username);
+        var bioUn = await loadBioMod();
+        if (bioUn.isBiometricEnabled()) await bioUn.updateBiometricUsername(data.username);
       } catch (bioErr) {
         console.warn("updateBiometricUsername:", bioErr);
       }
@@ -1781,7 +1839,8 @@ async function refreshBiometricLoginUI() {
     return;
   }
   try {
-    var st = await getBiometricStatus();
+    var bio = await loadBioMod();
+    var st = await bio.getBiometricStatus();
     var show = st.available && st.enabled;
     wrap.style.display = show ? "block" : "none";
     if (hint) {
@@ -1797,12 +1856,13 @@ async function refreshBiometricLoginUI() {
 async function syncOrOfferBiometric(username, password, user) {
   try {
     if (!password || password.length < 6) return;
-    if (!(await isBiometricAvailable())) return;
-    var st = await getBiometricStatus();
+    var bio = await loadBioMod();
+    if (!(await bio.isBiometricAvailable())) return;
+    var st = await bio.getBiometricStatus();
     if (st.enabled) {
       if (st.username && st.username === username) {
         try {
-          await updateBiometricPassword(password, username);
+          await bio.updateBiometricPassword(password, username);
         } catch (bioUpd) {
           console.warn("sync biometric password:", bioUpd);
         }
@@ -1816,14 +1876,14 @@ async function syncOrOfferBiometric(username, password, user) {
           "?"
       );
       if (!switchOk) return;
-      await disableBiometric();
+      await bio.disableBiometric();
     } else {
       var ok = window.confirm(
         "Thiết bị hỗ trợ vân tay / khuôn mặt.\n\nBật đăng nhập sinh trắc học để lần sau không cần nhập mật khẩu?"
       );
       if (!ok) return;
     }
-    await enableBiometric({
+    await bio.enableBiometric({
       username: username,
       password: password,
       uid: (user && user.uid) || "",
@@ -1837,7 +1897,12 @@ async function syncOrOfferBiometric(username, password, user) {
     refreshBiometricLoginUI();
   } catch (err) {
     console.warn("biometric setup:", err);
-    alert(formatBiometricError(err));
+    try {
+      var bioErr = await loadBioMod();
+      alert(bioErr.formatBiometricError(err));
+    } catch (e2) {
+      alert((err && err.message) || String(err));
+    }
   }
 }
 
@@ -1850,13 +1915,21 @@ async function loginWithBiometric() {
     btn.textContent = "Đang xác thực…";
   }
   try {
-    var creds = await authenticateBiometric();
+    var bio = await loadBioMod();
+    var creds = await bio.authenticateBiometric();
     var id = resolveAuthIdentity(creds.username);
     var lc = await signInWithIdentity(id, creds.password);
     await ensureUserDoc(lc.user, null, id.username);
     showAuth(false);
   } catch (err) {
-    if (errEl) errEl.textContent = formatBiometricError(err);
+    if (errEl) {
+      try {
+        var bioE = await loadBioMod();
+        errEl.textContent = bioE.formatBiometricError(err);
+      } catch (e2) {
+        errEl.textContent = (err && err.message) || String(err);
+      }
+    }
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -1873,6 +1946,7 @@ async function enableBiometricForCurrentUser(password) {
     (window.__CV3_AUTH && window.__CV3_AUTH.username) ||
     emailToUsername(user.email || "");
   if (!user.email) throw new Error("Tài khoản chưa có email đăng nhập.");
+  var bio = await loadBioMod();
   try {
     var cred = EmailAuthProvider.credential(user.email, password);
     await reauthenticateWithCredential(user, cred);
@@ -1885,15 +1959,15 @@ async function enableBiometricForCurrentUser(password) {
     ) {
       throw new Error("Mật khẩu không đúng.");
     }
-    throw new Error(formatBiometricError(err) || "Không xác minh được mật khẩu.");
+    throw new Error(bio.formatBiometricError(err) || "Không xác minh được mật khẩu.");
   }
-  await enableBiometric({
+  await bio.enableBiometric({
     username: username,
     password: password,
     uid: user.uid,
     displayName: user.displayName || username,
   });
-  return getBiometricStatus();
+  return bio.getBiometricStatus();
 }
 
 function updateAuthHints(mode) {
@@ -2385,7 +2459,7 @@ async function setEmpOrgMembership(empId, orgIds) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "setEmpOrgMembership");
+  var fn = await cloudCallable("setEmpOrgMembership");
   var res = await fn({
     empId: empId,
     orgIds: normalizeOrgIds(orgIds, orgId),
@@ -2398,7 +2472,7 @@ async function copyCustomersToOrg(custIds, toOrg) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "migrateSharedCustomers");
+  var fn = await cloudCallable("migrateSharedCustomers");
   var res = await fn({});
   return Object.assign({ ok: true, shared: true, copied: 0, skipped: true }, res.data || {}, {
     message: "Khách hàng đã dùng chung cả 2 đội — không cần sao chép.",
@@ -2409,7 +2483,7 @@ async function runDualOrgMigration() {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "migrateDualOrgs");
+  var fn = await cloudCallable("migrateDualOrgs");
   var res = await fn({});
   return res.data || {};
 }
@@ -2418,7 +2492,7 @@ async function exportCompanyBackup() {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "exportCompanyBackup");
+  var fn = await cloudCallable("exportCompanyBackup");
   var res = await fn({});
   return res.data || {};
 }
@@ -2427,7 +2501,7 @@ async function restoreCompanyBackup(backup, targetOrg) {
   if (!app || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
-  var fn = httpsCallable(getFunctions(app), "restoreCompanyBackup");
+  var fn = await cloudCallable("restoreCompanyBackup");
   var res = await fn({ backup: backup, targetOrg: targetOrg || orgId });
   return res.data || {};
 }
@@ -2975,11 +3049,11 @@ async function flushWrite(cv3, opts) {
 function subscribeWorkspace(cv3, opts) {
   opts = opts || {};
   if (unsubSnap) unsubSnap();
-  if (!opts.skipMasters) {
-    subscribeEmpMaster(cv3);
-    subscribeCustMaster(cv3);
+  // First boot: chỉ workspace trước. Master/đội kia sau first paint (scheduleMasterSubs).
+  // Đổi đội (skipMasters): master đã live — chỉ refresh mirror đội kia.
+  if (opts.skipMasters) {
+    subscribeOtherOrgAsgn(cv3);
   }
-  subscribeOtherOrgAsgn(cv3);
   setSync("syncing", "Đang tải dữ liệu…");
   var subscribedOrg = orgId;
   var subscribedGen = orgSwitchGen;
@@ -3001,6 +3075,7 @@ function subscribeWorkspace(cv3, opts) {
           }
           if (cv3.setPatch) cv3.setPatch(0);
           paintCv3(cv3);
+          if (!opts.skipMasters) scheduleMasterSubs(cv3);
           scheduleSecondarySubs(cv3);
           flushWrite(cv3, { force: true }).then(function () {
             if (canOperateRole()) scheduleProvision(cv3);
@@ -3014,6 +3089,7 @@ function subscribeWorkspace(cv3, opts) {
       if (!booted) {
         booted = true;
         paintCv3(cv3);
+        if (!opts.skipMasters) scheduleMasterSubs(cv3);
         scheduleSecondarySubs(cv3);
       } else if (changed) {
         paintCv3(cv3);
@@ -3043,7 +3119,7 @@ async function persistFcmToken(token, cv3) {
       { merge: true }
     );
     try {
-      var fnDir = httpsCallable(getFunctions(app), "syncFcmToken");
+      var fnDir = await cloudCallable("syncFcmToken");
       await fnDir({ token: token });
     } catch (err) {
       console.warn("syncFcmToken:", err);
@@ -3055,7 +3131,7 @@ async function persistFcmToken(token, cv3) {
   if (empId && cv3) cv3.linkFcmToEmp(empId, token);
   await saveMyFcmToken(token, empId || "");
   try {
-    var fn = httpsCallable(getFunctions(app), "syncFcmToken");
+    var fn = await cloudCallable("syncFcmToken");
     await fn({ token: token });
   } catch (err) {
     console.warn("syncFcmToken:", err);
@@ -3120,10 +3196,10 @@ function shouldShowPushNotification(type, d) {
   return true;
 }
 
-function bindForegroundMessaging(messaging, cv3) {
+function bindForegroundMessaging(messaging, cv3, onMessageFn) {
   if (!messaging || messaging.__cv3Bound) return;
   messaging.__cv3Bound = true;
-  onMessage(messaging, function (payload) {
+  onMessageFn(messaging, function (payload) {
     var type = payload.data && payload.data.type;
     var d = payload.data || {};
     if (type && !shouldShowPushNotification(type, d)) {
@@ -3248,7 +3324,8 @@ async function registerMessaging(cv3, options) {
   if (!configured || !key || key === "YOUR_VAPID_KEY") return { ok: false, reason: "no-config" };
   if (typeof Notification === "undefined") return { ok: false, reason: "unsupported" };
   if (!window.isSecureContext) return { ok: false, reason: "insecure" };
-  var ok = await isSupported();
+  var msgMod = await loadMessagingMod();
+  var ok = await msgMod.isSupported();
   if (!ok) return { ok: false, reason: "unsupported" };
   try {
     if (!("serviceWorker" in navigator)) return { ok: false, reason: "unsupported" };
@@ -3271,21 +3348,21 @@ async function registerMessaging(cv3, options) {
         setTimeout(resolve, 4000);
       });
     }
-    var messaging = getMessaging(app);
+    var messaging = msgMod.getMessaging(app);
     var perm = Notification.permission;
     if (perm !== "granted") {
       if (!opts.request) return { ok: false, reason: "denied" };
       perm = await Notification.requestPermission();
     }
     if (perm !== "granted") return { ok: false, reason: "denied" };
-    var token = await getToken(messaging, { vapidKey: key, serviceWorkerRegistration: reg });
+    var token = await msgMod.getToken(messaging, { vapidKey: key, serviceWorkerRegistration: reg });
     if (!token) return { ok: false, reason: "no-token" };
     pushReady = true;
     window.__CV3_FCM = { token: token, messaging: messaging };
     localStorage.setItem("cv3_push_enabled", "1");
     await persistFcmToken(token, cv3);
     if (isDirectorRole()) localStorage.setItem("cv3_remind_push", "1");
-    bindForegroundMessaging(messaging, cv3);
+    bindForegroundMessaging(messaging, cv3, msgMod.onMessage);
     return { ok: true, token: token };
   } catch (err) {
     console.warn("FCM:", err);
@@ -3432,15 +3509,38 @@ function bindAuthUI(cv3) {
   if (btnOut) btnOut.addEventListener("click", doSignOut);
   window.__CV3_signOut = doSignOut;
   window.__CV3_bio = {
-    status: getBiometricStatus,
-    available: isBiometricAvailable,
-    enabled: isBiometricEnabled,
+    status: function () {
+      return loadBioMod().then(function (m) {
+        return m.getBiometricStatus();
+      });
+    },
+    available: function () {
+      return loadBioMod().then(function (m) {
+        return m.isBiometricAvailable();
+      });
+    },
+    enabled: function () {
+      return loadBioMod().then(function (m) {
+        return m.isBiometricEnabled();
+      });
+    },
     enable: enableBiometricForCurrentUser,
-    disable: disableBiometric,
+    disable: function () {
+      return loadBioMod().then(function (m) {
+        return m.disableBiometric();
+      });
+    },
     login: loginWithBiometric,
     refreshLoginUI: refreshBiometricLoginUI,
   };
-  refreshBiometricLoginUI();
+  // Bio UI sau first paint — không tải WebAuthn module lúc boot.
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(function () {
+      refreshBiometricLoginUI();
+    }, { timeout: 2500 });
+  } else {
+    setTimeout(refreshBiometricLoginUI, 800);
+  }
 }
 
 async function maybeSuggestMigration(cv3) {
@@ -3482,7 +3582,7 @@ async function maybeSuggestMigration(cv3) {
         "Phát hiện khách hàng còn trong workspace — chuyển sang danh sách dùng chung cả 2 đội?"
       );
       if (ok2) {
-        var fn = httpsCallable(getFunctions(app), "migrateSharedCustomers");
+        var fn = await cloudCallable("migrateSharedCustomers");
         var r2 = await fn({});
         alert((r2.data && r2.data.message) || "Đã chuyển khách hàng dùng chung.");
         location.reload();
