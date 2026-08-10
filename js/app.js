@@ -1936,6 +1936,24 @@ function ganttPx(d,tMin,weeks,wkPx){
   var days=(x.getTime()-tMin.getTime())/dayMs;
   return Math.max(0,Math.min(weeks.length*wkPx,days/totalDays*weeks.length*wkPx));
 }
+function ganttZoomFactor(){
+  var z=Number(S.ganttZoom);
+  if(!z||isNaN(z))z=1;
+  return Math.max(0.75,Math.min(2.5,z));
+}
+function ganttZoomControlsHTML(){
+  var pct=Math.round(ganttZoomFactor()*100);
+  return '<div class="gantt-tools">'
+    +'<span class="gantt-tools-hint">Kéo thanh vàng để xem ngày · thả về hôm nay</span>'
+    +'<div class="gantt-zoom" title="Phóng to để đọc rõ / cuộn ngang">'
+    +'<button type="button" class="gantt-zoom-btn" onclick="event.stopPropagation();A.ganttZoom(-1)" aria-label="Thu nhỏ">−</button>'
+    +'<span class="gantt-zoom-lbl">'+pct+'%</span>'
+    +'<button type="button" class="gantt-zoom-btn" onclick="event.stopPropagation();A.ganttZoom(1)" aria-label="Phóng to">+</button>'
+    +'</div></div>';
+}
+function ganttCardWrap(title,bodyHtml,extraStyle){
+  return '<div class="card card-p gantt-card"'+(extraStyle?' style="'+esc(extraStyle)+'"':"")+'><div class="gantt-card-hd"><h3>'+esc(title)+'</h3>'+ganttZoomControlsHTML()+'</div>'+bodyHtml+'</div>';
+}
 function ganttHTML(){
   if(!canViewSharedProg())return'<p style="color:rgba(255,255,255,.55);font-size:14px">Chỉ Giám sát / Điều hành / Giám đốc được xem biểu đồ Gantt dự án.</p>';
   var projs=S.proj.filter(function(p){return p.status!=="done"});
@@ -1949,7 +1967,7 @@ function ganttHTML(){
   if(!tMin||!tMax){tMin=dParse(td());tMax=dParse(dAdd(td(),30))}
   tMin=weekStart(tMin);tMin.setDate(tMin.getDate()-7);
   tMax=new Date(tMax.getTime());tMax.setDate(tMax.getDate()+14);
-  var wkPx=80,weeks=[],wcur=new Date(tMin);
+  var wkPx=Math.round(80*ganttZoomFactor()),weeks=[],wcur=new Date(tMin);
   while(wcur<=tMax){weeks.push(new Date(wcur));wcur.setDate(wcur.getDate()+7)}
   if(weeks.length<5){while(weeks.length<5){var w=weeks[weeks.length-1],n=new Date(w);n.setDate(n.getDate()+7);weeks.push(n)}}
   tMin=new Date(weeks[0].getTime());tMin.setHours(0,0,0,0);
@@ -1958,8 +1976,9 @@ function ganttHTML(){
   function px(d){return ganttPx(d,tMin,weeks,wkPx)}
   var h='<div class="gantt-root" style="--gantt-wkpx:'+wkPx+'px" data-tmin="'+tMin.getTime()+'" data-tmax="'+tMaxMs+'" data-twidth="'+trackW+'" data-wkpx="'+wkPx+'" data-weeks="'+weeks.length+'">';
   h+='<div class="gantt-wk-overlay"><div class="gantt-wk-lines" style="width:'+trackW+'px">'+ganttWeekGrid(weeks,wkPx)+'</div></div>';
-  h+='<div class="gantt-needle"><div class="gantt-needle-line"></div></div>';
-  h+='<div class="gantt-sticky"><div class="gantt-date-tip"></div><div class="gantt-row-flex"><div class="gantt-lbl-col">Dự án / hạng mục</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
+  h+='<div class="gantt-needle" title="Kéo để xem ngày — thả chuột về hôm nay"><div class="gantt-needle-hit"></div><div class="gantt-needle-line"></div></div>';
+  h+='<svg class="gantt-dep-layer" aria-hidden="true"></svg>';
+  h+='<div class="gantt-sticky"><div class="gantt-date-tip gantt-date-tip-drag" title="Kéo để xem ngày">—</div><div class="gantt-row-flex"><div class="gantt-lbl-col">Dự án / hạng mục</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
   weeks.forEach(function(w,i){h+='<div class="gantt-week" style="left:'+(i*wkPx)+'px;width:'+wkPx+'px">'+dFmtGanttWeek(w)+'</div>'});
   h+='</div></div></div></div>';
   rows.forEach(function(it){
@@ -1967,17 +1986,6 @@ function ganttHTML(){
     var days=projDays(it.s,it.e);
     var parentNums=it.type==="wi"||(it.parents&&it.parents.length)?ganttParentNums(it.p,it.parents||[]):[];
     var waitLbl=ganttWaitLabel(parentNums);
-    var waitShort=ganttWaitShort(parentNums);
-    var childNums=[];
-    if(it.type==="wi"&&it.wi){
-      rows.forEach(function(r){
-        if(r.type!=="wi"||!r.p||r.p.id!==it.p.id)return;
-        if((r.parents||[]).indexOf(it.wi.id)<0)return;
-        var n=(r.idx!=null?r.idx:0)+1;
-        if(childNums.indexOf(n)<0)childNums.push(n);
-      });
-      childNums.sort(function(a,b){return a-b});
-    }
     if(it.type==="head"){
       var company=ganttCompanyLbl(it.p),full=projCompanyShort(it.p)||projCompanyName(it.p)||"";
       var headTip=(it.p.name||"Dự án")+" · "+(it.wiCount||0)+" hạng mục · tiến độ "+prog+"%"+(it.flow==="sequence"?" · có hạng mục nối tiếp":" · song song");
@@ -1997,8 +2005,6 @@ function ganttHTML(){
     if(it.type==="wi"){
       barTip=(it.idx+1)+". "+(it.title||"")+" · "+days+" · "+prog+"%";
       if(waitLbl)barTip+=" · "+waitLbl;
-      else if(locked)barTip+=" · đang chờ";
-      if(childNums.length)barTip+=" · rồi tới #"+(childNums.length===1?childNums[0]:childNums.join(","));
     }else{
       barTip=(it.title||it.p.name||"")+" · "+days+" · "+prog+"%";
       if(waitLbl)barTip+=" · "+waitLbl;
@@ -2006,37 +2012,94 @@ function ganttHTML(){
     var lblHtml;
     if(it.type==="wi"){
       lblHtml='<span class="gantt-name-title gantt-name" data-act="projDet" data-id="'+esc(it.p.id)+'" title="'+esc(barTip)+'"><span class="gantt-wi-idx">'+(it.idx+1)+'.</span>'+esc(shortGanttText(it.title,18))+'</span>';
-      var dateNote=locked&&waitShort?waitShort:(locked?"chờ":(it.done?"xong":""));
-      lblHtml+='<span class="gantt-name-dates">'+dFmtCard(it.s)+' – '+dFmtCard(it.e)+(dateNote?' · <span class="'+(parentNums.length?"gantt-wait-dep":"")+'">'+esc(dateNote)+'</span>':"")+'</span>';
+      lblHtml+='<span class="gantt-name-dates">'+dFmtCard(it.s)+' – '+dFmtCard(it.e)+(it.done?" · xong":"")+'</span>';
     }else{
       lblHtml=ganttLblHTML(it.p,it.s,it.e);
     }
     h+='<div class="gantt-body-row'+(it.type==="wi"?" gantt-wi-row":"")+(parentNums.length?" gantt-wi-dep":"")+'"><div class="gantt-lbl" title="'+esc(barTip)+'">'+lblHtml+'</div>';
     h+='<div class="gantt-scroll gantt-sync"><div class="gantt-track-px" style="width:'+trackW+'px">';
-    // Cầu nối thời gian từ hạng mục cha → hạng mục này (phân biệt với song song lệch ngày)
-    if(it.type==="wi"&&parentNums.length){
-      var parentEnds=[];
-      (it.parents||[]).forEach(function(pid){
-        var pr=rows.find(function(r){return r.type==="wi"&&r.wi&&r.wi.id===pid&&r.p&&r.p.id===it.p.id});
-        if(pr)parentEnds.push(px(pr.e));
-      });
-      var fromX=parentEnds.length?Math.max.apply(null,parentEnds):l;
-      var bridgeL=Math.min(fromX,l);
-      var bridgeW=Math.max(8,Math.abs(l-fromX));
-      h+='<div class="gantt-dep-bridge" style="left:'+bridgeL+'px;width:'+bridgeW+'px" title="'+esc(waitLbl||"Nối tiếp")+'">';
-      h+='<span class="gantt-dep-bridge-line"></span>';
-      h+='<span class="gantt-dep-bridge-lbl">← #'+esc(parentNums.join(","))+'</span>';
-      h+='</div>';
+    var depAttrs="";
+    if(it.type==="wi"&&it.wi){
+      depAttrs=' data-gantt-wi="'+esc(it.wi.id)+'" data-gantt-proj="'+esc(it.p.id)+'" data-gantt-parents="'+esc((it.parents||[]).join(","))+'"';
     }
-    h+='<div class="gantt-bar-wrap'+(locked?" gantt-wi-locked":"")+(parentNums.length?" gantt-wi-depbar":"")+'" style="left:'+l+'px;width:'+wbar+'px" title="'+esc(barTip)+'">';
-    h+='<div class="gantt-bar-bg" style="background:'+it.col+'28;border-color:'+(parentNums.length?"rgba(251,191,36,.65)":(it.col+"55"))+'"></div>';
+    h+='<div class="gantt-bar-wrap'+(locked?" gantt-wi-locked":"")+(parentNums.length?" gantt-wi-depbar":"")+'" style="left:'+l+'px;width:'+wbar+'px" title="'+esc(barTip)+'"'+depAttrs+'>';
+    h+='<div class="gantt-bar-bg" style="background:'+it.col+'28;border-color:'+(parentNums.length?"rgba(251,191,36,.7)":(it.col+"55"))+'"></div>';
     h+='<div class="gantt-bar" style="width:'+pw+'px;background:linear-gradient(90deg,'+it.col+','+it.col+'bb)"></div>';
-    if(parentNums.length)h+='<span class="gantt-dep-pill" title="'+esc(waitLbl)+'">←'+esc(parentNums.join(","))+'</span>';
-    if(childNums.length)h+='<span class="gantt-dep-next" title="Rồi tới hạng mục '+esc(childNums.join(", "))+'">→'+esc(childNums.join(","))+'</span>';
     h+=ganttBarInnerHTML(wbar,{label:label,days:days,pct:prog,tip:barTip});
     h+='</div></div></div></div>';
   });
   return h+'</div>';
+}
+function drawGanttDepLinks(root){
+  var svg=root.querySelector(".gantt-dep-layer");
+  if(!svg)return;
+  var rr=root.getBoundingClientRect();
+  var h=Math.max(root.offsetHeight||0,rr.height||0);
+  var w=Math.max(root.offsetWidth||0,rr.width||0);
+  svg.setAttribute("width",String(w));
+  svg.setAttribute("height",String(h));
+  svg.setAttribute("viewBox","0 0 "+w+" "+h);
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  var bars=root.querySelectorAll(".gantt-bar-wrap[data-gantt-wi]");
+  var byKey={};
+  Array.prototype.forEach.call(bars,function(el){
+    byKey[el.getAttribute("data-gantt-proj")+"|"+el.getAttribute("data-gantt-wi")]=el;
+  });
+  var NS="http://www.w3.org/2000/svg";
+  Array.prototype.forEach.call(bars,function(child){
+    var parents=(child.getAttribute("data-gantt-parents")||"").split(",").filter(Boolean);
+    if(!parents.length)return;
+    var cr=child.getBoundingClientRect();
+    if(cr.width<1&&cr.height<1)return;
+    var x2=cr.left-rr.left;
+    var y2=cr.top+cr.height/2-rr.top;
+    var proj=child.getAttribute("data-gantt-proj");
+    parents.forEach(function(pid){
+      var parent=byKey[proj+"|"+pid];
+      if(!parent)return;
+      var pr=parent.getBoundingClientRect();
+      if(pr.width<1&&pr.height<1)return;
+      var x1=pr.right-rr.left;
+      var y1=pr.top+pr.height/2-rr.top;
+      // Mũi tên nhỏ (~5px) tại đầu hạng mục con; đường dừng trước mũi
+      var ah=5,aw=3.2;
+      var dir=x2>=x1?1:-1;
+      var tipX=x2,tipY=y2;
+      var baseX=tipX-dir*ah;
+      var lineEndX=baseX;
+      var d;
+      if(Math.abs(y2-y1)<1){
+        d="M "+x1+" "+y1+" L "+lineEndX+" "+y2;
+      }else if(Math.abs(x2-x1)<1){
+        d="M "+x1+" "+y1+" L "+x1+" "+y2;
+        // mũi tên hướng xuống/lên theo hàng
+        dir=y2>=y1?1:-1;
+        tipX=x2;tipY=y2;
+        baseX=tipX;
+        var baseY=tipY-dir*ah;
+        d="M "+x1+" "+y1+" L "+x2+" "+baseY;
+        var pathV=document.createElementNS(NS,"path");
+        pathV.setAttribute("class","gantt-dep-path");
+        pathV.setAttribute("d",d);
+        svg.appendChild(pathV);
+        var arrV=document.createElementNS(NS,"path");
+        arrV.setAttribute("class","gantt-dep-arrow");
+        arrV.setAttribute("d","M "+tipX+" "+tipY+" L "+(tipX-aw)+" "+baseY+" L "+(tipX+aw)+" "+baseY+" Z");
+        svg.appendChild(arrV);
+        return;
+      }else{
+        d="M "+x1+" "+y1+" L "+x1+" "+y2+" L "+lineEndX+" "+y2;
+      }
+      var path=document.createElementNS(NS,"path");
+      path.setAttribute("class","gantt-dep-path");
+      path.setAttribute("d",d);
+      svg.appendChild(path);
+      var arr=document.createElementNS(NS,"path");
+      arr.setAttribute("class","gantt-dep-arrow");
+      arr.setAttribute("d","M "+tipX+" "+tipY+" L "+baseX+" "+(tipY-aw)+" L "+baseX+" "+(tipY+aw)+" Z");
+      svg.appendChild(arr);
+    });
+  });
 }
 function initGantt(){
   document.querySelectorAll(".gantt-root").forEach(function(root){
@@ -2044,30 +2107,110 @@ function initGantt(){
     var tMin=+root.dataset.tmin,tMax=+root.dataset.tmax,tw=+root.dataset.twidth,weeks=+root.dataset.weeks||1,span=tMax-tMin||1;
     var scrolls=root.querySelectorAll(".gantt-sync"),needle=root.querySelector(".gantt-needle"),tip=root.querySelector(".gantt-date-tip"),sticky=root.querySelector(".gantt-sticky"),wkLines=root.querySelector(".gantt-wk-overlay .gantt-wk-lines");
     if(!scrolls.length||!needle||!tip||!sticky)return;
-    var pinX=0;
+    var pinX=0,dragging=false,homePin=0;
     function dateAt(cx){var d=new Date(tMin+Math.max(0,Math.min(tw,cx))/tw*span);return dFmtCard(d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()))}
-    function refresh(){
-      var sc=scrolls[0],rr=root.getBoundingClientRect(),sr=sc.getBoundingClientRect(),sb=sticky.getBoundingClientRect();
-      pinX=Math.max(48,Math.min(sr.width-24,sr.width*0.32));
+    function defaultPin(sc){return Math.max(48,Math.min(sc.clientWidth-24,sc.clientWidth*0.32))}
+    function placeNeedle(sc){
+      var rr=root.getBoundingClientRect(),sr=sc.getBoundingClientRect(),sb=sticky.getBoundingClientRect();
       needle.style.left=(sr.left-rr.left+pinX)+"px";
       tip.style.left=(sr.left-sb.left+pinX)+"px";
       tip.textContent=dateAt(sc.scrollLeft+pinX);
+      tip.classList.toggle("dragging",dragging);
+      needle.classList.toggle("dragging",dragging);
+    }
+    function refresh(){
+      var sc=scrolls[0],rr=root.getBoundingClientRect(),sr=sc.getBoundingClientRect();
+      if(!dragging){
+        // Giữ kim ở vị trí «hôm nay» trong khung nhìn (không ép 32% khi đang kéo)
+        var today=dParse(td());
+        if(today){
+          var todayX=Math.max(0,Math.min(tw,(today.getTime()-tMin)/span*tw));
+          pinX=Math.max(24,Math.min(sr.width-24,todayX-sc.scrollLeft));
+        }else{
+          pinX=defaultPin(sc);
+        }
+        homePin=pinX;
+      }else{
+        pinX=Math.max(24,Math.min(sr.width-24,pinX));
+      }
+      placeNeedle(sc);
       if(wkLines)wkLines.style.transform="translateX(-"+sc.scrollLeft+"px)";
+      drawGanttDepLinks(root);
     }
     function syncScroll(src){scrolls.forEach(function(o){if(o!==src&&o.scrollLeft!==src.scrollLeft)o.scrollLeft=src.scrollLeft});refresh()}
     function scrollToToday(){
       var sc=scrolls[0];
       if(!sc||sc.clientWidth<1)return false;
-      pinX=Math.max(48,Math.min(sc.clientWidth-24,sc.clientWidth*0.32));
+      dragging=false;
+      var prefer=defaultPin(sc);
       var today=dParse(td());
       if(!today)return false;
       var todayX=Math.max(0,Math.min(tw,(today.getTime()-tMin)/span*tw));
-      var sl=Math.max(0,Math.min(tw-sc.clientWidth,todayX-pinX));
+      var sl=Math.max(0,Math.min(Math.max(0,tw-sc.clientWidth),todayX-prefer));
       scrolls.forEach(function(s){s.scrollLeft=sl});
-      refresh();
+      pinX=Math.max(24,Math.min(sc.clientWidth-24,todayX-sl));
+      homePin=pinX;
+      placeNeedle(sc);
+      if(wkLines)wkLines.style.transform="translateX(-"+sc.scrollLeft+"px)";
+      drawGanttDepLinks(root);
       return true;
     }
+    function startDrag(ev){
+      if(ev.button!=null&&ev.button!==0)return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      dragging=true;
+      tip.classList.add("dragging");
+      needle.classList.add("dragging");
+      moveDrag(ev);
+      function onMove(e){moveDrag(e)}
+      function onUp(e){
+        document.removeEventListener("pointermove",onMove,true);
+        document.removeEventListener("pointerup",onUp,true);
+        document.removeEventListener("pointercancel",onUp,true);
+        endDrag(e);
+      }
+      document.addEventListener("pointermove",onMove,true);
+      document.addEventListener("pointerup",onUp,true);
+      document.addEventListener("pointercancel",onUp,true);
+    }
+    function moveDrag(ev){
+      if(!dragging)return;
+      var sc=scrolls[0],sr=sc.getBoundingClientRect();
+      pinX=Math.max(24,Math.min(sr.width-24,ev.clientX-sr.left));
+      placeNeedle(sc);
+    }
+    function endDrag(){
+      if(!dragging)return;
+      dragging=false;
+      tip.classList.remove("dragging");
+      needle.classList.remove("dragging");
+      scrollToToday();
+    }
+    needle.addEventListener("pointerdown",startDrag);
+    tip.addEventListener("pointerdown",startDrag);
     scrolls.forEach(function(sc){sc.addEventListener("scroll",function(){syncScroll(sc)})});
+    root.addEventListener("wheel",function(ev){
+      var sc=scrolls[0];
+      if(!sc)return;
+      // Ctrl + lăn → phóng to / thu nhỏ
+      if(ev.ctrlKey||ev.metaKey){
+        ev.preventDefault();
+        if(ev.deltaY<0)A.ganttZoom(1);
+        else if(ev.deltaY>0)A.ganttZoom(-1);
+        return;
+      }
+      var dx=ev.deltaX,dy=ev.deltaY;
+      if(Math.abs(dx)<Math.abs(dy))dx=dy;
+      if(!dx)return;
+      var max=sc.scrollWidth-sc.clientWidth;
+      if(max<=0)return;
+      var next=Math.max(0,Math.min(max,sc.scrollLeft+dx));
+      if(next===sc.scrollLeft)return;
+      ev.preventDefault();
+      scrolls.forEach(function(s){s.scrollLeft=next});
+      refresh();
+    },{passive:false});
     scrollToToday();
     requestAnimationFrame(function(){scrollToToday();requestAnimationFrame(scrollToToday)});
     setTimeout(scrollToToday,80);
@@ -2108,7 +2251,7 @@ function empGanttHTML(empId,opts){
   if(!tMin||!tMax){tMin=dParse(td());tMax=dParse(dAdd(td(),30))}
   tMin=weekStart(tMin);tMin.setDate(tMin.getDate()-7);
   tMax=new Date(tMax.getTime());tMax.setDate(tMax.getDate()+14);
-  var wkPx=72,weeks=[],wcur=new Date(tMin);
+  var wkPx=Math.round(72*ganttZoomFactor()),weeks=[],wcur=new Date(tMin);
   while(wcur<=tMax){weeks.push(new Date(wcur));wcur.setDate(wcur.getDate()+7)}
   if(weeks.length<4){while(weeks.length<4){var w=weeks[weeks.length-1],n=new Date(w);n.setDate(n.getDate()+7);weeks.push(n)}}
   tMin=new Date(weeks[0].getTime());tMin.setHours(0,0,0,0);
@@ -2117,8 +2260,8 @@ function empGanttHTML(empId,opts){
   function px(d){return ganttPx(d,tMin,weeks,wkPx)}
   var h='<div class="gantt-root emp-gantt-root" style="--gantt-wkpx:'+wkPx+'px;--gantt-head-h:36px" data-tmin="'+tMin.getTime()+'" data-tmax="'+tMaxMs+'" data-twidth="'+trackW+'" data-wkpx="'+wkPx+'" data-weeks="'+weeks.length+'">';
   h+='<div class="gantt-wk-overlay" style="left:110px"><div class="gantt-wk-lines" style="width:'+trackW+'px">'+ganttWeekGrid(weeks,wkPx)+'</div></div>';
-  h+='<div class="gantt-needle"><div class="gantt-needle-line"></div></div>';
-  h+='<div class="gantt-sticky"><div class="gantt-date-tip"></div><div class="gantt-row-flex"><div class="gantt-lbl-col" style="width:110px">Lịch NV</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
+  h+='<div class="gantt-needle" title="Kéo để xem ngày — thả chuột về hôm nay"><div class="gantt-needle-hit"></div><div class="gantt-needle-line"></div></div>';
+  h+='<div class="gantt-sticky"><div class="gantt-date-tip gantt-date-tip-drag" title="Kéo để xem ngày">—</div><div class="gantt-row-flex"><div class="gantt-lbl-col" style="width:110px">Lịch NV</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
   weeks.forEach(function(w,i){h+='<div class="gantt-week" style="left:'+(i*wkPx)+'px;width:'+wkPx+'px">'+dFmtGanttWeek(w)+'</div>'});
   h+='</div></div></div></div>';
   for(var li=0;li<2;li++){
@@ -2309,7 +2452,7 @@ function themeModeBody(){
 var _lsEmp=load("cv3_e",[]);
 var _lsCust=load("cv3_c",[]);
 var _lsCfg=load("cv3_s",{});
-var S={tab:"dash",selProj:"",selProjDet:"",selEmp:"",selCust:"",projView:"active",giaoProj:"",giaoMode:"",goiYReq:{},giaoPick:{},teamToTruong:"",teamVatTu:"",modal:null,form:null,helpOpen:0,helpMode:"annotate",hist:[],histView:"actions",expGrp:{},empPushBusy:0,empPushMsg:"",remindPushBusy:0,remindPushMsg:"",
+var S={tab:"dash",selProj:"",selProjDet:"",selEmp:"",selCust:"",projView:"active",ganttZoom:1,giaoProj:"",giaoMode:"",goiYReq:{},giaoPick:{},teamToTruong:"",teamVatTu:"",modal:null,form:null,helpOpen:0,helpMode:"annotate",hist:[],histView:"actions",expGrp:{},empPushBusy:0,empPushMsg:"",remindPushBusy:0,remindPushMsg:"",
   kpiPeriod:"month",kpiMonth:"",
   emp:_lsEmp,empAll:_lsEmp,asgnOther:[],projOther:[],otherOrgId:"",cust:_lsCust,proj:loadWs("cv3_p",[]),asgn:loadWs("cv3_a",[]),projLog:loadWs("cv3_pl",[]),cfg:Object.assign({},DS,_lsCfg),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null,orgId:"",orgIds:[]},chat:[],chatTo:null,pendingChatDm:"",reports:[],attendance:[],attFlow:null,arrivalFlow:null,selMyAsgn:"",selMyAsgnOrg:"",reportAsgn:"",reminders:loadWs("cv3_r",null)||(Array.isArray(_lsCfg.reminders)?_lsCfg.reminders.slice():[]),
   personalReminders:[],
@@ -5165,7 +5308,7 @@ function vDash(){
       h+='</div>';});
     h+='</div></div>';
   }
-  if(canViewSharedProg())h+='<div class="card card-p gantt-card" style="margin-top:14px"><h3 style="margin-bottom:12px;color:var(--c-accent)">Tiến độ dự án (Gantt)</h3>'+ganttHTML()+'</div>';
+  if(canViewSharedProg())h+=ganttCardWrap("Tiến độ dự án (Gantt)",ganttHTML(),"margin-top:14px");
   return h}
 
 function vEmpDet(id){
@@ -5694,7 +5837,7 @@ function vProg(){
   var h='<h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Tiến độ công việc</h2>';
   h+=lateAlertBannerHTML();
   h+='<p style="font-size:13px;color:var(--c-muted);margin-bottom:16px">Sắp xếp lại: tạm chuyển người sang việc khác (quay lại sau) hoặc bàn giao phần việc dở cho người khác làm tiếp. Tiến độ dự án tính cả việc đang làm và tạm dừng.</p>';
-  h+='<div class="card card-p gantt-card" style="margin-bottom:16px"><h3 style="margin-bottom:12px;color:var(--c-accent)">Biểu đồ Gantt — dự án đang thực hiện</h3>'+ganttHTML()+'</div>';
+  h+=ganttCardWrap("Biểu đồ Gantt — dự án đang thực hiện",ganttHTML(),"margin-bottom:16px");
   if(!active.length&&!paused.length)return h+'<div class="card card-p" style="color:var(--c-muted)">Không có công việc nhân sự nào đang chạy.</div>';
   if(active.length){h+='<h3 style="font-size:15px;color:var(--c-accent);margin-bottom:10px">Đang làm ('+active.length+')</h3><div style="display:grid;gap:12px;margin-bottom:20px">';active.forEach(function(a){h+=progCard(a)});h+='</div>';}
   if(paused.length){h+='<h3 style="font-size:15px;color:#fbbf24;margin-bottom:10px">Tạm dừng ('+paused.length+')</h3><div style="display:grid;gap:12px">';paused.forEach(function(a){h+=progCard(a)});h+='</div>';}
@@ -6750,6 +6893,18 @@ window.A={
   teamOpen:function(id){A.giaoOpen(id)},
   teamBack:function(){A.giaoBack()},
   projView:function(v){S.projView=v==="done"?"done":"active";S.selProjDet="";S.giaoProj="";render()},
+  ganttZoom:function(dir){
+    var steps=[0.75,1,1.25,1.5,2,2.5];
+    var cur=ganttZoomFactor(),i=0,best=1e9;
+    for(var k=0;k<steps.length;k++){
+      var d=Math.abs(steps[k]-cur);
+      if(d<best){best=d;i=k;}
+    }
+    i=Math.max(0,Math.min(steps.length-1,i+(dir>0?1:-1)));
+    if(steps[i]===cur)return;
+    S.ganttZoom=steps[i];
+    render();
+  },
   teamSave:function(){
     if(!giaoGuard())return;
     var p=pById(S.giaoProj);if(!p)return;
