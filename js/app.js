@@ -376,10 +376,29 @@ function initGiaoTeamState(id){
     if(isChiefAsgn(a))return;
     if(!a.empId)return;
     S.giaoPick[a.empId]=true;
+  });
+  // % gõ tay đã lưu — giữ cố định khi mở lại
+  var manual={};
+  (S.asgn||[]).forEach(function(a){
+    if(a.projId!==p.id)return;
+    if(a.status!=="active"&&a.status!=="paused"&&a.status!=="queued")return;
+    if(isChiefAsgn(a)||!a.empId||!a.loadPctManual)return;
     var wid=a.workItemId;
     if(!wid&&items.length===1)wid=items[0].id;
-    if(!wid||!S.giaoItemStaff[wid])return;
-    S.giaoItemStaff[wid][a.empId]={pct:a.loadPct!=null&&a.loadPct!==""?a.loadPct:""};
+    if(!wid)return;
+    manual[a.empId+"|"+wid]=a.loadPct!=null&&a.loadPct!==""?a.loadPct:"";
+  });
+  // Mặc định: gán HẾT hạng mục cho mọi NV trong đội, chia đều (ô trống = auto)
+  Object.keys(S.giaoPick).forEach(function(eid){
+    if(!S.giaoPick[eid])return;
+    items.forEach(function(w){
+      var key=eid+"|"+w.id;
+      if(Object.prototype.hasOwnProperty.call(manual,key)&&manual[key]!==""){
+        S.giaoItemStaff[w.id][eid]={pct:manual[key]};
+      }else{
+        S.giaoItemStaff[w.id][eid]={pct:""};
+      }
+    });
   });
   S.teamToTruong=p.toTruongId||"";
   S.teamVatTu=p.vatTuId||"";
@@ -396,7 +415,8 @@ function projActiveAsgnEmpIds(p){
   });
   return out;
 }
-/** Tạo phân công active nếu nhân viên chưa có việc trên dự án (đội/chức vụ không đủ để hiện ở Nhân sự). */
+/** Tạo phân công active nếu nhân viên chưa có việc trên dự án.
+ *  Bố trí vào đội = đã giao việc: gán tất cả hạng mục, % chia đều. */
 function ensureActiveAsgn(p,empId,opts){
   opts=opts||{};
   if(!p||!empId)return null;
@@ -420,30 +440,51 @@ function ensureActiveAsgn(p,empId,opts){
     return naCh;
   }
   var items=normWorkItems(p);
-  if(items.length>1){
-    // Đa hạng mục: cần cấu hình hạng mục + % ở màn Giao việc.
-    return null;
+  var first=null;
+  if(!items.length){
+    first=mkAsgn(empId,p.id,0,{
+      startDate:opts.startDate||dates.start,
+      endDate:opts.endDate||dates.end,
+      workContent:opts.workContent||"",
+      status:"active"
+    });
+    S.asgn.push(first);
+    recordAssign(p.id,emp,first,opts.logNote||"");
+  }else{
+    var itemStaff={};
+    items.forEach(function(w){
+      itemStaff[w.id]={};
+      itemStaff[w.id][empId]={pct:""};
+    });
+    var norm=normalizeEmpItemLoads(items,itemStaff);
+    items.forEach(function(w){
+      var pct=norm[w.id]&&norm[w.id][empId]?Number(norm[w.id][empId].pct)||0:0;
+      if(pct<=0)return;
+      var unlocked=workItemUnlocked(p,w.id);
+      var na=mkAsgn(empId,p.id,0,{
+        startDate:opts.startDate||dates.start,
+        endDate:opts.endDate||dates.end,
+        workContent:opts.workContent||w.title||"",
+        workItemId:w.id,
+        loadPct:pct,
+        status:unlocked?"active":"queued"
+      });
+      S.asgn.push(na);
+      if(!first)first=na;
+    });
+    if(first){
+      recordAssign(p.id,emp,first,(opts.logNote||"")+(items.length>1?" · "+items.length+" hạng mục":""));
+    }
   }
-  var wi=items[0]||null;
-  var unlocked=!wi||workItemUnlocked(p,wi.id);
-  var na=mkAsgn(empId,p.id,0,{
-    startDate:opts.startDate||dates.start,
-    endDate:opts.endDate||dates.end,
-    workContent:opts.workContent||(wi?wi.title:""),
-    workItemId:wi?wi.id:"",
-    loadPct:wi?100:undefined,
-    status:unlocked?"active":"queued"
-  });
-  S.asgn.push(na);
-  recordAssign(p.id,emp,na,opts.logNote||"");
-  applyProjLocToEmp(emp,p,na.startDate);
+  if(!first)return null;
+  applyProjLocToEmp(emp,p,first.startDate);
   var parts=projPartIds(p).slice();
   if(parts.indexOf(empId)<0){
     parts.push(empId);
     applyProjTeam(p,parts,p.toTruongId,p.vatTuId);
   }
   if(p.status==="open")p.status="in_progress";
-  return na;
+  return first;
 }
 function ensureRoleHoldersHaveAsgn(p){
   if(!p)return 0;
@@ -481,10 +522,128 @@ function projGiaoMembersHTML(p){
     S.asgn.forEach(function(a){if(a.projId===p.id&&a.empId===eid&&a.status==="paused")paused=true});
     h+='<span class="badge" style="font-size:12px;padding:6px 10px;color:var(--c-text);background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12)">'+esc(e?e.name:"?")+(hasJob?(paused?" · tạm dừng":""):( " · chưa giao việc"))+(role?" · "+projRoleName(role):"")+'</span>';
   });
-  return h+'</div>'+(asgnIds.length<partIds.length?'<div style="font-size:12px;color:#fbbf24;margin-top:10px">Một số người chưa có việc — bấm «Giao việc» rồi «Lưu giao việc» để bố trí lại đội.</div>':"")+'</div>';
+  return h+'</div>'+(asgnIds.length<partIds.length?'<div style="font-size:12px;color:#fbbf24;margin-top:10px">Đang đồng bộ việc cho người mới trong đội…</div>':"")+'</div>';
+}
+function giaoEmpLoadSummary(eid,items,preview){
+  var tot=0,selN=0;
+  (items||[]).forEach(function(w){
+    if(!(S.giaoItemStaff&&S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid]))return;
+    selN++;
+    tot+=(preview[w.id]&&preview[w.id][eid]?Number(preview[w.id][eid].pct):0)||0;
+  });
+  return{tot:Math.round(tot*100)/100,selN:selN};
+}
+/** true = user đã gõ % (cố định); false/empty = app chia đều phần còn lại. */
+function giaoPctIsManual(cell){
+  if(!cell)return false;
+  var raw=cell.pct;
+  return !(raw===""||raw==null||raw===undefined);
+}
+function giaoPctInputHTML(eid,wid,pct,auto){
+  var manual=!(pct===""||pct==null||pct===undefined);
+  var ph=auto!=null?String(auto):"auto";
+  var cls="wi-emp-pct giao-mx-pct"+(manual?"":" is-auto");
+  return'<input class="'+cls+'" id="gwip_'+eid+'_'+wid+'" type="number" min="0" max="100" step="0.01" placeholder="'+esc(ph)+'" value="'+(manual?esc(String(pct)):"")+'" onchange="A.giaoWiPct(\''+eid+'\',\''+wid+'\')" onclick="event.stopPropagation()" title="'+(manual?"% do bạn gán (cố định). Xóa hết để về chia đều.":"App tự chia — để trống. Chỉ khóa khi bạn gõ số.")+'">';
+}
+function giaoEmpWiBlockHTML(eid,p){
+  // Bản gọn (dùng ngoài bảng chính): chip hạng mục trên một hàng
+  var items=normWorkItems(p);
+  if(!items.length){
+    return'<div class="giao-wi giao-wi-compact" onclick="event.stopPropagation()"><div class="giao-wi-hint">Chưa có hạng mục.</div></div>';
+  }
+  if(!S.giaoItemStaff)S.giaoItemStaff={};
+  items.forEach(function(w){if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={}});
+  var preview=normalizeEmpItemLoads(items,S.giaoItemStaff);
+  var load=giaoEmpLoadSummary(eid,items,preview);
+  var h='<div class="giao-wi giao-wi-compact" onclick="event.stopPropagation()"><div class="giao-chips">';
+  items.forEach(function(w,idx){
+    var sel=!!(S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid]);
+    var pct=sel?(S.giaoItemStaff[w.id][eid].pct):"";
+    var auto=preview[w.id]&&preview[w.id][eid]?preview[w.id][eid].pct:null;
+    h+='<div class="giao-chip'+(sel?" on":"")+'">';
+    h+='<label><input type="checkbox"'+(sel?" checked":"")+' onchange="A.giaoWiTog(\''+eid+'\',\''+w.id+'\',this.checked)"> <span>'+(idx+1)+'. '+esc(shortGanttText(workItemLabel(w,idx),22))+'</span></label>';
+    if(sel)h+=giaoPctInputHTML(eid,w.id,pct,auto);
+    h+='</div>';
+  });
+  h+='</div>';
+  if(load.selN)h+='<div class="giao-wi-sum">Tổng <b style="color:'+(Math.abs(load.tot-100)<0.2?"#4ade80":"#f87171")+'">'+load.tot+'%</b></div>';
+  else h+='<div class="giao-wi-sum" style="color:#fbbf24">Chưa chọn hạng mục</div>';
+  h+='</div>';
+  return h;
+}
+/** Bảng phân bổ: hàng = NV đã chọn, cột = hạng mục — quét nhanh, chỉnh % tại chỗ. */
+function giaoAllocBoardHTML(p){
+  var items=normWorkItems(p);
+  var eids=curGiaoPartIds().slice().sort(function(a,b){
+    var ea=eById(a),eb=eById(b);
+    return (ea?ea.name:"").localeCompare(eb?eb.name:"","vi");
+  });
+  if(!eids.length){
+    return'<div class="giao-board giao-board-empty">Chưa có ai trong đội — tick nhân viên ở danh sách bên dưới để thêm (tự gán mọi hạng mục).</div>';
+  }
+  if(!items.length){
+    return'<div class="giao-board giao-board-empty" style="color:#f87171">Dự án chưa có hạng mục — sửa dự án trước khi giao.</div>';
+  }
+  if(!S.giaoItemStaff)S.giaoItemStaff={};
+  items.forEach(function(w){if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={}});
+  var preview=normalizeEmpItemLoads(items,S.giaoItemStaff);
+  var h='<div class="giao-board">';
+  h+='<div class="giao-board-bar"><div class="giao-board-title">Phân bổ hạng mục <span class="giao-board-n">'+eids.length+' người · '+items.length+' hạng mục</span></div>';
+  h+='<div class="giao-board-btns">';
+  h+='<button type="button" class="btn btn-ghost btn-sm" onclick="A.giaoWiAllTeam()">Gán hết hạng mục</button>';
+  h+='</div></div>';
+  h+='<div class="giao-board-scroll"><table class="giao-matrix"><thead><tr>';
+  h+='<th class="giao-mx-sticky">Nhân viên</th>';
+  items.forEach(function(w,i){
+    var lab=workItemLabel(w,i);
+    h+='<th class="giao-mx-wi" title="'+esc(lab)+'"><span class="giao-mx-idx">'+(i+1)+'</span><span class="giao-mx-wilab">'+esc(shortGanttText(lab,26))+'</span></th>';
+  });
+  h+='<th class="giao-mx-tot">Tổng</th></tr></thead><tbody>';
+  eids.forEach(function(eid){
+    var e=eById(eid);
+    var load=giaoEmpLoadSummary(eid,items,preview);
+    var bp=e?busyPct(e):0;
+    var totCls=load.selN?(Math.abs(load.tot-100)<0.2?" ok":" bad"):" miss";
+    h+='<tr>';
+    h+='<td class="giao-mx-sticky"><div class="giao-mx-emp">';
+    h+='<button type="button" class="giao-mx-remove" title="Bỏ khỏi đội" onclick="A.giaoTog(\''+eid+'\')">×</button>';
+    h+='<div class="giao-mx-empinfo"><div class="giao-mx-name">'+esc(e?e.name:"?")+'</div>';
+    h+='<div class="giao-mx-meta">'+bp+'% bận · '+ac(eid)+' việc</div></div></div></td>';
+    items.forEach(function(w,idx){
+      var sel=!!(S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid]);
+      var pct=sel?(S.giaoItemStaff[w.id][eid].pct):"";
+      var auto=preview[w.id]&&preview[w.id][eid]?preview[w.id][eid].pct:null;
+      h+='<td class="giao-mx-cell'+(sel?" on":"")+'">';
+      h+='<label class="giao-mx-check" title="'+esc(workItemLabel(w,idx))+'"><input type="checkbox"'+(sel?" checked":"")+' onchange="A.giaoWiTog(\''+eid+'\',\''+w.id+'\',this.checked)"><span>'+(sel?"✓":"+")+'</span></label>';
+      if(sel){
+        h+=giaoPctInputHTML(eid,w.id,pct,auto);
+      }else{
+        h+='<span class="giao-mx-dash">—</span>';
+      }
+      h+='</td>';
+    });
+    h+='<td class="giao-mx-tot'+totCls+'">'+(load.selN?load.tot+"%":'<span class="giao-mx-need">chưa chọn</span>')+'</td>';
+    h+='</tr>';
+  });
+  h+='</tbody></table></div>';
+  h+='<div class="giao-board-hint">Mặc định đã gán hết hạng mục (chia đều). Bỏ ✓ nếu không giao hạng mục đó · ô trống = auto · số gõ tay = cố định · tổng mỗi người <b>100%</b>.</div>';
+  h+='</div>';
+  return h;
+}
+function giaoEmpPickRow(e,opts){
+  opts=opts||{};
+  var bp=busyPct(e),sel=!!opts.sel,st=ST[e.status],dis=!!opts.dis;
+  var h='<div class="giao-pick'+(sel&&!dis?" sel":"")+(dis?" dis":"")+'"'+(dis?"":' onclick="A.giaoTog(\''+e.id+'\')"')+'>';
+  h+='<input type="checkbox" class="giao-chk"'+(sel&&!dis?" checked":"")+(dis?" disabled":"")+(dis?"":' onclick="event.stopPropagation();A.giaoTog(\''+e.id+'\')"')+'>';
+  h+='<div class="giao-pick-body"><span class="giao-pick-name">'+esc(e.name)+'</span>'+bdg(st.l,st.c,st.s);
+  h+='<span class="giao-pick-meta">'+bp+'% bận · '+ac(e.id)+' việc</span></div>';
+  if(sel)h+='<span class="giao-pick-tag">Trong đội</span>';
+  h+='</div>';
+  return h;
 }
 function giaoEmpRow(e,opts){
   opts=opts||{};
+  if(opts.compact)return giaoEmpPickRow(e,opts);
   var bp=busyPct(e),sel=!!opts.sel,st=ST[e.status],dis=!!opts.dis;
   var h='<div class="giao-row'+(sel&&!dis?" sel":"")+(dis?" dis":"")+'"'+(dis?"":' onclick="A.giaoTog(\''+e.id+'\')"')+'><div class="giao-row-body"><div class="row" style="gap:8px;align-items:center;margin-bottom:2px"><span class="giao-row-name">'+esc(e.name)+'</span>'+bdg(st.l,st.c,st.s)+(dis?bdg("Đã bố trí","var(--c-muted4)","transparent"):"")+'</div>'+busyBar(bp,true)+'<div style="text-align:right;font-family:monospace;font-size:10px;color:rgba(200,225,255,.6);margin-top:3px">'+bp+'% bận rộn · '+ac(e.id)+' việc</div>';
   if(opts.extra)h+='<div class="giao-row-extra" onclick="event.stopPropagation()">'+opts.extra+'</div>';
@@ -559,39 +718,6 @@ function collectGiaoItemStaff(p){
     });
   });
   return S.giaoItemStaff;
-}
-function giaoEmpWiBlockHTML(eid,p){
-  var items=normWorkItems(p);
-  if(!items.length){
-    return'<div class="giao-wi" onclick="event.stopPropagation()"><div class="giao-wi-hint">Dự án chưa có hạng mục — sửa dự án để thêm trước khi giao.</div></div>';
-  }
-  if(!S.giaoItemStaff)S.giaoItemStaff={};
-  items.forEach(function(w){if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={}});
-  var preview=normalizeEmpItemLoads(items,S.giaoItemStaff);
-  var h='<div class="giao-wi" onclick="event.stopPropagation()">';
-  h+='<div class="giao-wi-hd">Hạng mục tham gia · tỷ lệ tải (để trống = chia đều phần còn lại)</div>';
-  items.forEach(function(w,idx){
-    var sel=!!(S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid]);
-    var pct=sel?(S.giaoItemStaff[w.id][eid].pct):"";
-    var auto=preview[w.id]&&preview[w.id][eid]?preview[w.id][eid].pct:null;
-    h+='<div class="giao-wi-row'+(sel?" on":"")+'">';
-    h+='<label class="giao-wi-lab"><input type="checkbox"'+(sel?" checked":"")+' onchange="A.giaoWiTog(\''+eid+'\',\''+w.id+'\',this.checked)"> <span>'+(idx+1)+'. '+esc(workItemLabel(w,idx))+'</span></label>';
-    if(sel){
-      h+='<div class="giao-wi-pctwrap"><input class="wi-emp-pct" id="gwip_'+eid+'_'+w.id+'" type="number" min="0" max="100" step="0.01" placeholder="'+(auto!=null?String(auto):"%")+'" value="'+esc(pct===""||pct==null?"":String(pct))+'" onchange="A.giaoWiPct(\''+eid+'\',\''+w.id+'\')"><span>%</span></div>';
-    }
-    h+='</div>';
-  });
-  var tot=0,selN=0;
-  items.forEach(function(w){
-    if(!(S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid]))return;
-    selN++;
-    tot+=(preview[w.id]&&preview[w.id][eid]?Number(preview[w.id][eid].pct):0)||0;
-  });
-  tot=Math.round(tot*100)/100;
-  if(selN)h+='<div class="giao-wi-sum">Đã chọn '+selN+' hạng mục · tổng sau chuẩn hoá: <b style="color:'+(Math.abs(tot-100)<0.2?"#4ade80":"#f87171")+'">'+tot+'%</b></div>';
-  else h+='<div class="giao-wi-sum" style="color:#fbbf24">Chưa chọn hạng mục — tick ít nhất 1 hạng mục.</div>';
-  h+='</div>';
-  return h;
 }
 function curGiaoPartIds(){return Object.keys(S.giaoPick||{}).filter(function(eid){return S.giaoPick[eid]})}
 function canAssignProjRoles(count){return (count|0)>=2}
@@ -1117,7 +1243,7 @@ function projFormRolesHTML(f){
 function projWorkItemsBlockHTML(f){
   ensureFormWorkItems(f);
   var h='<div class="wi-box"><div class="wi-box-hd">Hạng mục công việc</div>';
-  h+='<p class="wi-hint">Mỗi khung = 1 hạng mục. Không chọn phụ thuộc = làm <b>song song</b>. Tick hạng mục cha (có thể nhiều cha) = chỉ mở khi mọi hạng mục cha đã xong. Nhân viên và tỷ lệ tải gán ở bước <b>Giao việc</b>.</p>';
+  h+='<p class="wi-hint">Mỗi khung = 1 hạng mục. Không chọn phụ thuộc = làm <b>song song</b>. Tick hạng mục cha (có thể nhiều cha) = chỉ mở khi mọi hạng mục cha đã xong. Thêm nhân viên vào đội ở «Giao việc» = đã giao toàn bộ hạng mục (có thể chỉnh % sau).</p>';
   f.workItems.forEach(function(w,idx){
     var parents=workItemParentIds(w);
     h+='<div class="wi-card" id="wi_card_'+w.id+'">';
@@ -1829,6 +1955,7 @@ function mkAsgn(empId,projId,prog,opts){
   if(opts.schedNotify)a.schedNotify=opts.schedNotify;
   if(opts.workItemId)a.workItemId=opts.workItemId;
   if(opts.loadPct!=null&&opts.loadPct!=="")a.loadPct=Number(opts.loadPct)||0;
+  if(opts.loadPctManual)a.loadPctManual=true;
   if(opts.taskKind)a.taskKind=opts.taskKind;
   if(opts.assignedBy){a.assignedBy=opts.assignedBy;a.assignedByUid=opts.assignedByUid||"";a.assignedByRole=opts.assignedByRole||"";a.assignedAt=opts.assignedAt||new Date().toISOString();}
   else if(!opts.noAssigner)stampAsgnAssigner(a);
@@ -5208,16 +5335,25 @@ function vTeamEdit(id){
   var p=pById(id);
   if(!p)return btn("btn-ghost","← Quay lại","A.giaoBack()")+'<div class="card card-p" style="margin-top:12px;color:var(--c-muted)">Không tìm thấy dự án.</div>';
   var items=normWorkItems(p);
-  var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:16px">'+actBtn("btn-ghost","← Quay lại","giaoBack")+actBtn("btn-primary","Lưu giao việc","teamSave")+'</div>';
-  h+='<div class="card card-p" style="margin-bottom:16px"><h2 style="font-size:18px;font-weight:700;margin-bottom:6px">Giao việc — '+esc(p.name)+'</h2>';
-  h+='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:8px">Chọn nhân viên tham gia, rồi <b>tick hạng mục</b> và tỷ lệ tải. Để trống % = chia đều phần còn lại (vd 3 hạng mục → ~33,33% mỗi mục). <b style="color:#fbbf24">Bấm «Lưu giao việc»</b> để hoàn tất.</div>';
+  var picked=curGiaoPartIds().length;
+  var h='<div class="row proj-toolbar" style="justify-content:space-between;align-items:stretch;margin-bottom:12px">'+actBtn("btn-ghost","← Quay lại","giaoBack")+actBtn("btn-primary","Lưu giao việc","teamSave")+'</div>';
+  h+='<div class="card card-p giao-head" style="margin-bottom:12px">';
+  h+='<div class="giao-head-top"><h2>Giao việc — '+esc(p.name)+'</h2>';
+  h+='<span class="giao-head-count">'+(picked?picked+" đã chọn":"chưa chọn NV")+'</span></div>';
+  h+='<p class="giao-head-hint">Mặc định: <b>gán hết hạng mục · chia đều</b> cho cả đội. Bỏ tick hạng mục hoặc gõ % nếu muốn chỉnh. Ô trống = app tự chia; số gõ tay mới bị khóa. <b>Lưu giao việc</b> để hoàn tất.</p>';
   if(items.length){
-    h+='<div style="font-size:12px;color:var(--c-muted4)">Hạng mục dự án: '+items.map(function(w,i){return (i+1)+'. '+esc(workItemLabel(w,i))}).join(' · ')+'</div>';
+    h+='<div class="giao-head-items">';
+    items.forEach(function(w,i){
+      h+='<span class="giao-head-chip" title="'+esc(workItemLabel(w,i))+'"><b>'+(i+1)+'</b> '+esc(shortGanttText(workItemLabel(w,i),36))+'</span>';
+    });
+    h+='</div>';
   }else{
-    h+='<div style="font-size:12px;color:#f87171">Chưa có hạng mục — hãy sửa dự án để thêm hạng mục trước.</div>';
+    h+='<div class="giao-head-warn">Chưa có hạng mục — hãy sửa dự án trước.</div>';
   }
   h+='</div>';
+  h+=giaoAllocBoardHTML(p);
   h+=teamRolePickBlock("Bố trí chức vụ",curGiaoPartIds());
+  h+='<div class="giao-pick-sec"><div class="giao-pick-sec-hd">Thêm / bỏ nhân viên</div>';
   fieldGroups().forEach(function(g){
     var list=fieldEmp(S.emp.filter(function(e){return e.group===g})).sort(function(a,b){
       var sa=S.giaoPick[a.id]?1:0,sb=S.giaoPick[b.id]?1:0;
@@ -5225,14 +5361,17 @@ function vTeamEdit(id){
       return (a.name||"").localeCompare(b.name||"","vi");
     });
     var isProjGrp=g===p.group;
-    h+='<div class="giao-grp'+(isProjGrp?" giao-grp-main":"")+'"><div class="giao-grp-hd"><div class="gdot" style="background:'+groupColor(g)+';color:'+groupColor(g)+'"></div><span style="font-size:14px;font-weight:700;color:var(--c-accent2)">'+esc(g)+(isProjGrp?' <span style="color:#fbbf24;font-size:11px">· tổ dự án</span>':"")+'</span><span style="font-size:12px;color:var(--c-muted4)">('+list.length+')</span></div>';
+    var selN=list.filter(function(e){return S.giaoPick[e.id]}).length;
+    h+='<div class="giao-grp'+(isProjGrp?" giao-grp-main":"")+'"><div class="giao-grp-hd"><div class="gdot" style="background:'+groupColor(g)+';color:'+groupColor(g)+'"></div><span style="font-size:13px;font-weight:700;color:var(--c-accent2)">'+esc(g)+(isProjGrp?' <span style="color:#fbbf24;font-size:11px">· tổ dự án</span>':"")+'</span><span style="font-size:12px;color:var(--c-muted4)">'+selN+'/'+list.length+'</span></div>';
     if(!list.length)h+='<div style="font-size:13px;color:var(--c-muted3);padding:4px 0 8px 4px">Chưa có nhân sự</div>';
-    list.forEach(function(e){
-      var extra=S.giaoPick[e.id]?giaoEmpWiBlockHTML(e.id,p):"";
-      h+=giaoEmpRow(e,{sel:!!S.giaoPick[e.id],extra:extra});
-    });
+    else{
+      h+='<div class="giao-pick-list">';
+      list.forEach(function(e){h+=giaoEmpPickRow(e,{sel:!!S.giaoPick[e.id]});});
+      h+='</div>';
+    }
     h+='</div>';
   });
+  h+='</div>';
   return h;
 }
 
@@ -6399,7 +6538,21 @@ window.A={
     if(ev&&ev.type==="click"&&ev.target!==ev.currentTarget)return;
     A.egiaoExit();
   },
-  projDet:function(id){if(isEmpPortal())return;if(S.tab!=="proj"){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab="proj";S.selProjDet=id;S.selEmp="";S.selCust="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;render()},
+  projDet:function(id){
+    if(isEmpPortal())return;
+    if(S.tab!=="proj"){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}
+    S.tab="proj";S.selProjDet=id;S.selEmp="";S.selCust="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;
+    // Đội dự án = đã giao việc: tự tạo phân công thiếu (vd. đa hạng mục trước đây bỏ sót)
+    var pHeal=pById(id);
+    if(pHeal&&!isProjLocked(pHeal)&&canGiao()){
+      var healed=ensureTeamHaveAsgn(pHeal);
+      if(healed){
+        S.proj=S.proj.map(function(x){return x.id===pHeal.id?pHeal:x});
+        sv();
+      }
+    }
+    render();
+  },
   projBack:function(){S.selProjDet="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.teamToTruong="";S.teamVatTu="";if(S.hist&&S.hist.length)S.tab=S.hist.pop();render()},
   teamOpen:function(id){A.giaoOpen(id)},
   teamBack:function(){A.giaoBack()},
@@ -6414,6 +6567,15 @@ window.A={
     var oldTT=p.toTruongId||"",oldVT=p.vatTuId||"";
     var keep=filterFieldEmpIds(curGiaoPartIds());
     if(!keep.length)return alert("Chọn ít nhất một nhân viên để giao việc.");
+    // Thêm vào đội mà chưa tick hạng mục → mặc định giao tất cả hạng mục
+    keep.forEach(function(eid){
+      var any=items.some(function(w){return S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid]});
+      if(any)return;
+      items.forEach(function(w){
+        if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={};
+        S.giaoItemStaff[w.id][eid]={pct:""};
+      });
+    });
     var loadErr=validateEmpItemLoads(items,S.giaoItemStaff,keep);
     if(loadErr)return alert(loadErr);
     var normLoads=normalizeEmpItemLoads(items,S.giaoItemStaff);
@@ -6443,8 +6605,11 @@ window.A={
         });
         if(pct>0){
           var unlocked=workItemUnlocked(p,w.id);
+          var cell=S.giaoItemStaff[w.id]&&S.giaoItemStaff[w.id][eid];
+          var manual=giaoPctIsManual(cell);
           if(existing){
             existing.loadPct=pct;
+            existing.loadPctManual=manual;
             existing.workContent=w.title||existing.workContent;
             if(existing.status==="queued"&&unlocked)existing.status="active";
             updated++;
@@ -6455,10 +6620,11 @@ window.A={
               workContent:w.title,
               workItemId:w.id,
               loadPct:pct,
+              loadPctManual:manual,
               status:unlocked?"active":"queued"
             });
             S.asgn.push(na);
-            recordAssign(p.id,emp,na," · "+w.title+" ("+pct+"%)");
+            recordAssign(p.id,emp,na," · "+w.title+" ("+pct+"%"+(manual?"":" · auto")+")");
             applyProjLocToEmp(emp,p,dates.start);
             created++;
           }
@@ -6466,6 +6632,7 @@ window.A={
           existing.status="done";
           existing.completedAt=existing.completedAt||td();
           existing.loadPct=0;
+          existing.loadPctManual=false;
         }
       });
       // Đóng asgn legacy (không có workItemId) khi đã có phân công theo hạng mục
@@ -6531,10 +6698,11 @@ window.A={
       });
     }else if(p){
       var items=normWorkItems(p);
-      items.forEach(function(w){if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={}});
-      if(items.length===1){
-        S.giaoItemStaff[items[0].id][eid]={pct:""};
-      }
+      items.forEach(function(w){
+        if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={};
+        // Thêm vào đội = giao tất cả hạng mục (chia đều % khi lưu)
+        S.giaoItemStaff[w.id][eid]={pct:""};
+      });
     }
     var cnt=curGiaoPartIds().length;
     if(!canAssignProjRoles(cnt)){S.teamToTruong="";S.teamVatTu="";}
@@ -6548,10 +6716,26 @@ window.A={
     else delete S.giaoItemStaff[wid][eid];
     render();
   },
+  giaoWiAllTeam:function(){
+    var p=pById(S.giaoProj);if(!p)return;
+    var items=normWorkItems(p);
+    if(!items.length)return;
+    if(!S.giaoItemStaff)S.giaoItemStaff={};
+    items.forEach(function(w){if(!S.giaoItemStaff[w.id])S.giaoItemStaff[w.id]={}});
+    curGiaoPartIds().forEach(function(eid){
+      items.forEach(function(w){S.giaoItemStaff[w.id][eid]={pct:""}});
+    });
+    render();
+  },
   giaoWiPct:function(eid,wid){
     if(!S.giaoPick[eid]||!S.giaoItemStaff||!S.giaoItemStaff[wid]||!S.giaoItemStaff[wid][eid])return;
     var el=document.getElementById("gwip_"+eid+"_"+wid);
-    S.giaoItemStaff[wid][eid].pct=el?el.value:"";
+    var raw=el?String(el.value).trim():"";
+    // Xóa hết / để trống → về auto (không khóa)
+    if(raw===""){S.giaoItemStaff[wid][eid]={pct:""};render();return;}
+    var n=Number(raw);
+    if(isNaN(n)){S.giaoItemStaff[wid][eid]={pct:""};render();return;}
+    S.giaoItemStaff[wid][eid]={pct:String(Math.round(Math.max(0,Math.min(100,n))*100)/100)};
     render();
   },
   ensureEmpJob:function(projId,empId){
@@ -6578,7 +6762,7 @@ window.A={
     if(tt&&parts.indexOf(tt)<0)tt="";
     if(vt&&parts.indexOf(vt)<0)vt="";
     applyProjTeam(p,parts,tt,vt);
-    ensureRoleHoldersHaveAsgn(p);
+    ensureTeamHaveAsgn(p);
     logTeamRoleChanges(p,oldTT,oldVT);
     S.proj=S.proj.map(function(x){return x.id===p.id?p:x});
     sv();render();
@@ -7280,7 +7464,7 @@ window.A={
       auditLog("action","edit_proj","Sửa dự án «"+f.name+"»",{id:f.id});
     }
     sv();S.modal=null;S.form=null;render();
-    if(isNew)alert("Đã tạo dự án «"+f.name+"». Tiếp theo mở Chi tiết → Giao việc để chọn nhân viên và hạng mục.");
+    if(isNew)alert("Đã tạo dự án «"+f.name+"». Tiếp theo mở Chi tiết → Giao việc để chọn nhân viên (chọn là đã giao việc).");
   },
   dp:function(id){
     if(!dirGuard())return;
