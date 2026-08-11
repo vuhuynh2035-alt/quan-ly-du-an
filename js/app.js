@@ -1,13 +1,18 @@
 (function(){
 "use strict";
-var GROUPS_DEFAULT=["Giám sát","Chỉ huy trưởng","Điều hành","Điện","Hàn","Hệ thống","Máy trục vít","IQF","Cách nhiệt","Phụ việc"];
-var EMP_GRP_ORDER=["Hệ thống","Hàn","Điện","Máy trục vít","IQF","Cách nhiệt","Phụ việc","Giám sát","Chỉ huy trưởng","Điều hành"];
-var EMP_GRP_TAIL=["Giám sát","Chỉ huy trưởng","Điều hành"];
-var GCOL={"Giám sát":"#6366f1","Chỉ huy trưởng":"#f59e0b","Điều hành":"#0ea5e9","Điện":"#f97316","Hàn":"#ef4444","Hệ thống":"#3b82f6","Máy trục vít":"#a855f7","IQF":"#06b6d4","Cách nhiệt":"#06b6d4","Phụ việc":"#6b7280"};
+var GROUPS_DEFAULT=["Hệ thống","Hàn","Điện","Máy trục vít","IQF","Cách nhiệt","Phụ việc","Giám sát","Chỉ huy trưởng","Điều hành","Hành chính"];
+var EMP_GRP_ORDER=["Hệ thống","Hàn","Điện","Máy trục vít","IQF","Cách nhiệt","Phụ việc","Giám sát","Chỉ huy trưởng","Điều hành","Hành chính"];
+var EMP_GRP_TAIL=["Giám sát","Chỉ huy trưởng","Điều hành","Hành chính"];
+var GCOL={"Giám sát":"#6366f1","Chỉ huy trưởng":"#f59e0b","Điều hành":"#0ea5e9","Hành chính":"#14b8a6","Điện":"#f97316","Hàn":"#ef4444","Hệ thống":"#3b82f6","Máy trục vít":"#a855f7","IQF":"#06b6d4","Cách nhiệt":"#06b6d4","Phụ việc":"#6b7280"};
 function isOversightGroup(g){return g==="Giám sát"||g==="Điều hành"}
 function isOversightEmp(e){return !!(e&&isOversightGroup(e.group))}
+function isAdminHrGroup(g){return g==="Hành chính"}
+function isAdminHrEmp(e){return !!(e&&isAdminHrGroup(e.group))}
 function isChiefGroup(g){return g==="Chỉ huy trưởng"}
 function isChiefEmp(e){return !!(e&&isChiefGroup(e.group))}
+/** Văn phòng / quản trị: không giao việc hiện trường, không chấm công hiện trường / KPI thi công. */
+function isOfficeStaffGroup(g){return isOversightGroup(g)||isChiefGroup(g)||isAdminHrGroup(g)}
+function isOfficeStaffEmp(e){return !!(e&&isOfficeStaffGroup(e.group))}
 /** Phân công kiểm tra của Chỉ huy trưởng — không tính vào tiến độ / hoàn thành dự án. */
 function isChiefAsgn(a){
   if(!a)return false;
@@ -15,8 +20,8 @@ function isChiefAsgn(a){
   return isChiefEmp(eById(a.empId));
 }
 function asgnAffectsProjProgress(a){return !!(a&&!isChiefAsgn(a))}
-function fieldGroups(){return getGroups().filter(function(g){return !isOversightGroup(g)&&!isChiefGroup(g)})}
-function fieldEmp(list){return staffEmp(list).filter(function(e){return !isOversightEmp(e)&&!isChiefEmp(e)})}
+function fieldGroups(){return getGroups().filter(function(g){return !isOfficeStaffGroup(g)})}
+function fieldEmp(list){return staffEmp(list).filter(function(e){return !isOfficeStaffEmp(e)})}
 function oversightEmpList(){
   return staffEmp().filter(isOversightEmp).sort(function(a,b){
     var ga=a.group||"",gb=b.group||"";
@@ -29,14 +34,25 @@ function chiefEmpList(){
 }
 function defaultFieldGroup(){var g=fieldGroups();return g[0]||"Điện"}
 function filterFieldEmpIds(ids){
-  return (ids||[]).filter(function(eid){var e=eById(eid);return e&&!isOversightEmp(e)&&!isChiefEmp(e)});
+  return (ids||[]).filter(function(eid){var e=eById(eid);return e&&!isOfficeStaffEmp(e)});
 }
 var GCOL_EXTRA_PALETTE=["#ec4899","#14b8a6","#8b5cf6","#eab308","#22c55e","#f43f5e","#0ea5e9","#84cc16"];
+function orderGroupsList(all){
+  all=(all||[]).filter(Boolean);
+  var ordered=[],tail=[];
+  function isTail(g){return EMP_GRP_TAIL.indexOf(g)>=0}
+  EMP_GRP_ORDER.forEach(function(g){if(all.indexOf(g)>=0&&!isTail(g))ordered.push(g)});
+  all.forEach(function(g){if(ordered.indexOf(g)<0&&!isTail(g))ordered.push(g)});
+  EMP_GRP_TAIL.forEach(function(g){if(all.indexOf(g)>=0)tail.push(g)});
+  all.forEach(function(g){if(isTail(g)&&tail.indexOf(g)<0)tail.push(g)});
+  return ordered.concat(tail);
+}
 function ensureCfgGroups(){
   if(!S.cfg.groupColors)S.cfg.groupColors={};
   if(!S.cfg.groups||!Array.isArray(S.cfg.groups)||!S.cfg.groups.length){S.cfg.groups=GROUPS_DEFAULT.slice();return}
   S.cfg.groups=S.cfg.groups.filter(function(g){return g&&g!=="Quản lý"});
   GROUPS_DEFAULT.forEach(function(g){if(S.cfg.groups.indexOf(g)<0)S.cfg.groups.push(g)});
+  S.cfg.groups=orderGroupsList(S.cfg.groups);
 }
 function migrateWorkspace(){
   ensureCfgGroups();
@@ -67,15 +83,7 @@ function migrateWorkspace(){
   return changed;
 }
 function getGroups(){ensureCfgGroups();return S.cfg.groups||GROUPS_DEFAULT.slice()}
-function empGroupOrder(){
-  var all=getGroups(),ordered=[],tail=[];
-  function isTail(g){return EMP_GRP_TAIL.indexOf(g)>=0}
-  EMP_GRP_ORDER.forEach(function(g){if(all.indexOf(g)>=0&&!isTail(g))ordered.push(g)});
-  all.forEach(function(g){if(ordered.indexOf(g)<0&&!isTail(g))ordered.push(g)});
-  EMP_GRP_TAIL.forEach(function(g){if(all.indexOf(g)>=0)tail.push(g)});
-  all.forEach(function(g){if(isTail(g)&&tail.indexOf(g)<0)tail.push(g)});
-  return ordered.concat(tail);
-}
+function empGroupOrder(){return orderGroupsList(getGroups())}
 function groupColor(g){
   if(!g)return"#38bdf8";
   if(GCOL[g])return GCOL[g];
@@ -96,6 +104,112 @@ var PM={};PROV_RAW.forEach(function(p){PM[p[0]]={name:p[0],lat:p[1],lng:p[2]};})
 var PROVS=PROV_RAW.map(function(p){return{name:p[0],lat:p[1],lng:p[2]};});
 var DP="TP. Hồ Chí Minh";
 var ST={available:{l:"Sẵn sàng",c:"#4ade80",s:"rgba(74,222,128,.15)"},busy:{l:"Đang bận",c:"#fbbf24",s:"rgba(251,191,36,.15)"},leave:{l:"Nghỉ",c:"#f87171",s:"rgba(248,113,113,.15)"}};
+function leaveEndFrom(start,days){var n=Math.max(1,Math.round(Number(days)||1));return dAdd(start,n-1)}
+/** Đơn xin nghỉ phép lịch sự gửi Giám đốc (tự động từ form). */
+function composeLeaveRequestLetter(empName,start,days,reason){
+  var name=String(empName||"").trim()||"nhân viên";
+  var n=Math.max(1,Math.round(Number(days)||1));
+  var end=leaveEndFrom(start,n);
+  var why=String(reason||"").trim()||"…";
+  if(!/[.!?…]$/.test(why))why+=".";
+  return[
+    "Kính gửi Ban Giám đốc,",
+    "",
+    "Tôi tên là "+name+", hiện đang công tác tại công ty.",
+    "Tôi kính xin phép được nghỉ làm từ ngày "+dFmt(start)+" đến hết ngày "+dFmt(end)+" (tổng cộng "+n+" ngày).",
+    "",
+    "Lý do xin nghỉ: "+why,
+    "",
+    "Rất mong Ban Giám đốc xem xét và chấp thuận đơn xin nghỉ phép của tôi.",
+    "Xin chân thành cảm ơn Ban Giám đốc đã quan tâm và hỗ trợ.",
+    "",
+    "Trân trọng,",
+    name
+  ].join("\n");
+}
+function composeLeaveApproveLetter(empName,start,end,days){
+  var name=String(empName||"").trim()||"anh/chị";
+  var n=Math.max(1,Math.round(Number(days)||1));
+  return[
+    "Kính gửi anh/chị "+name+",",
+    "",
+    "Ban Giám đốc đã nhận và xem xét đơn xin nghỉ phép của anh/chị từ ngày "+dFmt(start)+" đến hết ngày "+dFmt(end)+" ("+n+" ngày).",
+    "",
+    "Kết quả: Đồng ý cho anh/chị nghỉ phép theo đề nghị.",
+    "",
+    "Chúc anh/chị nghỉ ngơi tốt và trở lại làm việc đúng hạn.",
+    "",
+    "Trân trọng,",
+    "Ban Giám đốc"
+  ].join("\n");
+}
+function composeLeaveRejectLetter(empName,start,end,days,rejectReason){
+  var name=String(empName||"").trim()||"anh/chị";
+  var n=Math.max(1,Math.round(Number(days)||1));
+  var why=String(rejectReason||"").trim()||"Điều kiện công việc hiện tại chưa cho phép";
+  if(!/[.!?…]$/.test(why))why+=".";
+  return[
+    "Kính gửi anh/chị "+name+",",
+    "",
+    "Ban Giám đốc đã nhận và xem xét đơn xin nghỉ phép của anh/chị từ ngày "+dFmt(start)+" đến hết ngày "+dFmt(end)+" ("+n+" ngày).",
+    "",
+    "Rất tiếc, đơn xin nghỉ phép chưa được chấp thuận trong đợt này.",
+    "Lý do: "+why,
+    "",
+    "Đề nghị anh/chị tiếp tục làm việc theo lịch hiện tại. Khi điều kiện cho phép, anh/chị vui lòng nộp lại đơn vào thời điểm thích hợp.",
+    "",
+    "Trân trọng,",
+    "Ban Giám đốc"
+  ].join("\n");
+}
+function leaveLetterPreviewHTML(){
+  var me=eById(S.auth&&S.auth.empId);
+  var start=(document.getElementById("leave-start")||{}).value||td();
+  var days=Math.max(1,Math.round(Number((document.getElementById("leave-days")||{}).value||1)));
+  var reason=((document.getElementById("leave-reason")||{}).value||"").trim();
+  return composeLeaveRequestLetter(me?me.name:"",start,days,reason||"(chưa nhập lý do)");
+}
+function isEmpOnLeave(e){
+  if(!e)return false;
+  var t=td();
+  if(e.leaveStart&&e.leaveEnd&&t>=e.leaveStart&&t<=e.leaveEnd)return true;
+  if(e.leaveStart&&e.leaveEnd&&t>e.leaveEnd)return false;
+  return e.status==="leave";
+}
+function empLeaveLabel(e){
+  if(!e)return"";
+  if(e.leaveStart&&e.leaveEnd){
+    var t=td();
+    if(t<=e.leaveEnd)return"Nghỉ phép từ "+dFmt(e.leaveStart)+" đến "+dFmt(e.leaveEnd);
+  }
+  if(e.status==="leave")return"Nghỉ";
+  return"";
+}
+function empStatusInfo(e){
+  if(isEmpOnLeave(e)){
+    var lbl=empLeaveLabel(e)||"Nghỉ phép";
+    return{l:lbl,c:"#f87171",s:"rgba(248,113,113,.15)",key:"leave"};
+  }
+  return ST[e&&e.status]||ST.available;
+}
+function leaveReqById(id){return(S.leaveReqs||[]).find(function(r){return r&&r.id===id})||null}
+function pendingLeaveReqs(){return(S.leaveReqs||[]).filter(function(r){return r&&r.status==="pending"})}
+function syncEmpLeaveStatuses(){
+  if(!canOperate())return;
+  var changed=0;
+  (S.emp||[]).forEach(function(e){
+    if(!e||!e.leaveStart||!e.leaveEnd)return;
+    var t=td();
+    if(t>=e.leaveStart&&t<=e.leaveEnd){
+      if(e.status!=="leave"){e.status="leave";changed=1;}
+    }else if(t>e.leaveEnd&&e.status==="leave"){
+      e.status="available";
+      e.leaveStart="";e.leaveEnd="";
+      changed=1;
+    }
+  });
+  if(changed)sv();
+}
 var SEED={"Điện":["Phương","Khoa"],"Hàn":["Hận","Bình","Thoàn","Hiếu"],"Hệ thống":["Liền","Nhu","Tú Nguyên","Sơn Thi"],"Máy trục vít":["Khanh"],"IQF":["Lohl"],"Phụ việc":["A"]};
 var DS={wP:4,wA:4,wS:2,cpk:8000,ml:3,wb:"auto",theme:"dark",stdWorkDaysMonth:26,company:{name:"",address:"",website:"",phone:"",email:"",custom:[]}};
 function ensureCompanyInfo(){
@@ -183,11 +297,81 @@ function directorChatRecipient(){
   if(d)return {empId:d.id,uid:d.authUid,name:d.name,group:"Giám đốc",isDir:true,hasAccount:true,pending:false};
   return null;
 }
+function hanhChinhChatRecipients(){
+  return staffEmp().filter(function(e){return isAdminHrEmp(e)&&e.authUid}).map(function(e){
+    return{empId:e.id,uid:e.authUid,name:e.name||"Hành chính",group:"Hành chính",isDir:false,hasAccount:true,pending:false};
+  });
+}
+/** Giám đốc + Hành chính nhận đơn nghỉ phép / phê duyệt. */
+function leaveNotifyRecipients(extra){
+  var map={},list=[];
+  function add(r){
+    if(!r||!r.uid||map[r.uid])return;
+    map[r.uid]=1;list.push(r);
+  }
+  add(directorChatRecipient());
+  hanhChinhChatRecipients().forEach(add);
+  (extra||[]).forEach(add);
+  return list;
+}
+function leaveRoomKey(reqId){return "leave:"+String(reqId||"").trim()}
+function isLeaveChatTo(chatTo){return !!(chatTo&&String(chatTo).indexOf("leave:")===0)}
+function leaveIdFromChatTo(chatTo){return isLeaveChatTo(chatTo)?String(chatTo).slice(6):""}
+/** Tin DM cũ gắn nghỉ phép — không còn hiện thành khung chat 1–1. */
+function isLeaveRelatedDm(m){
+  if(!m||m.type!=="dm")return false;
+  if(m.leaveReqId)return true;
+  var k=String(m.kind||"");
+  return k==="leave_req"||k==="leave_decision";
+}
+function leaveRoomParticipants(req,extraUids){
+  var map={},list=[];
+  function addUid(u){
+    u=String(u||"").trim();
+    if(!u||map[u])return;
+    map[u]=1;list.push(u);
+  }
+  if(req&&Array.isArray(req.roomParticipants))req.roomParticipants.forEach(addUid);
+  if(req&&req.uid)addUid(req.uid);
+  leaveNotifyRecipients(req&&req.uid?[{uid:req.uid,name:req.empName||""}]:[]).forEach(function(r){addUid(r.uid)});
+  (extraUids||[]).forEach(addUid);
+  if(S.auth&&S.auth.uid)addUid(S.auth.uid);
+  list.sort();
+  return list;
+}
+function notifyLeaveRoom(text,req,kind){
+  if(!req||!req.id)return Promise.resolve();
+  var participants=leaveRoomParticipants(req);
+  if(participants.length<2)return Promise.resolve();
+  if(typeof window.__CV3_sendChat!=="function"){
+    S.chat=(S.chat||[]).concat([{
+      id:uid(),text:text,type:"leave",kind:kind||"leave_chat",leaveReqId:req.id,
+      threadId:leaveRoomKey(req.id),participants:participants,
+      uid:(S.auth&&S.auth.uid)||"",fromName:(S.auth&&(S.auth.displayName||S.auth.username))||"",
+      role:(S.auth&&S.auth.role)||"employee",at:new Date().toISOString(),
+      _orgId:req._orgId||currentOrgId()
+    }]);
+    return Promise.resolve();
+  }
+  return window.__CV3_sendChat(text,{
+    type:"leave",
+    leaveReqId:req.id,
+    participants:participants,
+    kind:kind||"leave_chat",
+    forOrg:req._orgId||""
+  }).catch(function(err){console.warn("leave room",err);});
+}
+/** @deprecated — giữ tương thích local fallback cũ; ưu tiên notifyLeaveRoom. */
+function notifyLeaveChat(text,recipients,kind,leaveReqId){
+  var req=leaveReqById(leaveReqId)||{id:leaveReqId,uid:(S.auth&&S.auth.uid)||"",roomParticipants:(recipients||[]).map(function(r){return r.uid}).concat([(S.auth&&S.auth.uid)||""])};
+  return notifyLeaveRoom(text,req,kind);
+}
 function empRoleLabel(e){
   if(empAccountRole(e)==="director")return "Giám đốc";
   if(e&&e.group==="Điều hành")return "Điều hành";
   if(e&&e.group==="Giám sát")return "Giám sát";
   if(e&&e.group==="Chỉ huy trưởng")return "Chỉ huy trưởng";
+  if(e&&e.group==="Hành chính")return "Hành chính";
   return "Nhân viên";
 }
 function isDir(){return S.auth&&S.auth.role==="director"}
@@ -203,19 +387,21 @@ function staffLevel(){
   if(g==="Điều hành")return "operate";
   if(g==="Giám sát")return "supervise";
   if(g==="Chỉ huy trưởng")return "chief";
+  if(g==="Hành chính")return "admin_hr";
   return "";
 }
 function hasFullUI(){return staffLevel()==="operate"||staffLevel()==="supervise"}
 function canOperate(){return staffLevel()==="operate"}
 function isSuperviseOnly(){return staffLevel()==="supervise"}
 function isChiefOnly(){return staffLevel()==="chief"}
+function isAdminHr(){return staffLevel()==="admin_hr"}
 function hasOversightView(){var lv=staffLevel();return lv==="operate"||lv==="supervise"||lv==="chief"}
 /** Chỉ giám đốc: hồ sơ nhân sự, tổ/nhóm, trưởng nhóm/thủ kho dự án, đánh giá chất lượng, chấm công công ty. */
 function canManageStaff(){if(!window.__CV3_SKIP_SEED)return true;return isDir()}
 /** Dữ liệu nhạy cảm công ty (sửa KH, đánh giá sao, thùng rác…). */
 function canViewSensitive(){if(!window.__CV3_SKIP_SEED)return true;return isDir()}
-/** Tab/danh sách nhân sự + khối Chuyên môn Tổng quan: giám đốc + Điều hành (ẩn với Giám sát). */
-function canViewEmpTab(){if(!window.__CV3_SKIP_SEED)return true;return canOperate()}
+/** Tab/danh sách nhân sự + khối Chuyên môn Tổng quan: giám đốc + Điều hành (+ Hành chính xem danh sách). */
+function canViewEmpTab(){if(!window.__CV3_SKIP_SEED)return true;return canOperate()||isAdminHr()}
 /** Xem danh sách khách hàng: giám đốc + Điều hành (ẩn với Giám sát). */
 function canViewCust(){if(!window.__CV3_SKIP_SEED)return true;return canOperate()}
 /** Đánh giá / KPI: chỉ giám đốc (ẩn với Điều hành / Giám sát). */
@@ -230,8 +416,21 @@ function canUseLich(){if(!window.__CV3_SKIP_SEED)return true;return isDir()||has
 function canViewSharedProg(){if(!window.__CV3_SKIP_SEED)return true;return hasOversightView()}
 /** Sơ đồ: giám đốc, Điều hành, Chỉ huy trưởng (Giám sát không có quyền vào tab này). */
 function canViewMap(){if(!window.__CV3_SKIP_SEED)return true;return canOperate()||isChiefOnly()}
+/** Chấm công toàn công ty / tính lương: giám đốc + Hành chính. */
+function canViewAttCompany(){if(!window.__CV3_SKIP_SEED)return true;return isDir()||isAdminHr()}
+/** Theo dõi nghỉ phép trên Tổng quan (ô thống kê): GD + Hành chính. */
+function canViewLeaveOverview(){
+  if(!window.__CV3_SKIP_SEED)return true;
+  return isDir()||isAdminHr();
+}
+/** Xin nghỉ phép (form gửi giám đốc): NV + DH + GS + HC + CHT. */
+function canRequestLeave(){
+  if(!window.__CV3_SKIP_SEED)return true;
+  if(isDir())return false;
+  return !!(S.auth&&S.auth.empId&&(isEmp()||isAdminHr()||canOperate()||isSuperviseOnly()||isChiefOnly()));
+}
 /** Lịch hẹn cá nhân — độc lập theo uid, không đồng bộ workspace. */
-function usesPersonalReminders(){if(!window.__CV3_SKIP_SEED)return false;return (hasOversightView()||isEmpPortal())&&!isDir()}
+function usesPersonalReminders(){if(!window.__CV3_SKIP_SEED)return false;return (hasOversightView()||isEmpPortal()||isAdminHr())&&!isDir()}
 function isEmpPortal(){return isEmp()&&(staffLevel()===""||isChiefOnly())}
 /** Nhân viên thường (portal) — không gồm Chỉ huy trưởng (có thêm tab giám sát). */
 function isFieldPortal(){return isEmpPortal()&&!isChiefOnly()}
@@ -423,7 +622,7 @@ function ensureActiveAsgn(p,empId,opts){
   opts=opts||{};
   if(!p||!empId)return null;
   var emp=eById(empId);
-  if(!emp||isOversightEmp(emp))return null;
+  if(!emp||isOversightEmp(emp)||isAdminHrEmp(emp))return null;
   var existing=(S.asgn||[]).find(function(a){return a.projId===p.id&&a.empId===empId&&(a.status==="active"||a.status==="paused"||a.status==="queued")});
   if(existing)return existing;
   var dates=asgnDates(p);
@@ -634,21 +833,21 @@ function giaoAllocBoardHTML(p){
 }
 function giaoEmpPickRow(e,opts){
   opts=opts||{};
-  var bp=busyPct(e),sel=!!opts.sel,st=ST[e.status],dis=!!opts.dis;
+  var onLeave=isEmpOnLeave(e),bp=busyPct(e),sel=!!opts.sel,st=empStatusInfo(e),dis=!!opts.dis||onLeave;
   var h='<div class="giao-pick'+(sel&&!dis?" sel":"")+(dis?" dis":"")+'"'+(dis?"":' onclick="A.giaoTog(\''+e.id+'\')"')+'>';
   h+='<input type="checkbox" class="giao-chk"'+(sel&&!dis?" checked":"")+(dis?" disabled":"")+(dis?"":' onclick="event.stopPropagation();A.giaoTog(\''+e.id+'\')"')+'>';
-  h+='<div class="giao-pick-body"><span class="giao-pick-name">'+esc(e.name)+'</span>'+bdg(st.l,st.c,st.s);
-  h+='<span class="giao-pick-meta">'+bp+'% bận · '+ac(e.id)+' việc</span></div>';
-  if(sel)h+='<span class="giao-pick-tag">Trong đội</span>';
+  h+='<div class="giao-pick-body"><span class="giao-pick-name"'+(onLeave?' style="color:#94a3b8"':"")+'>'+esc(e.name)+'</span>'+bdg(st.l,st.c,st.s);
+  h+='<span class="giao-pick-meta">'+(onLeave?esc(empLeaveLabel(e)||"Đang nghỉ phép"):(bp+'% bận · '+ac(e.id)+' việc'))+'</span></div>';
+  if(sel&&!dis)h+='<span class="giao-pick-tag">Trong đội</span>';
   h+='</div>';
   return h;
 }
 function giaoEmpRow(e,opts){
   opts=opts||{};
   if(opts.compact)return giaoEmpPickRow(e,opts);
-  var bp=busyPct(e),sel=!!opts.sel,st=ST[e.status],dis=!!opts.dis;
-  var h='<div class="giao-row'+(sel&&!dis?" sel":"")+(dis?" dis":"")+'"'+(dis?"":' onclick="A.giaoTog(\''+e.id+'\')"')+'><div class="giao-row-body"><div class="row" style="gap:8px;align-items:center;margin-bottom:2px"><span class="giao-row-name">'+esc(e.name)+'</span>'+bdg(st.l,st.c,st.s)+(dis?bdg("Đã bố trí","var(--c-muted4)","transparent"):"")+'</div>'+busyBar(bp,true)+'<div style="text-align:right;font-family:monospace;font-size:10px;color:rgba(200,225,255,.6);margin-top:3px">'+bp+'% bận rộn · '+ac(e.id)+' việc</div>';
-  if(opts.extra)h+='<div class="giao-row-extra" onclick="event.stopPropagation()">'+opts.extra+'</div>';
+  var onLeave=isEmpOnLeave(e),bp=busyPct(e),sel=!!opts.sel,st=empStatusInfo(e),dis=!!opts.dis||onLeave;
+  var h='<div class="giao-row'+(sel&&!dis?" sel":"")+(dis?" dis":"")+'"'+(dis?"":' onclick="A.giaoTog(\''+e.id+'\')"')+'><div class="giao-row-body"><div class="row" style="gap:8px;align-items:center;margin-bottom:2px"><span class="giao-row-name"'+(onLeave?' style="color:#94a3b8"':"")+'>'+esc(e.name)+'</span>'+bdg(st.l,st.c,st.s)+(dis&&!onLeave?bdg("Đã bố trí","var(--c-muted4)","transparent"):"")+(onLeave?bdg("Không chọn","#f87171","rgba(248,113,113,.12)"):"")+'</div>'+(onLeave?'<div style="font-size:12px;color:#f87171;font-weight:600;margin-top:2px">'+esc(empLeaveLabel(e))+'</div>':busyBar(bp,true)+'<div style="text-align:right;font-family:monospace;font-size:10px;color:rgba(200,225,255,.6);margin-top:3px">'+bp+'% bận rộn · '+ac(e.id)+' việc</div>');
+  if(opts.extra&&!dis)h+='<div class="giao-row-extra" onclick="event.stopPropagation()">'+opts.extra+'</div>';
   h+='</div><input type="checkbox" class="giao-chk"'+(sel&&!dis?" checked":"")+(dis?" disabled":"")+(dis?"":' onclick="event.stopPropagation();A.giaoTog(\''+e.id+'\')"')+'></div>';
   return h;
 }
@@ -1470,7 +1669,7 @@ function buildAsgnsFromWorkItems(p,workItems,normalizedStaff,dates){
     Object.keys(normalizedStaff[w.id]||{}).forEach(function(eid){
       var pct=Number(normalizedStaff[w.id][eid].pct)||0;
       if(pct<=0)return;
-      var emp=eById(eid);if(!emp||isOversightEmp(emp)||isChiefEmp(emp))return;
+      var emp=eById(eid);if(!emp||isOfficeStaffEmp(emp))return;
       if(partIds.indexOf(eid)<0)partIds.push(eid);
       var na=mkAsgn(eid,p.id,0,{
         startDate:dates.start,
@@ -2221,27 +2420,30 @@ function initGantt(){
     root._gRefresh=refresh;
   });
 }
-function packEmpGanttLanes(acts){
-  var sorted=(acts||[]).slice().sort(function(a,b){return (a.startDate||"").localeCompare(b.startDate||"");});
-  var lanes=[[],[]];
-  sorted.forEach(function(a){
-    var placed=false;
-    for(var li=0;li<2;li++){
-      var ok=true;
-      for(var j=0;j<lanes[li].length;j++){
-        if(asgnRangeOverlap(lanes[li][j],a.startDate,asgnEndDate(a))){ok=false;break;}
-      }
-      if(ok){lanes[li].push(a);placed=true;break;}
-    }
-    if(!placed)lanes[1].push(a);
+function packEmpGanttByProject(acts){
+  var map={},order=[];
+  (acts||[]).slice().sort(function(a,b){return (a.startDate||"").localeCompare(b.startDate||"")||(a.endDate||"").localeCompare(b.endDate||"");}).forEach(function(a){
+    var pid=a.projId||("_"+a.id);
+    if(!map[pid]){map[pid]=[];order.push(pid);}
+    map[pid].push(a);
   });
-  return lanes;
+  return order.map(function(pid){
+    var p=pid.charAt(0)==="_"?null:pById(pid);
+    var laneActs=map[pid];
+    var first=laneActs[0]?asgnInfo(laneActs[0]):null;
+    var title=(p&&p.name)||(first&&first.title)||"Công việc";
+    var sub="";
+    if(laneActs.length===1&&first&&first.title&&first.title!==title)sub=shortGanttText(first.title,22);
+    else if(laneActs.length>1)sub=laneActs.length+" hạng mục";
+    else sub=p&&p.group?p.group:"";
+    return{projId:pid,title:title,sub:sub,acts:laneActs};
+  });
 }
 function empGanttHTML(empId,opts){
   opts=opts||{};
   var acts=empActs(empId);
   if(!acts.length)return'<p style="color:var(--c-muted);font-size:13px;margin:0">Chưa có công việc trên lịch.</p>';
-  var lanes=packEmpGanttLanes(acts);
+  var lanes=packEmpGanttByProject(acts);
   var items=[];
   acts.forEach(function(a){
     items.push({a:a,s:a.startDate||td(),e:asgnEndDate(a)||a.startDate||td(),prog:Math.max(0,Math.min(100,a.prog||0)),col:a.status==="paused"?"#ef4444":groupColor((pById(a.projId)||{}).group||"Hệ thống")});
@@ -2260,28 +2462,30 @@ function empGanttHTML(empId,opts){
   var trackW=weeks.length*wkPx;
   var tMaxMs=tMin.getTime()+weeks.length*7*86400000;
   function px(d){return ganttPx(d,tMin,weeks,wkPx)}
+  var lblW=150;
   var h='<div class="gantt-root emp-gantt-root" style="--gantt-wkpx:'+wkPx+'px;--gantt-head-h:36px" data-tmin="'+tMin.getTime()+'" data-tmax="'+tMaxMs+'" data-twidth="'+trackW+'" data-wkpx="'+wkPx+'" data-weeks="'+weeks.length+'">';
-  h+='<div class="gantt-wk-overlay" style="left:110px"><div class="gantt-wk-lines" style="width:'+trackW+'px">'+ganttWeekGrid(weeks,wkPx)+'</div></div>';
+  h+='<div class="gantt-wk-overlay" style="left:'+lblW+'px"><div class="gantt-wk-lines" style="width:'+trackW+'px">'+ganttWeekGrid(weeks,wkPx)+'</div></div>';
   h+='<div class="gantt-needle" title="Kéo để xem ngày — thả chuột về hôm nay"><div class="gantt-needle-hit"></div><div class="gantt-needle-line"></div></div>';
-  h+='<div class="gantt-sticky"><div class="gantt-date-tip gantt-date-tip-drag" title="Kéo để xem ngày">—</div><div class="gantt-row-flex"><div class="gantt-lbl-col" style="width:110px">Lịch NV</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
+  h+='<div class="gantt-sticky"><div class="gantt-date-tip gantt-date-tip-drag" title="Kéo để xem ngày">—</div><div class="gantt-row-flex"><div class="gantt-lbl-col" style="width:'+lblW+'px">Dự án</div><div class="gantt-scroll gantt-sync"><div class="gantt-ruler" style="width:'+trackW+'px">';
   weeks.forEach(function(w,i){h+='<div class="gantt-week" style="left:'+(i*wkPx)+'px;width:'+wkPx+'px">'+dFmtGanttWeek(w)+'</div>'});
   h+='</div></div></div></div>';
-  for(var li=0;li<2;li++){
-    var laneActs=lanes[li];
-    h+='<div class="gantt-body-row emp-gantt-lane"><div class="gantt-lbl" style="width:110px"><span class="gantt-name-title">Đường '+(li+1)+'</span><span class="gantt-name-dates">'+(laneActs.length?laneActs.length+" việc":"Trống")+'</span></div>';
+  lanes.forEach(function(lane){
+    var laneActs=lane.acts||[];
+    h+='<div class="gantt-body-row emp-gantt-lane"><div class="gantt-lbl" style="width:'+lblW+'px" title="'+esc(lane.title+(lane.sub?" · "+lane.sub:""))+'"><span class="gantt-name-title">'+esc(shortGanttText(lane.title,20))+'</span><span class="gantt-name-dates">'+esc(lane.sub||"")+'</span></div>';
     h+='<div class="gantt-scroll gantt-sync"><div class="gantt-track-px emp-gantt-track" style="width:'+trackW+'px">';
     laneActs.forEach(function(a){
       var info=asgnInfo(a),s=a.startDate||td(),e=asgnEndDate(a)||s,col=a.status==="paused"?"#ef4444":groupColor((pById(a.projId)||{}).group||"Hệ thống");
       var l=px(s),wbar=Math.max(4,px(e)-l),prog=Math.max(0,Math.min(100,a.prog||0)),pw=Math.max(2,wbar*prog/100);
+      var barLabel=a.workContent?shortGanttText(a.workContent,28):shortGanttText(info.title,28);
       var tip=info.title+" · "+dFmtG(s)+" → "+dFmtG(e)+(a.status==="paused"?" · Tạm dừng":"");
       h+='<div class="gantt-bar-wrap'+(a.status==="paused"?" emp-gantt-paused":"")+'" style="left:'+l+'px;width:'+wbar+'px'+(opts.clickable?";cursor:pointer":"")+'" title="'+esc(tip)+'"'+(opts.clickable?' onclick="event.stopPropagation();A.empAsgnCard(\''+a.id+'\',\''+(a._orgId||currentOrgId())+'\')"':"")+'>';
       h+='<div class="gantt-bar-bg" style="background:'+col+'28;border-color:'+col+'66"></div>';
       h+='<div class="gantt-bar" style="width:'+pw+'px;background:linear-gradient(90deg,'+col+','+col+'bb)"></div>';
-      h+=ganttBarInnerHTML(wbar,{label:info.title,pct:prog,tip:info.title});
+      h+=ganttBarInnerHTML(wbar,{label:barLabel,pct:prog,tip:info.title});
       h+='</div>';
     });
     h+='</div></div></div>';
-  }
+  });
   return h+'</div>';
 }
 function mkAsgn(empId,projId,prog,opts){
@@ -2344,6 +2548,7 @@ function seedDemo(){
   }
 
   getGroups().forEach(function(g){
+    if(isOfficeStaffGroup(g))return;
     var emps=S.emp.filter(function(e){return e.group===g});
     var projs=projsFor(g);
     emps.forEach(function(e,i){
@@ -2456,7 +2661,7 @@ var _lsCust=load("cv3_c",[]);
 var _lsCfg=load("cv3_s",{});
 var S={tab:"dash",selProj:"",selProjDet:"",selEmp:"",selCust:"",projView:"active",ganttZoom:1,giaoProj:"",giaoMode:"",goiYReq:{},giaoPick:{},teamToTruong:"",teamVatTu:"",modal:null,form:null,helpOpen:0,helpMode:"annotate",hist:[],histView:"actions",expGrp:{},empPushBusy:0,empPushMsg:"",remindPushBusy:0,remindPushMsg:"",
   kpiPeriod:"month",kpiMonth:"",
-  emp:_lsEmp,empAll:_lsEmp,asgnOther:[],projOther:[],otherOrgId:"",cust:_lsCust,proj:loadWs("cv3_p",[]),asgn:loadWs("cv3_a",[]),projLog:loadWs("cv3_pl",[]),cfg:Object.assign({},DS,_lsCfg),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null,orgId:"",orgIds:[]},chat:[],chatTo:null,pendingChatDm:"",reports:[],attendance:[],attFlow:null,arrivalFlow:null,selMyAsgn:"",selMyAsgnOrg:"",reportAsgn:"",reminders:loadWs("cv3_r",null)||(Array.isArray(_lsCfg.reminders)?_lsCfg.reminders.slice():[]),
+  emp:_lsEmp,empAll:_lsEmp,asgnOther:[],projOther:[],otherOrgId:"",cust:_lsCust,proj:loadWs("cv3_p",[]),asgn:loadWs("cv3_a",[]),projLog:loadWs("cv3_pl",[]),cfg:Object.assign({},DS,_lsCfg),auth:{role:null,empId:null,username:"",uid:"",displayName:"",age:null,orgId:"",orgIds:[]},chat:[],chatTo:null,pendingChatDm:"",leaveBoardId:"",reports:[],attendance:[],leaveReqs:loadWs("cv3_leave",[]),leaveReject:null,attFlow:null,arrivalFlow:null,selMyAsgn:"",selMyAsgnOrg:"",reportAsgn:"",reminders:loadWs("cv3_r",null)||(Array.isArray(_lsCfg.reminders)?_lsCfg.reminders.slice():[]),
   personalReminders:[],
   auditLog:loadWs("cv3_audit",[]),trash:loadWs("cv3_trash",[])};
 try{if(LS)LS.removeItem("cv3_undo")}catch(e){}
@@ -3084,8 +3289,8 @@ function asgnLiveDotHTML(a){var on=a.status==="active";return'<span class="emp-c
 function empCardGanttHTML(a){var prog=Math.max(0,Math.min(100,a.prog||0)),timePct=asgnTimePct(a),sched=asgnSchedStatus(a),days=asgnDays(a),start=dFmtCard(a.startDate),end=dFmtCard(asgnEndDate(a)),tip=start+" → "+end+" · Tiến độ "+prog+"% · Thời gian "+timePct+"% · "+asgnSchedLabel(sched);return'<div class="emp-card-gantt" title="'+esc(tip)+'"><div class="emp-card-gantt-bar-wrap sched-'+sched+'"><div class="emp-card-gantt-bar-bg"></div><div class="emp-card-gantt-bar" style="width:'+prog+'%"></div><div class="emp-card-gantt-inner"><span class="emp-card-gantt-days">'+days+' · '+prog+'%</span></div></div></div>'}
 function empCardTasksHTML(e){var acts=empActs(e.id).sort(function(a,b){return (b.startDate||"").localeCompare(a.startDate||"")});if(!acts.length)return'<div class="emp-card-tasks-empty">Chưa có việc</div>';var h="";acts.forEach(function(x){var factory=asgnFactoryName(x),work=asgnInfo(x).title,paused=x.status==="paused";h+='<div class="emp-card-task'+(paused?" emp-card-task-paused":"")+'" onclick="event.stopPropagation();A.empAsgnCard(\''+x.id+'\',\''+(x._orgId||currentOrgId())+'\')">'+asgnLiveDotHTML(x)+'<div class="emp-card-task-factory">'+esc(factory)+'</div><div class="emp-card-task-work">'+esc(work)+'</div>'+empCardGanttHTML(x)+'</div>'});return h}
 function empNamebarClick(eid){return'event.stopPropagation();var w=this.closest(\'.swipe-wrap\');if(w&&w._swiping)return;A.empDet(\''+eid+'\')'}
-function empNameColor(e){if(e.status==="leave")return"#f87171";if(busyPct(e)>=100)return"#fb923c";return document.documentElement.getAttribute("data-theme")==="light"?"#0d2137":"#fff"}
-function busyPct(e){if(e.status==="leave")return 0;var ml=S.cfg.ml||3;var p=Math.round(Math.min(100,ac(e.id)/ml*100));if(e.status==="busy")p=Math.max(p,40);return p}
+function empNameColor(e){if(isEmpOnLeave(e))return"#f87171";if(busyPct(e)>=100)return"#fb923c";return document.documentElement.getAttribute("data-theme")==="light"?"#0d2137":"#fff"}
+function busyPct(e){if(isEmpOnLeave(e))return 0;var ml=S.cfg.ml||3;var p=Math.round(Math.min(100,ac(e.id)/ml*100));if(e.status==="busy")p=Math.max(p,40);return p}
 function busyBar(p,lg){p=Math.max(0,Math.min(100,p));var h='<div class="busy-bar'+(lg?" busy-bar-lg":"")+'" title="'+(p>0?"Bận rộn "+p+"%":"Rảnh")+'">';if(p>0)h+='<div class="busy-red" style="width:'+p+'%"></div>';if(p<100)h+='<div class="busy-green" style="width:'+(100-p)+'%"></div>';return h+'</div>'}
 function aq(eid){var qs=allAsgnForEmp(eid).filter(function(a){return a.quality!=null}).map(function(a){return a.quality});return qs.length?qs.reduce(function(a,b){return a+b},0)/qs.length:null}
 function homeBasis(){var b=S.cfg.wb;if(b==="home")return true;if(b==="last")return false;return new Date().getDay()===1}
@@ -3365,21 +3570,24 @@ function hav(a,b){if(!a||!b||a.lat==null||b.lat==null)return null;return Math.ro
 function vnd(n){return n==null?"—":Math.round(n).toLocaleString("vi-VN")+" ₫"}
 function locBasisNote(){return "đang làm việc → nhà máy KH · khác → "+(homeBasis()?"nhà":"vị trí gần nhất")}
 function reco(proj){if(!proj)return[];return recoGrp(proj,proj.group,1)}
-function scoreEmp(proj,emp,minSkill){minSkill=minSkill||1;if((emp.skill||3)<minSkill)return null;if(emp.status==="leave")return null;var sw=(S.cfg.wP+S.cfg.wA+S.cfg.wS)||1,wp=S.cfg.wP/sw,wa=S.cfg.wA/sw,ws=S.cfg.wS/sw,md=1800,pl=pLoc(proj);var el=eLoc(emp),dist=hav(el.loc,pl),act=ac(emp.id),av=Math.max(0,1-act/(S.cfg.ml||3));if(emp.status==="busy")av*=.4;var prx=dist==null?.5:Math.max(0,1-Math.min(dist,md)/md);var sk=(emp.skill||3)/5;var pts={p:wp*prx*100,a:wa*av*100,s:ws*sk*100};return{emp:emp,dist:dist,act:act,sc:pts.p+pts.a+pts.s,tr:dist==null?null:dist*S.cfg.cpk,pts:pts,src:el.src,busy:busyPct(emp)}}
-function recoGrp(proj,group,minSkill){if(isOversightGroup(group))return[];return S.emp.filter(function(e){return e.group===group&&!isOversightEmp(e)}).map(function(e){return scoreEmp(proj,e,minSkill)}).filter(Boolean).sort(function(a,b){return b.sc-a.sc})}
+function scoreEmp(proj,emp,minSkill){minSkill=minSkill||1;if((emp.skill||3)<minSkill)return null;if(isEmpOnLeave(emp))return null;var sw=(S.cfg.wP+S.cfg.wA+S.cfg.wS)||1,wp=S.cfg.wP/sw,wa=S.cfg.wA/sw,ws=S.cfg.wS/sw,md=1800,pl=pLoc(proj);var el=eLoc(emp),dist=hav(el.loc,pl),act=ac(emp.id),av=Math.max(0,1-act/(S.cfg.ml||3));if(emp.status==="busy")av*=.4;var prx=dist==null?.5:Math.max(0,1-Math.min(dist,md)/md);var sk=(emp.skill||3)/5;var pts={p:wp*prx*100,a:wa*av*100,s:ws*sk*100};return{emp:emp,dist:dist,act:act,sc:pts.p+pts.a+pts.s,tr:dist==null?null:dist*S.cfg.cpk,pts:pts,src:el.src,busy:busyPct(emp)}}
+function recoGrp(proj,group,minSkill){if(isOfficeStaffGroup(group))return[];return fieldEmp(S.emp.filter(function(e){return e.group===group})).map(function(e){return scoreEmp(proj,e,minSkill)}).filter(Boolean).sort(function(a,b){return b.sc-a.sc})}
 function defaultGoiyReq(proj){var req={};fieldGroups().forEach(function(g){req[g]={on:proj&&g===proj.group,qty:proj&&g===proj.group?1:1,skill:3}});return req}
 function goiyAutoPick(proj,reqs){var pick={},asd=S.asgn.filter(function(a){return a.projId===proj.id&&a.status==="active"});asd.forEach(function(a){pick[a.empId]=true});projPartIds(proj).forEach(function(eid){pick[eid]=true});fieldGroups().forEach(function(g){var r=reqs[g];if(!r||!r.on||r.qty<1)return;var already=0;asd.forEach(function(a){var e=eById(a.empId);if(e&&e.group===g)already++});var need=Math.max(0,r.qty-already),n=0;if(!need)return;recoGrp(proj,g,r.skill).forEach(function(x){if(n>=need)return;if(pick[x.emp.id])return;pick[x.emp.id]=true;n++})});return pick}
 
-var DIR_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["prog","Tiến độ"],["qual","Đánh giá"],["hist","Lịch sử"],["cfg","Cài đặt"]];
+var DIR_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["leave","Nghỉ phép"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["prog","Tiến độ"],["qual","Đánh giá"],["hist","Lịch sử"],["cfg","Cài đặt"]];
 /** Điều hành: giao việc, nhân sự, KH, tiến độ (không Đánh giá / Lịch sử; không nằm trong bảng KPI). */
-var DH_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["prog","Tiến độ"],["cfg","Cài đặt"]];
-/** Giám sát: Tổng quan (không Nhân sự/KH/Chuyên môn), Thảo luận, Lịch hẹn, Dự án, Tiến độ. Ẩn Nhân sự, KH, Đánh giá, Sơ đồ. */
-var GS_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["lich","Lịch hẹn"],["proj","Dự án"],["prog","Tiến độ"],["cfg","Cài đặt"]];
-var CHT_TABS=[["mywork","Công việc"],["chamcong","Chấm công"],["report","Báo cáo tiến độ"],["chat","Thảo luận"],["map","Sơ đồ"],["dash","Tổng quan"],["proj","Dự án"],["prog","Tiến độ"],["lich","Lịch hẹn"],["settings","Cài đặt"]];
-var EMP_TABS=[["mywork","Công việc"],["chamcong","Chấm công"],["report","Báo cáo tiến độ"],["chat","Thảo luận"],["settings","Cài đặt"]];
-var EMP_TAB_IDS=["mywork","chamcong","report","chat","settings"];
+var DH_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["leave","Nghỉ phép"],["map","Sơ đồ"],["emp","Nhân sự"],["lich","Lịch hẹn"],["cust","Khách hàng"],["proj","Dự án"],["prog","Tiến độ"],["cfg","Cài đặt"]];
+/** Giám sát: Tổng quan (không Nhân sự/KH/Chuyên môn), Thảo luận, Nghỉ phép, Lịch hẹn, Dự án, Tiến độ. */
+var GS_TABS=[["dash","Tổng quan"],["chat","Thảo luận"],["leave","Nghỉ phép"],["lich","Lịch hẹn"],["proj","Dự án"],["prog","Tiến độ"],["cfg","Cài đặt"]];
+/** Hành chính: theo dõi chấm công / nghỉ phép / đi trễ-về sớm / CN làm thêm để tính lương. */
+var HC_TABS=[["dash","Tổng quan"],["chamcong","Chấm công"],["leave","Nghỉ phép"],["emp","Nhân sự"],["chat","Thảo luận"],["cfg","Cài đặt"]];
+var CHT_TABS=[["chamcong","Chấm công"],["mywork","Công việc"],["report","Báo cáo tiến độ"],["chat","Thảo luận"],["map","Sơ đồ"],["dash","Tổng quan"],["proj","Dự án"],["prog","Tiến độ"],["lich","Lịch hẹn"],["leave","Nghỉ phép"],["settings","Cài đặt"]];
+var EMP_TABS=[["chamcong","Chấm công"],["mywork","Công việc"],["report","Báo cáo tiến độ"],["chat","Thảo luận"],["leave","Nghỉ phép"],["settings","Cài đặt"]];
+var EMP_TAB_IDS=["chamcong","mywork","report","chat","leave","settings"];
 function rawTabs(){
   if(isChiefOnly())return CHT_TABS;
+  if(isAdminHr())return HC_TABS;
   if(!hasFullUI())return EMP_TABS;
   if(canViewSensitive())return DIR_TABS;
   if(canOperate())return DH_TABS;
@@ -3630,7 +3838,7 @@ function attMonthlySummary(empId,mk){
 }
 function attMonthlyReportHTML(empId){
   var emp=eById(empId);
-  if(isOversightEmp(emp)){
+  if(isOfficeStaffEmp(emp)){
     return "";
   }
   var mk=S.attMonth||attMonthKey();
@@ -3776,7 +3984,18 @@ function renderReportsBlock(asgnId,limit){
   return h+'</div>';
 }
 function tabIds(){return getTabs().map(function(t){return t[0]})}
-function coworkersOnProj(projId,excludeEmpId){return S.asgn.filter(function(x){return x.projId===projId&&(x.status==="active"||x.status==="paused")&&x.empId!==excludeEmpId}).map(function(x){var e=eById(x.empId);return e?e.name:null}).filter(Boolean)}
+function coworkersOnProj(projId,excludeEmpId){
+  var seen={},names=[];
+  (S.asgn||[]).forEach(function(x){
+    if(!x||x.projId!==projId||x.empId===excludeEmpId)return;
+    if(x.status!=="active"&&x.status!=="paused")return;
+    if(seen[x.empId])return;
+    seen[x.empId]=1;
+    var e=eById(x.empId);
+    if(e&&e.name)names.push(e.name);
+  });
+  return names;
+}
 function canNavPrev(){return S.tab==="lich"||(S.hist&&S.hist.length>0)||tabIds().indexOf(S.tab)>0}
 function canNavNext(){var ids=tabIds();return ids.indexOf(S.tab)<ids.length-1}
 function initScreenNavSwipe(){
@@ -4075,13 +4294,58 @@ function unreadChatCount(){
   var n=0,i,m,list=S.chat||[];
   for(i=0;i<list.length;i++){
     m=list[i];
-    if(!m||m.type!=="dm"||!m.id)continue;
+    if(!m||!m.id)continue;
     if(m.uid===me)continue;
-    if(m.toUid&&m.toUid!==me)continue;
     if(m.readAt)continue;
+    // Nghỉ phép chỉ đếm ở tab Nghỉ phép
+    if(m.type==="leave"||isLeaveRelatedDm(m))continue;
+    if(m.type==="dm"){
+      if(m.toUid&&m.toUid!==me)continue;
+      n++;
+    }
+  }
+  return n;
+}
+function leaveMsgCountsAsUnread(m){
+  var me=S.auth&&S.auth.uid;
+  if(!m||!me)return false;
+  if(m.uid===me)return false;
+  if(m.readAt)return false;
+  if(m.type==="leave"){
+    if(!m.participants||m.participants.indexOf(me)<0)return false;
+  }else if(isLeaveRelatedDm(m)){
+    if(m.toUid&&m.toUid!==me&&m.uid!==me)return false;
+  }else return false;
+  var kind=String(m.kind||"");
+  // Đơn xin nghỉ: chỉ còn "tin mới" khi đơn còn chờ duyệt.
+  // GD đã duyệt/từ chối → đơn gốc không còn là tin mới với GD.
+  if(kind==="leave_req"){
+    var req=m.leaveReqId?leaveReqById(m.leaveReqId):null;
+    if(req&&req.status&&req.status!=="pending")return false;
+    return true;
+  }
+  // Phản hồi duyệt / chat góp ý: tin mới với người nhận (NV, HC…)
+  return true;
+}
+function unreadLeaveCount(){
+  var me=S.auth&&S.auth.uid;
+  if(!me)return 0;
+  var n=0,i,m,list=S.chat||[],seen={};
+  for(i=0;i<list.length;i++){
+    m=list[i];
+    if(!leaveMsgCountsAsUnread(m))continue;
+    if(m.leaveReqId){
+      if(seen[m.leaveReqId])continue;
+      seen[m.leaveReqId]=1;
+    }
     n++;
   }
   return n;
+}
+function unreadLeaveForReq(reqId){
+  reqId=String(reqId||"").trim();
+  if(!reqId)return 0;
+  return unreadChatCountForTo(leaveRoomKey(reqId));
 }
 function unreadChatCountForTo(chatTo){
   var me=S.auth&&S.auth.uid;
@@ -4089,13 +4353,26 @@ function unreadChatCountForTo(chatTo){
   var msgs=chatMsgsForTo(chatTo),n=0,i,m;
   for(i=0;i<msgs.length;i++){
     m=msgs[i];
-    if(!m||m.type!=="dm")continue;
+    if(!m)continue;
+    if(isLeaveChatTo(chatTo)||m.type==="leave"||isLeaveRelatedDm(m)){
+      if(!leaveMsgCountsAsUnread(m))continue;
+      n++;
+      continue;
+    }
     if(m.uid===me)continue;
-    if(m.toUid&&m.toUid!==me)continue;
     if(m.readAt)continue;
+    if(m.type==="dm"){
+      if(m.toUid&&m.toUid!==me)continue;
+    }else continue;
     n++;
   }
   return n;
+}
+function markLeaveBoardRead(reqId){
+  reqId=String(reqId||"").trim();
+  if(!reqId||!S.auth||!S.auth.uid)return;
+  if(typeof window.__CV3_markChatThreadRead!=="function")return;
+  window.__CV3_markChatThreadRead(chatMsgsForTo(leaveRoomKey(reqId)),S.auth.uid);
 }
 function resolveChatDmTarget(authUid){
   authUid=authUid?String(authUid):"";
@@ -4136,7 +4413,7 @@ function unreadAsgnCount(){
   }
   return n;
 }
-function totalAppBadgeCount(){return unreadRemindCount()+unreadChatCount()+unreadAsgnCount()}
+function totalAppBadgeCount(){return unreadRemindCount()+unreadChatCount()+unreadLeaveCount()+unreadAsgnCount()}
 function applyAppIconBadge(n){
   n=Math.max(0,n|0);
   if(typeof window.__CV3_syncAppBadge==="function"){
@@ -4151,6 +4428,7 @@ function updateRemindBadge(){
   var rn=unreadRemindCount();
   var n=totalAppBadgeCount();
   var cn=unreadChatCount();
+  var ln=unreadLeaveCount();
   var btn=document.getElementById("hdr-remind-btn");
   var el=document.getElementById("hdr-remind-badge");
   if(btn)btn.style.display=canUseLich()?"flex":"none";
@@ -4162,6 +4440,11 @@ function updateRemindBadge(){
   if(chatBadge){
     if(cn>0){chatBadge.textContent=cn>99?"99+":String(cn);chatBadge.style.display="inline-flex";}
     else{chatBadge.textContent="";chatBadge.style.display="none";}
+  }
+  var leaveBadge=document.getElementById("tab-leave-badge");
+  if(leaveBadge){
+    if(ln>0){leaveBadge.textContent=ln>99?"99+":String(ln);leaveBadge.style.display="inline-flex";}
+    else{leaveBadge.textContent="";leaveBadge.style.display="none";}
   }
   document.title=n>0?"("+n+") Quản lý dự án":"Quản lý dự án";
   applyAppIconBadge(n);
@@ -4409,8 +4692,16 @@ function render(){
   if(render._busy){render._queued=1;return;}
   render._busy=1;render._queued=0;
   try{
-  if(!tabAllowed(S.tab))S.tab=isFieldPortal()||isChiefOnly()?"mywork":"dash";
+  // Đơn nghỉ phép cũ mở trong Thảo luận → chuyển sang tab Nghỉ phép
+  if(isLeaveChatTo(S.chatTo)){
+    var _lid=leaveIdFromChatTo(S.chatTo);
+    if(_lid)S.leaveBoardId=_lid;
+    S.chatTo="";
+    if(S.tab==="chat")S.tab="leave";
+  }
+  if(!tabAllowed(S.tab))S.tab=isAdminHr()?"chamcong":(isFieldPortal()||isChiefOnly()?"mywork":"dash");
   if(hasFullUI()&&(S.tab==="account"||S.tab==="mywork"||S.tab==="chamcong"||S.tab==="report"||S.tab==="settings"))S.tab="dash";
+  syncEmpLeaveStatuses();
   if(S.tab==="lich"&&!canUseLich())S.tab=isEmpPortal()?"mywork":"dash";
   if(S.tab==="emp"&&!canViewEmpTab())S.tab="dash";
   if(S.tab==="cust"&&!canViewCust())S.tab="dash";
@@ -4421,7 +4712,8 @@ function render(){
   if(S.tab==="map"&&!canViewMap())S.tab=isEmpPortal()?"mywork":"dash";
   if(S.tab==="prog"&&!canViewSharedProg())S.tab=isEmpPortal()?"mywork":"dash";
   if(hasFullUI()&&!canViewSensitive()&&S.tab==="chamcong")S.tab="dash";
-  if(!tabAllowed(S.tab))S.tab=isFieldPortal()||isChiefOnly()?"mywork":"dash";
+  if(S.tab==="leave"&&!(canViewLeaveOverview()||canRequestLeave()||isEmpPortal()||isFieldPortal()))S.tab="dash";
+  if(!tabAllowed(S.tab))S.tab=isAdminHr()?"chamcong":(isFieldPortal()||isChiefOnly()?"mywork":"dash");
   var open=S.proj.filter(function(p){return p.status!=="done"}).length;
   var act=S.asgn.filter(function(a){return a.status==="active"}).length;
   var tabs=getTabs();
@@ -4433,19 +4725,25 @@ function render(){
         ?'<span class="tab-badge" id="tab-chat-badge" style="display:inline-flex">'+(cn>99?"99+":cn)+'</span>'
         :'<span class="tab-badge" id="tab-chat-badge"></span>';
     }
+    if(t[0]==="leave"){
+      var ln=unreadLeaveCount();
+      label+=ln>0
+        ?'<span class="tab-badge" id="tab-leave-badge" style="display:inline-flex">'+(ln>99?"99+":ln)+'</span>'
+        :'<span class="tab-badge" id="tab-leave-badge"></span>';
+    }
     return'<button type="button" class="tab'+(S.tab===t[0]?" active":"")+'" data-tab="'+t[0]+'" onclick="A.go(\''+t[0]+'\')">'+label+'</button>';
   }).join("");
   updateDateTime();
   updateHdrVer();
   var views={
     mywork:function(){return S.selMyAsgn?vMyWorkDet(S.selMyAsgn,S.selMyAsgnOrg):vMyWork()},
-    chamcong:vChamCong,report:vReport,settings:vEmpSettings,
+    chamcong:vChamCong,report:vReport,leave:function(){return S.leaveBoardId?vLeaveBoard():vLeave()},settings:vEmpSettings,
     dash:vDash,lich:vLich,chat:function(){return S.chatTo?vChatDet():vChatList()},emp:function(){return S.selEmp?vEmpDet(S.selEmp):vEmp()},cust:function(){return S.selCust?vCustDet(S.selCust):vCust()},
     proj:function(){if(!S.giaoProj)return S.selProjDet?vProjDet(S.selProjDet):vProj();return vTeamEdit(S.giaoProj)},
     prog:vProg,qual:vQual,hist:vHist,cfg:vCfg,map:vMap
   };
   document.getElementById("view").innerHTML=(views[S.tab]||function(){return""})();
-  document.getElementById("modal-root").innerHTML=(S.modal||(S.attFlow?attModalHTML():"")||(S.arrivalFlow?arrivalModalHTML():""))||"";
+  document.getElementById("modal-root").innerHTML=(S.modal||(S.leaveReject?leaveRejectModalHTML():"")||(S.attFlow?attModalHTML():"")||(S.arrivalFlow?arrivalModalHTML():""))||"";
   var helpRoot=document.getElementById("help-root");
   if(helpRoot)helpRoot.innerHTML=S.helpOpen?helpPanelHTML():"";
   updateNavBtns();
@@ -4455,6 +4753,7 @@ function render(){
   initCustPickOutside();
   if(S.tab==="emp"||S.tab==="cust"||S.tab==="proj")initEmpSwipe();
   if(S.tab==="chat")initChatScroll();
+  if(S.tab==="leave"&&S.leaveBoardId){setTimeout(function(){initLeaveBoardScroll();markOpenLeaveBoardRead();},30);}
   if(S.tab==="report")initReportPreview();
   if(S.tab==="chamcong")initAttPreview();
   if(S.arrivalFlow)initArrivalPreview();
@@ -4761,6 +5060,13 @@ function migrateChatTo(){
 }
 function ensureChatTo(){
   migrateChatTo();
+  // Trao đổi nghỉ phép chỉ nằm ở tab Nghỉ phép
+  if(isLeaveChatTo(S.chatTo)){
+    var lid=leaveIdFromChatTo(S.chatTo);
+    if(lid)S.leaveBoardId=lid;
+    S.chatTo="";
+    if(S.tab==="chat")S.tab="leave";
+  }
   if(!S.chatTo)S.chatTo=defaultChatTo();
   // Nhân viên portal không xem kênh broadcast; GD/DH/GS được xem
   if(isEmpPortal()&&S.chatTo==="broadcast")S.chatTo=defaultChatTo();
@@ -4768,6 +5074,7 @@ function ensureChatTo(){
 }
 function chatToThreadKey(chatTo){
   if(!chatTo||chatTo==="broadcast")return "broadcast";
+  if(isLeaveChatTo(chatTo))return chatTo;
   var r=chatRecipientById(chatTo);
   if(!r||!r.uid||!S.auth||!S.auth.uid)return null;
   return "dm:"+r.uid;
@@ -4783,27 +5090,89 @@ function chatMsgsForThread(thread){
   var msgs=S.chat||[],me=S.auth&&S.auth.uid,out;
   if(!thread||thread==="broadcast"){
     out=msgs.filter(function(m){return m.type==="broadcast"||!m.type;});
+  }else if(isLeaveChatTo(thread)){
+    var lid=leaveIdFromChatTo(thread);
+    // Gộp tin type=leave + DM cũ cùng leaveReqId vào 1 khung
+    out=msgs.filter(function(m){
+      if(!m)return false;
+      if(m.leaveReqId&&m.leaveReqId===lid){
+        if(m.type==="leave")return !me||!m.participants||m.participants.indexOf(me)>=0;
+        if(m.type==="dm")return true;
+      }
+      return false;
+    });
   }else if(thread.indexOf("dm:")===0&&me){
     var toUid=thread.slice(3),tid=dmThreadId(me,toUid);
-    out=msgs.filter(function(m){return m.type==="dm"&&m.threadId===tid;});
+    // Ẩn DM nghỉ phép khỏi chat 1–1 — chỉ còn trong bảng tin leave:
+    out=msgs.filter(function(m){return m.type==="dm"&&m.threadId===tid&&!isLeaveRelatedDm(m);});
   }else out=[];
   return out.slice().sort(function(a,b){return chatMsgAtMs(a)-chatMsgAtMs(b)});
 }
 function chatMsgsForTo(chatTo){
+  if(isLeaveChatTo(chatTo))return chatMsgsForThread(chatTo);
   var key=chatTo==="broadcast"?"broadcast":chatToThreadKey(chatTo);
   if(chatTo!=="broadcast"&&!key)return [];
   return chatMsgsForThread(key);
 }
+function leaveRoomTitle(reqId){
+  var req=leaveReqById(reqId);
+  if(req)return "Nghỉ phép · "+(req.empName||"?");
+  return "Nghỉ phép";
+}
+function leaveRoomPeopleLabel(reqId){
+  var req=leaveReqById(reqId);
+  var names=[],seen={};
+  function addName(n){
+    n=String(n||"").trim();
+    if(!n||seen[n])return;
+    seen[n]=1;names.push(n);
+  }
+  if(req)addName(req.empName||"Nhân viên");
+  var dir=directorChatRecipient();
+  if(dir)addName(dir.name||"Giám đốc");
+  hanhChinhChatRecipients().forEach(function(r){addName(r.name||"Hành chính");});
+  if(names.length<2)return "NV · GD · Hành chính";
+  return names.slice(0,4).join(" · ");
+}
 function chatToLabel(chatTo){
   if(!chatTo||chatTo==="broadcast")return "📢 Gửi tất cả";
+  if(isLeaveChatTo(chatTo))return "📋 "+leaveRoomTitle(leaveIdFromChatTo(chatTo));
   var r=chatRecipientById(chatTo);
   if(r)return (r.isDir?"★ ":"")+r.name;
   var key=chatToThreadKey(chatTo);
   if(key&&key.indexOf("dm:")===0){
-    var uid=key.slice(3),m=(S.chat||[]).find(function(x){return x.toUid===uid||x.uid===uid});
+    var uid=key.slice(3),m=(S.chat||[]).find(function(x){return x.type==="dm"&&!isLeaveRelatedDm(x)&&(x.toUid===uid||x.uid===uid)});
     if(m)return m.toUid===uid?(m.toName||uid):(m.fromName||m.from||uid);
   }
   return "Thảo luận";
+}
+function leaveRoomIdsFromChat(){
+  var me=S.auth&&S.auth.uid,map={},ids=[];
+  function addId(id){
+    id=String(id||"").trim();
+    if(!id||map[id])return;
+    map[id]=1;ids.push(id);
+  }
+  (S.chat||[]).forEach(function(m){
+    if(!m||!m.leaveReqId)return;
+    if(m.type==="leave"){
+      if(me&&m.participants&&m.participants.indexOf(me)<0)return;
+      addId(m.leaveReqId);
+      return;
+    }
+    // DM nghỉ phép cũ → vẫn hiện 1 thẻ bảng tin chung
+    if(isLeaveRelatedDm(m)){
+      if(me&&m.uid!==me&&m.toUid&&m.toUid!==me)return;
+      addId(m.leaveReqId);
+    }
+  });
+  (S.leaveReqs||[]).forEach(function(r){
+    if(!r||!r.id)return;
+    if(canViewAttCompany()||(S.auth&&S.auth.empId&&r.empId===S.auth.empId)||(S.auth&&r.uid===S.auth.uid)){
+      addId(r.id);
+    }
+  });
+  return ids;
 }
 function vChatList(){
   if(!window.__CV3_SKIP_SEED)
@@ -4874,8 +5243,10 @@ function vChatList(){
 
 function vChatDet(){
   maybeTriggerProvision();
-  var chatTo=S.chatTo,isBc=chatTo==="broadcast",rec=chatRecipients(),sel=chatRecipientById(chatTo);
-  var msgs=chatMsgsForTo(chatTo),canPostBc=isBc&&canOperate(),canPostDm=!isBc&&sel&&sel.hasAccount,noAcct=!isBc&&sel&&!sel.hasAccount,pendingAcct=noAcct&&sel&&sel.pending;
+  var chatTo=S.chatTo,isBc=chatTo==="broadcast";
+  var rec=chatRecipients(),sel=chatRecipientById(chatTo);
+  var msgs=chatMsgsForTo(chatTo),canPostBc=isBc&&canOperate(),canPostDm=!isBc&&sel&&sel.hasAccount;
+  var noAcct=!isBc&&sel&&!sel.hasAccount,pendingAcct=noAcct&&sel&&sel.pending;
   var h='<div class="row" style="margin-bottom:16px">'+btn("btn-ghost btn-sm","← Quay lại","A.chatBack()")+'</div>';
   h+='<h2 style="font-size:20px;font-weight:700;margin-bottom:6px">Thảo luận — '+chatToLabel(chatTo)+'</h2>';
   h+='<div class="chat-wrap card">';
@@ -4886,8 +5257,13 @@ function vChatDet(){
   msgs.forEach(function(m){
     var mine=S.auth&&m.uid&&S.auth.uid===m.uid;
     var who=esc(m.fromName||m.from||"?");
-    var role=m.role==="director"?'<span class="dir">Giám đốc</span>':'';
-    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+role+' · '+fmtChatTime(m)+(mine?chatTicksHTML(m):"")+'</div><div class="chat-bubble">'+esc(m.text||"")+'</div></div>';
+    var roleHtml="";
+    if(m.role==="director")roleHtml='<span class="dir">Giám đốc</span>';
+    else{
+      var eFrom=(S.emp||[]).find(function(x){return x&&x.authUid===m.uid});
+      if(isAdminHrEmp(eFrom))roleHtml='<span style="color:#14b8a6;font-size:11px;font-weight:700">Hành chính</span>';
+    }
+    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+roleHtml+' · '+fmtChatTime(m)+(mine?chatTicksHTML(m):"")+'</div><div class="chat-bubble">'+esc(m.text||"")+'</div></div>';
   });
   h+='</div>';
   if(isBc&&!canPostBc)h+='<div class="chat-bar-readonly">Chỉ giám đốc hoặc Điều hành mới được gửi thông báo toàn đội.</div>';
@@ -4906,6 +5282,57 @@ function initChatScroll(){
   var box=document.getElementById("chat-msgs");
   if(box)box.scrollTop=box.scrollHeight;
   markOpenChatRead();
+}
+function markOpenLeaveBoardRead(){
+  if(S.tab!=="leave"||!S.leaveBoardId||!S.auth||!S.auth.uid)return;
+  markLeaveBoardRead(S.leaveBoardId);
+}
+function initLeaveBoardScroll(){
+  if(S.tab!=="leave"||!S.leaveBoardId)return;
+  var box=document.getElementById("leave-board-msgs");
+  if(box)box.scrollTop=box.scrollHeight;
+  markOpenLeaveBoardRead();
+}
+function vLeaveBoard(){
+  var leaveId=String(S.leaveBoardId||"").trim();
+  if(!leaveId)return vLeave();
+  var chatTo=leaveRoomKey(leaveId),leaveReq=leaveReqById(leaveId);
+  var msgs=chatMsgsForTo(chatTo);
+  var canPost=leaveRoomParticipants(leaveReq||{id:leaveId}).length>=2;
+  var h='<div class="emp-portal">';
+  h+='<div class="row" style="margin-bottom:16px">'+btn("btn-ghost btn-sm","← Quay lại","A.leaveBoardBack()")+'</div>';
+  h+='<h2 style="font-size:20px;font-weight:700;margin-bottom:6px">'+esc(leaveRoomTitle(leaveId))+'</h2>';
+  if(leaveReq){
+    var st=leaveStatusLabel(leaveReq.status);
+    h+='<div class="card card-p" style="margin-bottom:12px;padding:12px"><div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b>'+esc(leaveReq.empName||"?")+'</b> · <span style="color:'+st.c+'">'+st.l+'</span></div><span style="font-family:monospace;color:#7dd3fc">'+dFmt(leaveReq.startDate)+' → '+dFmt(leaveReq.endDate)+' · '+leaveReq.days+' ngày</span></div>';
+    if(isDir()&&leaveReq.status==="pending"){
+      h+='<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">'+btn("btn-accent btn-sm","Đồng ý","A.leaveApprove('"+leaveReq.id+"')")+btn("btn-danger btn-sm","Từ chối","A.leaveRejectOpen('"+leaveReq.id+"')")+'</div>';
+    }
+    h+='</div>';
+  }
+  h+='<div class="chat-wrap card">';
+  h+='<div class="chat-msgs" id="leave-board-msgs">';
+  if(!msgs.length)h+='<div class="chat-empty">Chưa có tin trên bảng nghỉ phép.</div>';
+  msgs.forEach(function(m){
+    var mine=S.auth&&m.uid&&S.auth.uid===m.uid;
+    var who=esc(m.fromName||m.from||"?");
+    var roleHtml="";
+    if(m.role==="director")roleHtml='<span class="dir">Giám đốc</span>';
+    else{
+      var eFrom=(S.emp||[]).find(function(x){return x&&x.authUid===m.uid});
+      if(isAdminHrEmp(eFrom))roleHtml='<span style="color:#14b8a6;font-size:11px;font-weight:700">Hành chính</span>';
+    }
+    var bubble=(m.kind==="leave_req"||m.kind==="leave_decision")?chatLeaveCardHTML(m):esc(m.text||"");
+    h+='<div class="chat-row '+(mine?"mine":"other")+'"><div class="chat-meta">'+(mine?"Bạn":who)+' '+roleHtml+' · '+fmtChatTime(m)+(mine?chatTicksHTML(m):"")+'</div><div class="chat-bubble">'+bubble+'</div></div>';
+  });
+  h+='</div>';
+  if(canPost){
+    h+='<form class="chat-bar" onsubmit="event.preventDefault();A.chatSend();return false;"><input type="text" id="chat-input" maxlength="2000" placeholder="Góp ý / trao đổi trên bảng nghỉ phép…" autocomplete="off"><button type="submit" class="btn btn-primary">Gửi</button></form>';
+  }else{
+    h+='<div class="chat-bar-readonly">Chưa đủ người tham gia (cần giám đốc / Hành chính có tài khoản).</div>';
+  }
+  h+='</div></div>';
+  return h;
 }
 function initReportPreview(){
   if(S.tab!=="report")return;
@@ -5048,7 +5475,88 @@ function initArrivalPreview(){
   }
 }
 
+function hrFieldStaff(){
+  return fieldEmp().sort(function(a,b){return (a.name||"").localeCompare(b.name||"","vi");});
+}
+function vHrAttendance(){
+  var mk=S.attMonth||attMonthKey();
+  var today=td();
+  var staff=hrFieldStaff();
+  var lateToday=[],earlyToday=[],onLeave=[],punched=[],missing=[],sundayOt=[];
+  staff.forEach(function(e){
+    if(isEmpOnLeave(e)){onLeave.push(e);return;}
+    var recs=attRecordsForDay(e.id,today);
+    if(!recs.length){if(isAttWorkDay())missing.push(e);return;}
+    punched.push({e:e,recs:recs});
+    recs.forEach(function(r){
+      var ev=attRecordEval(r);
+      if(ev.flag==="late")lateToday.push({e:e,r:r,ev:ev});
+      if(ev.flag==="early")earlyToday.push({e:e,r:r,ev:ev});
+    });
+  });
+  attDaysInMonth(mk).forEach(function(date){
+    if(date>today)return;
+    if(new Date(date+"T12:00:00").getDay()!==0)return;
+    staff.forEach(function(e){
+      var recs=attRecordsForDay(e.id,date);
+      if(recs.length)sundayOt.push({e:e,date:date,recs:recs});
+    });
+  });
+  var h='<div class="emp-portal">';
+  h+='<div class="emp-page-hd"><h2 class="emp-page-title">Chấm công · Hành chính</h2></div>';
+  h+='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:12px;line-height:1.45">Theo dõi vào/ra toàn bộ nhân viên: đi trễ, về sớm, nghỉ phép, làm thêm Chủ nhật — căn cứ tính lương.</div>';
+  h+='<div class="stat-grid" style="margin-bottom:14px">';
+  [[punched.length,"Đã chấm hôm nay","#4ade80"],[lateToday.length,"Đi trễ","#fbbf24"],[earlyToday.length,"Về sớm","#fb923c"],[onLeave.length,"Nghỉ phép","#f87171"],[missing.length,"Chưa chấm","#94a3b8"],[sundayOt.length,"CN làm thêm (tháng)","#38bdf8"]].forEach(function(s){
+    h+='<div class="stat-card"><div class="stat-row"><div class="stat-n" style="color:'+s[2]+'">'+s[0]+'</div><div class="stat-l">'+s[1]+'</div></div></div>';
+  });
+  h+='</div>';
+  h+='<div class="card card-p" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px"><h3 style="font-size:15px;color:var(--c-accent);margin:0">Hôm nay · '+dFmt(today)+'</h3><input type="month" id="att-month-pick" value="'+mk+'" onchange="A.attMonthPick(this.value)" style="min-width:140px"></div>';
+  if(onLeave.length){
+    h+='<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:700;color:#f87171;margin-bottom:6px">Đang nghỉ phép</div>';
+    onLeave.forEach(function(e){h+='<div style="padding:8px 0;border-bottom:1px solid var(--c-border4);font-size:13px"><b style="color:#94a3b8">'+esc(e.name)+'</b> · <span style="color:#f87171">'+esc(empLeaveLabel(e))+'</span></div>';});
+    h+='</div>';
+  }
+  if(lateToday.length||earlyToday.length){
+    h+='<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:6px">Đi trễ / Về sớm</div>';
+    lateToday.concat(earlyToday).forEach(function(x){
+      h+='<div style="padding:8px 0;border-bottom:1px solid var(--c-border4);font-size:13px"><b>'+esc(x.e.name)+'</b> · <span style="color:'+attFlagColor(x.ev.flag)+'">'+esc(x.ev.label)+'</span> · '+attFmtClock(x.r.at)+(x.r.lateReason?' · <span style="color:#fb923c">'+esc(x.r.lateReason)+'</span>':"")+'</div>';
+    });
+    h+='</div>';
+  }
+  h+='<div style="font-size:12px;font-weight:700;color:var(--c-accent);margin-bottom:6px">Vào / ra trong ngày</div>';
+  if(!punched.length&&!missing.length)h+='<div style="color:var(--c-muted);font-size:13px">Chưa có dữ liệu.</div>';
+  punched.forEach(function(row){
+    var e=row.e;
+    h+='<div style="padding:10px 0;border-bottom:1px solid var(--c-border4)"><div style="font-size:13px;font-weight:600;margin-bottom:4px">'+esc(e.name)+' <span style="color:var(--c-muted4);font-weight:500">· '+esc(e.group||"")+'</span></div>';
+    row.recs.forEach(function(r){h+='<div style="font-size:12px;color:var(--c-muted2)">'+(r.type==="in"?"Vào":"Ra")+' <b>'+attFmtClock(r.at)+'</b>'+attPunchDetailHTML(r)+'</div>';});
+    h+='</div>';
+  });
+  if(missing.length){
+    h+='<div style="margin-top:10px;font-size:12px;color:#94a3b8">Chưa chấm: '+esc(missing.map(function(e){return e.name;}).join(", "))+'</div>';
+  }
+  h+='</div>';
+  h+='<div class="card card-p" style="margin-bottom:14px"><h3 style="font-size:15px;color:var(--c-accent);margin-bottom:8px">Làm thêm Chủ nhật · '+mk+'</h3>';
+  if(!sundayOt.length)h+='<div style="font-size:13px;color:var(--c-muted)">Chưa có ai chấm công ngày Chủ nhật trong tháng này.</div>';
+  else sundayOt.forEach(function(x){
+    h+='<div style="padding:8px 0;border-bottom:1px solid var(--c-border4);font-size:13px"><b>'+esc(x.e.name)+'</b> · '+dFmt(x.date)+' · ';
+    h+=x.recs.map(function(r){return (r.type==="in"?"Vào":"Ra")+" "+attFmtClock(r.at);}).join(" · ");
+    h+='</div>';
+  });
+  h+='</div>';
+  h+='<div class="card card-p"><h3 style="font-size:15px;color:var(--c-accent);margin-bottom:8px">Tóm tắt tháng · từng người</h3>';
+  h+='<div style="font-size:12px;color:var(--c-muted);margin-bottom:10px">Đủ công / nghỉ / trễ / sớm — bấm tên để xem chi tiết nhân sự.</div>';
+  staff.forEach(function(e){
+    var sum=attMonthlySummary(e.id,mk);
+    var leaveBit=isEmpOnLeave(e)?' · <span style="color:#f87171">'+esc(empLeaveLabel(e))+'</span>':"";
+    h+='<div class="li" style="padding:10px 0;cursor:pointer" onclick="A.empDet(\''+e.id+'\')"><div style="font-size:13px;font-weight:600">'+esc(e.name)+leaveBit+'</div>';
+    h+='<div style="font-size:12px;margin-top:4px"><span style="color:#4ade80">Đủ '+sum.counts.complete+'</span> · <span style="color:#f87171">Nghỉ '+sum.counts.off+'</span> · <span style="color:#fbbf24">Trễ '+sum.kpi.late+'</span> · <span style="color:#fbbf24">Sớm '+sum.kpi.early+'</span></div></div>';
+  });
+  h+='</div></div>';
+  return h;
+}
+
 function vChamCong(){
+  if(canViewAttCompany())return vHrAttendance();
   var me=S.auth.empId;
   if(!me)return '<div class="card card-p" style="color:var(--c-muted)">Không xác định được nhân viên.</div>';
   var remind=attNeedRemind();
@@ -5242,6 +5750,157 @@ function vReport(){
   return h+'</div>';
 }
 
+function leaveStatusLabel(st){
+  if(st==="approved")return{l:"Đã duyệt",c:"#4ade80"};
+  if(st==="rejected")return{l:"Từ chối",c:"#f87171"};
+  return{l:"Đang chờ",c:"#fbbf24"};
+}
+function leaveDeciderName(req){
+  if(!req)return "";
+  var uid=String(req.decidedBy||"").trim();
+  if(uid){
+    if(S.auth&&S.auth.uid===uid)return S.auth.displayName||S.auth.username||"Giám đốc";
+    var e=(S.emp||[]).find(function(x){return x&&x.authUid===uid});
+    if(e&&e.name)return e.name;
+    var dir=directorChatRecipient();
+    if(dir&&dir.uid===uid)return dir.name||"Giám đốc";
+  }
+  if(req.decidedByName)return String(req.decidedByName);
+  if(req.status!=="approved"&&req.status!=="rejected")return "";
+  var msgs=chatMsgsForTo(leaveRoomKey(req.id)),i,m;
+  for(i=msgs.length-1;i>=0;i--){
+    m=msgs[i];
+    if(m&&m.kind==="leave_decision"&&m.fromName)return m.fromName;
+  }
+  return "Giám đốc";
+}
+/** Thẻ đơn nghỉ gọn: tên · thời gian · tình trạng (bởi ai). Chi tiết khi mở bảng tin. */
+function leaveSummaryCardHTML(r,opts){
+  opts=opts||{};
+  if(!r)return"";
+  var st=leaveStatusLabel(r.status);
+  var unread=unreadLeaveForReq(r.id)|0;
+  var by=leaveDeciderName(r);
+  var statusHtml="";
+  if(r.status==="approved")statusHtml='Tình trạng: <span style="color:'+st.c+';font-weight:700">Đã duyệt</span>'+(by?' bởi <b>'+esc(by)+'</b>':"");
+  else if(r.status==="rejected")statusHtml='Tình trạng: <span style="color:'+st.c+';font-weight:700">Từ chối</span>'+(by?' bởi <b>'+esc(by)+'</b>':"");
+  else statusHtml='Tình trạng: <span style="color:'+st.c+';font-weight:700">Đang chờ duyệt</span>';
+  var h='<div class="rpt-card'+(unread?" chat-peer-unread":"")+'" style="cursor:pointer" onclick="A.openLeaveRoom(\''+r.id+'\')">';
+  h+='<div class="rpt-head" style="align-items:center;gap:8px"><strong>Đơn xin nghỉ «'+esc(r.empName||"?")+'»</strong>'+(unread?'<span class="chat-unread-dot">'+(unread>99?"99+":unread)+'</span>':"")+'</div>';
+  h+='<div style="font-size:13px;margin-top:8px;color:#7dd3fc">Từ ngày '+dFmt(r.startDate)+' đến ngày '+dFmt(r.endDate)+(r.days?' ('+r.days+' ngày)':'')+'</div>';
+  h+='<div style="font-size:13px;margin-top:6px;color:var(--c-text2)">'+statusHtml+'</div>';
+  if(opts.dirActions&&isDir()&&r.status==="pending"){
+    h+='<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap" onclick="event.stopPropagation()">';
+    h+=btn("btn-accent btn-sm","Đồng ý","A.leaveApprove('"+r.id+"')")+btn("btn-danger btn-sm","Từ chối","A.leaveRejectOpen('"+r.id+"')");
+    h+='</div>';
+  }
+  h+='</div>';
+  return h;
+}
+function vLeaveAdmin(){
+  var pending=pendingLeaveReqs();
+  var recent=(S.leaveReqs||[]).slice().sort(function(a,b){
+    var ma=a.createdAt&&a.createdAt.seconds?a.createdAt.seconds*1000:(typeof a.createdAt==="number"?a.createdAt:0);
+    var mb=b.createdAt&&b.createdAt.seconds?b.createdAt.seconds*1000:(typeof b.createdAt==="number"?b.createdAt:0);
+    return mb-ma;
+  }).slice(0,40);
+  var h='<div class="emp-portal"><div class="emp-page-hd"><h2 class="emp-page-title">Nghỉ phép</h2></div>';
+  h+='<div class="card card-p" style="margin-bottom:14px"><h3 style="font-size:15px;color:#fbbf24;margin-bottom:8px">Chờ duyệt ('+pending.length+')</h3>';
+  if(!pending.length)h+='<div style="font-size:13px;color:var(--c-muted)">Không có đơn chờ duyệt.</div>';
+  else pending.forEach(function(r){h+=leaveSummaryCardHTML(r,{dirActions:1});});
+  h+='</div><div class="emp-rpt-hist"><h3 style="font-size:15px;color:var(--c-accent);margin-bottom:8px">Đơn gần đây</h3>';
+  if(!recent.length)h+='<div class="rpt-card" style="color:var(--c-muted)">Chưa có đơn.</div>';
+  else recent.forEach(function(r){h+=leaveSummaryCardHTML(r);});
+  h+='</div></div>';
+  return h;
+}
+
+/** Form xin nghỉ phép — dùng cho NV, Điều hành, Giám sát, Hành chính, Chỉ huy trưởng. */
+function vLeaveRequestForm(opts){
+  opts=opts||{};
+  var embedded=!!opts.embedded;
+  var me=S.auth&&S.auth.empId;
+  if(!me)return '<div class="card card-p" style="color:var(--c-muted)">Không xác định được nhân viên — cần gắn hồ sơ nhân sự với tài khoản.</div>';
+  var mine=(S.leaveReqs||[]).filter(function(r){return r&&r.empId===me}).slice(0,30);
+  var meEmp=eById(me);
+  var onLeave=isEmpOnLeave(meEmp);
+  var h=embedded?"":'<div class="emp-portal">';
+  if(!embedded){
+    h+=empPortalProfile();
+    h+='<div class="emp-page-hd"><h2 class="emp-page-title">Xin nghỉ phép</h2></div>';
+  }else{
+    h+='<div class="card card-p" style="margin-top:16px;margin-bottom:14px"><h3 style="font-size:15px;color:var(--c-accent);margin-bottom:8px">Xin nghỉ phép của tôi</h3></div>';
+  }
+  if(onLeave)h+='<div class="card card-p" style="margin-bottom:14px;border:1px solid rgba(248,113,113,.35);background:rgba(248,113,113,.1)"><div style="font-size:14px;font-weight:700;color:#f87171">'+esc(empLeaveLabel(meEmp))+'</div><div style="font-size:12px;color:var(--c-muted2);margin-top:4px">Trong thời gian này bạn không được giao việc mới.</div></div>';
+  h+='<div class="card card-p" style="margin-bottom:16px">';
+  h+=fld("Ngày bắt đầu nghỉ",'<input type="date" id="leave-start" value="'+td()+'" min="'+td()+'" onchange="A.leaveDaysPreview()">');
+  h+=fld("Số ngày nghỉ",'<input type="number" id="leave-days" min="1" max="90" value="1" oninput="A.leaveDaysPreview()">');
+  h+='<div id="leave-end-hint" style="font-size:12px;color:#38bdf8;margin:-6px 0 12px">Nghỉ đến hết ngày: <b>'+dFmt(leaveEndFrom(td(),1))+'</b></div>';
+  h+=fld("Lý do nghỉ (viết đầy đủ câu)",'<textarea id="leave-reason" rows="3" maxlength="1000" placeholder="Ví dụ: Tôi có việc gia đình cần xử lý tại quê nên kính xin phép nghỉ…" oninput="A.leaveDaysPreview()"></textarea>');
+  h+='<div class="lab" style="margin-bottom:6px">Nội dung đơn gửi Ban Giám đốc (tự động)</div>';
+  h+='<div id="leave-letter-preview" style="font-size:13px;line-height:1.55;color:var(--c-text2);white-space:pre-wrap;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);margin-bottom:14px">'+esc(composeLeaveRequestLetter(meEmp?meEmp.name:"",td(),1,"(chưa nhập lý do)"))+'</div>';
+  h+='<button type="button" class="btn btn-primary" id="leave-submit" style="width:100%;margin-top:4px" onclick="A.submitLeave()">Gửi đơn nghỉ phép</button>';
+  h+='</div>';
+  h+='<div class="emp-rpt-hist"><h3 style="font-size:15px;color:var(--c-accent);margin-bottom:8px">Đơn đã gửi</h3>';
+  if(!mine.length)h+='<div class="rpt-card" style="color:var(--c-muted)">Chưa có đơn nghỉ phép.</div>';
+  else mine.forEach(function(r){h+=leaveSummaryCardHTML(r);});
+  h+='</div>';
+  if(!embedded)h+='</div>';
+  return h;
+}
+
+function vLeave(){
+  if(isDir())return vLeaveAdmin();
+  if(isAdminHr()){
+    var adminHtml=vLeaveAdmin();
+    if(adminHtml.slice(-12)==="</div></div>")adminHtml=adminHtml.slice(0,-12);
+    return adminHtml+vLeaveRequestForm({embedded:1})+"</div></div>";
+  }
+  return vLeaveRequestForm();
+}
+function leaveRejectModalHTML(){
+  var f=S.leaveReject||{},req=leaveReqById(f.reqId);
+  if(!req)return"";
+  var body=fld("Nhân viên",'<div style="font-size:14px;font-weight:600">'+esc(req.empName||"?")+'</div>');
+  body+='<div style="font-size:13px;color:var(--c-muted2);margin-bottom:12px">'+dFmt(req.startDate)+' → '+dFmt(req.endDate)+' ('+req.days+' ngày)</div>';
+  body+=fld("Lý do từ chối & hướng xử lý",'<textarea id="leave-reject-reason" rows="4" maxlength="1000" placeholder="Ví dụ: Hiện công trình đang gấp tiến độ nên chưa thể bố trí nghỉ trong thời gian này…"></textarea>');
+  var foot=btn("btn-primary","Gửi","A.leaveRejectSend()");
+  return'<div class="overlay" onmousedown="A.ovDown(event)" onclick="A.leaveRejectCancel(event)"><div class="modal" onclick="event.stopPropagation()"><div class="row" style="justify-content:space-between;margin-bottom:16px"><h3 style="font-size:18px;font-weight:700">Từ chối đơn nghỉ phép</h3><button type="button" class="x-btn" onclick="A.leaveRejectCancel()">×</button></div>'+body+'<div class="modal-foot" style="margin-top:16px"><div class="modal-foot-l">'+btn("btn-ghost","Huỷ","A.leaveRejectCancel()")+'</div><div class="modal-foot-r">'+foot+'</div></div></div></div>';
+}
+function chatLeaveCardHTML(m){
+  var req=m.leaveReqId?leaveReqById(m.leaveReqId):null;
+  var start=req?req.startDate:"";
+  var end=req?req.endDate:"";
+  var days=req?req.days:"";
+  var reason=req?req.reason:(m.text||"");
+  var status=req?req.status:"pending";
+  var st=leaveStatusLabel(status);
+  var letter=String(m.text||"").trim();
+  if(m.kind==="leave_decision"){
+    var hDec='<div class="leave-chat-card" style="min-width:240px;max-width:360px">';
+    hDec+='<div style="font-size:13px;font-weight:800;color:'+st.c+';margin-bottom:8px">Phản hồi nghỉ phép · '+st.l+'</div>';
+    hDec+='<div style="font-size:12px;color:var(--c-text2);white-space:pre-wrap;line-height:1.5">'+esc(letter||"")+'</div>';
+    hDec+='</div>';
+    return hDec;
+  }
+  var h='<div class="leave-chat-card" style="min-width:240px;max-width:360px">';
+  h+='<div style="font-size:13px;font-weight:800;color:#fbbf24;margin-bottom:8px">Đơn xin nghỉ phép</div>';
+  if(req){
+    h+='<div style="font-size:13px;margin-bottom:4px"><b>'+esc(req.empName||"?")+'</b></div>';
+    h+='<div style="font-size:12px;font-family:monospace;color:#7dd3fc;margin-bottom:8px">'+dFmt(start)+' → '+dFmt(end)+' · '+days+' ngày</div>';
+    h+='<div style="font-size:12px;color:var(--c-text2);white-space:pre-wrap;line-height:1.5;margin-bottom:8px">'+esc(letter||("Lý do: "+reason))+'</div>';
+    h+='<div style="font-size:12px;font-weight:700;color:'+st.c+';margin-bottom:8px">'+st.l+'</div>';
+    if(status==="rejected"&&req.rejectReason)h+='<div style="font-size:12px;color:#fca5a5;margin-bottom:8px">'+esc(req.rejectReason)+'</div>';
+    if(isDir()&&status==="pending"){
+      h+='<div class="row" style="gap:8px;flex-wrap:wrap">'+btn("btn-accent btn-sm","Đồng ý","A.leaveApprove('"+req.id+"')")+btn("btn-danger btn-sm","Từ chối","A.leaveRejectOpen('"+req.id+"')")+'</div>';
+    }
+  }else{
+    h+='<div style="font-size:12px;color:var(--c-text2);white-space:pre-wrap;line-height:1.5">'+esc(letter||"")+'</div>';
+  }
+  h+='</div>';
+  return h;
+}
+
 function vMyWork(){
   var me=S.auth.empId;
   if(!me)return '<div class="card card-p" style="color:var(--c-muted)">Không xác định được nhân viên — liên hệ giám đốc.</div>';
@@ -5251,7 +5910,7 @@ function vMyWork(){
   h+='<div class="emp-page-hd"><h2 class="emp-page-title">Công việc của tôi</h2></div>';
   h+=empArrivalBannersHTML();
   if(acts.length){
-    h+='<div class="card card-p gantt-card" style="margin-bottom:14px"><h3 style="margin-bottom:10px;color:var(--c-accent);font-size:15px">Lịch công việc (2 đường Gantt)</h3>';
+    h+='<div class="card card-p gantt-card" style="margin-bottom:14px"><h3 style="margin-bottom:10px;color:var(--c-accent);font-size:15px">Lịch công việc theo dự án</h3>';
     h+=empGanttHTML(me)+'</div>';
   }
   if(!acts.length) {
@@ -5288,7 +5947,7 @@ function vMyWorkDet(asgnId,orgHint){
   h+='<div class="emp-detail-item"><div class="lab">Tiến độ</div><div style="margin-top:4px">'+empProgRowHTML(a.prog)+'</div></div>';
   h+='</div>';
   if(info.cust||info.contact){h+='<div style="margin-top:14px"><div class="lab">Khách hàng / Liên hệ</div><div class="emp-detail-val">'+esc(info.cust)+(info.cust&&info.contact?" · ☎ ":"")+(info.contact?esc(info.contact):"")+'</div></div>';}
-  h+='<div style="margin-top:16px"><div class="lab">Cùng làm chung</div>';
+  h+='<div style="margin-top:16px"><div class="lab">Cùng làm chung'+(mates.length?' ('+mates.length+')':'')+'</div>';
   if(!mates.length)h+='<div class="emp-detail-val" style="color:var(--c-muted)">Chỉ bạn trên công việc này.</div>';
   else h+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px">'+mates.map(function(n){return bdg(n,groupColor(p?p.group:"Hệ thống"),"transparent")}).join("")+'</div>';
   if(asgnHandoffLine(a))h+='<div class="asgn-handoff-note" style="margin-top:12px">'+asgnHandoffLine(a)+'</div>';
@@ -5297,7 +5956,7 @@ function vMyWorkDet(asgnId,orgHint){
   if(a.status==="queued"){
     h+='<div style="width:100%;padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.35);color:#cbd5e1;font-size:13px;line-height:1.45">Hạng mục này đang <b>chờ hạng mục cha</b>. Khi mọi hạng mục phụ thuộc đã xong, việc sẽ tự mở.</div>';
   }else{
-    h+=btn("btn-primary","Báo cáo tiến độ hôm nay","A.goReport('"+a.id+"')");
+    h+=btn("btn-primary","Báo cáo tiến độ hôm nay","A.goReport('"+a.id+"','"+(a._orgId||currentOrgId())+"')");
   }
   if(a.status==="active"||a.status==="paused"){
     if(isChiefAsgn(a)){
@@ -5329,6 +5988,10 @@ function vDash(){
   h+='<div class="stat-grid">';
   var stats=[[open,"Dự án","#38bdf8","proj"],[act.length,"Công việc","#fbbf24","prog"]];
   if(canViewEmpTab())stats.unshift([staffEmp().length,"Nhân sự","#a8d4ff","emp"]);
+  if(canViewLeaveOverview()||canRequestLeave()){
+    var leaveN=canViewLeaveOverview()?pendingLeaveReqs().length:unreadLeaveCount();
+    stats.splice(canViewEmpTab()?1:0,0,[leaveN,"Nghỉ phép","#f87171","leave"]);
+  }
   if(lateN)stats.push([lateN,"Trễ hạn","#ef4444","proj"]);
   if(canUseLich())stats.push([schedCount(),"Lịch hẹn","#f472b6","lich"]);
   if(canViewCust())stats.push([S.cust.length,"Khách hàng","#38bdf8","cust"]);
@@ -5355,17 +6018,18 @@ function vEmpDet(id){
   if(!canViewEmpTab())return"";
   var e=eById(id);
   if(!e||!isStaffEmp(e))return btn("btn-ghost","← Quay lại","A.empBack()")+'<div class="card card-p" style="margin-top:12px;color:var(--c-muted)">Không tìm thấy nhân sự.</div>';
-  var s=ST[e.status],q=aq(e.id),a=ac(e.id),p=busyPct(e),el=eLoc(e);
+  var s=empStatusInfo(e),q=aq(e.id),a=ac(e.id),p=busyPct(e),el=eLoc(e);
   var acts=empActs(e.id);
   var rightBtns=[];
-  if(canGiao()&&!isOversightEmp(e))rightBtns.push(btn("btn-primary btn-sm","Giao việc","A.egv()"));
+  if(canGiao()&&!isOversightEmp(e)&&!isAdminHrEmp(e)&&!isEmpOnLeave(e))rightBtns.push(btn("btn-primary btn-sm","Giao việc","A.egv()"));
   if(canManageStaff())rightBtns.push(btn("btn-danger btn-sm","Sửa","A.oe('"+e.id+"')"));
   var h='<div class="row" style="justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;align-items:center">'+btn("btn-ghost","← Quay lại","A.empBack()")+(rightBtns.length?'<div class="row" style="gap:8px">'+rightBtns.join("")+'</div>':"")+'</div>';
-  h+='<div class="card card-p">'+empSwipeRow(e.id,'<div class="row" style="justify-content:space-between;align-items:flex-start;width:100%;padding:2px 0"><div><h2 style="font-size:22px;font-weight:700;margin-bottom:8px">'+esc(e.name)+'</h2><div class="row" style="gap:8px">'+bdg(e.group,groupColor(e.group))+bdg(s.l,s.c,s.s)+'</div></div></div>');
+  h+='<div class="card card-p">'+empSwipeRow(e.id,'<div class="row" style="justify-content:space-between;align-items:flex-start;width:100%;padding:2px 0"><div><h2 style="font-size:22px;font-weight:700;margin-bottom:8px'+(isEmpOnLeave(e)?";color:#94a3b8":"")+'">'+esc(e.name)+'</h2><div class="row" style="gap:8px;flex-wrap:wrap">'+bdg(e.group,groupColor(e.group))+bdg(s.l,s.c,s.s)+'</div></div></div>');
+  if(isEmpOnLeave(e))h+='<div style="margin-bottom:14px;padding:10px 12px;border-radius:10px;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.35);color:#f87171;font-size:13px;font-weight:700">'+esc(empLeaveLabel(e))+'</div>';
   h+='<div style="margin-bottom:16px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:5px">Bận rộn</div>'+busyBar(p,true)+'<div style="text-align:right;font-family:monospace;font-size:11px;color:rgba(200,225,255,.75);margin-top:4px">'+p+'%</div></div>';
   h+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">'+empOrgBadgesHTML(e)+'</div>';
   if(canManageStaff()){
-    h+='<div style="margin-bottom:14px;padding:12px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.25);border-radius:12px"><div style="font-size:12px;font-weight:600;color:#fbbf24;margin-bottom:8px">'+(isOversightEmp(e)?"Phạm vi đội — "+e.group:"Đội tham gia")+'</div>';
+    h+='<div style="margin-bottom:14px;padding:12px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.25);border-radius:12px"><div style="font-size:12px;font-weight:600;color:#fbbf24;margin-bottom:8px">'+(isOversightEmp(e)||isAdminHrEmp(e)?"Phạm vi đội — "+e.group:"Đội tham gia")+'</div>';
     h+=empOrgPickHTML(empOrgIds(e),{inputClass:"",onchange:"A.toggleEmpOrg('"+e.id+"',this.value,this.checked)"});
     h+='</div>';
   }
@@ -5378,11 +6042,11 @@ function vEmpDet(id){
   else if(e.fcmToken)h+='<div style="margin-bottom:14px;padding:12px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.2);border-radius:12px"><div style="font-size:12px;font-weight:600;color:#38bdf8">📱 Thông báo giao việc · đã bật</div></div>';
   }
   if(acts.length){
-    h+='<div style="margin-bottom:14px;padding-top:4px"><div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px">Lịch công việc — 2 đường Gantt</div>';
+    h+='<div style="margin-bottom:14px;padding-top:4px"><div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px">Lịch công việc theo dự án</div>';
     h+='<div class="emp-gantt-wrap">'+empGanttHTML(e.id,{clickable:true})+'</div></div>';
   }
   if(acts.length){h+='<div style="font-size:13px;font-weight:600;color:var(--c-accent);margin-bottom:8px">Công việc đang làm</div>';acts.forEach(function(x){var info=asgnInfo(x);var stLbl=x.status==="paused"?bdg("Tạm dừng","#ef4444","rgba(239,68,68,.15)"):"";h+='<div class="li" style="padding:10px 0"><div class="row" style="gap:8px;align-items:center;margin-bottom:3px"><span style="font-size:13px;font-weight:600">'+esc(info.title)+'</span>'+stLbl+'</div>';if(asgnHandoffLine(x))h+='<div class="asgn-handoff-note">'+asgnHandoffLine(x)+'</div>';if(x.pauseNote&&x.status==="paused")h+='<div class="asgn-handoff-note">'+esc(x.pauseNote)+'</div>';if(info.cust||info.contact)h+='<div style="font-size:12px;color:var(--c-muted2)">'+esc(info.cust)+(info.cust&&info.contact?" · ":"")+(info.contact?"☎ "+esc(info.contact):"")+'</div>';h+='<div class="row" style="justify-content:space-between;margin-top:4px;align-items:center"><span style="font-family:monospace;font-size:11px;color:var(--c-muted4)">'+dFmtG(x.startDate)+(x.endDate?" → "+dFmtG(x.endDate):"")+' · '+x.prog+'%</span><div class="row" style="gap:8px">'+(x.status==="paused"?btn("btn-accent btn-sm","Quay lại","A.resumeAsgn('"+x.id+"')"):"")+'</div></div></div>';});}
-  if(canViewSensitive()||isMe)h+=attMonthlyReportHTML(e.id);
+  if(canViewSensitive()||canViewAttCompany()||isMe)h+=attMonthlyReportHTML(e.id);
   h+='</div>';return h}
 
 function vEmp(){
@@ -5390,20 +6054,27 @@ function vEmp(){
   var h='<div class="row" style="justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px"><h2 style="font-size:20px;font-weight:700">Nhân sự</h2><div class="row" style="gap:8px;flex-wrap:wrap">'+(canManageStaff()?btn("btn-accent","+ Thêm nhân sự","A.oe()"):"")+'</div></div>';
   h+='<div class="emp-cards-flow">';
   var list=staffEmp().slice().sort(function(a,b){
-    var ao=isOversightEmp(a)||isChiefEmp(a)?1:0;
-    var bo=isOversightEmp(b)||isChiefEmp(b)?1:0;
+    var ao=isOfficeStaffEmp(a)?1:0;
+    var bo=isOfficeStaffEmp(b)?1:0;
     if(ao!==bo)return ao-bo;
+    if(ao){
+      var ga=EMP_GRP_TAIL.indexOf(a.group||""),gb=EMP_GRP_TAIL.indexOf(b.group||"");
+      if(ga<0)ga=99;if(gb<0)gb=99;
+      if(ga!==gb)return ga-gb;
+    }
     var ja=empJobCnt(a.id),jb=empJobCnt(b.id);
     if(ja!==jb)return ja-jb;
     return (a.name||"").localeCompare(b.name||"","vi");
   });
-  list.forEach(function(e){var g=e.group||"",col=groupColor(g),el=eLoc(e),nc=empNameColor(e),jc=empJobCnt(e.id);
+  list.forEach(function(e){var g=e.group||"",col=groupColor(g),el=eLoc(e),nc=empNameColor(e),jc=empJobCnt(e.id),onLeave=isEmpOnLeave(e);
     var attS="";
-    if(canViewSensitive()&&!isOversightEmp(e)){
+    if(onLeave){
+      attS='<span style="font-size:10px;font-weight:700;color:#f87171">'+esc(empLeaveLabel(e))+'</span>';
+    }else if(canViewSensitive()&&!isOfficeStaffEmp(e)){
       var ar=attRecordsForDay(e.id,td()), isW=ar.length&&ar[ar.length-1].type==="in";
       attS='<span style="font-size:10px;font-weight:600;color:'+(isW?"#4ade80":"#f87171")+'">● '+(isW?"Đang làm":"Đang nghỉ")+'</span>';
     }
-    h+='<div class="card card-p emp-card" style="border-left:3px solid '+col+'"><div class="emp-card-grp">'+bdg(g,col,col+"22")+'<span class="emp-card-stars">'+strs(e.skill)+'</span></div>'+empSwipeRow(e.id,'<div class="emp-card-namebar" onclick="'+empNamebarClick(e.id)+'"><span class="spec-name" style="color:'+nc+'">'+esc(e.name)+'</span>'+attS+'<span class="emp-card-jobcnt">'+jc+' việc</span></div>')+'<div class="emp-card-loc" title="'+esc(el.src)+'">📍 '+esc(el.src)+'</div><div class="emp-card-tasks">'+empCardTasksHTML(e)+'</div></div>';
+    h+='<div class="card card-p emp-card'+(onLeave?" emp-card-leave":"")+'" style="border-left:3px solid '+(onLeave?"#94a3b8":col)+(onLeave?";opacity:.72":"")+'"><div class="emp-card-grp">'+bdg(g,col,col+"22")+'<span class="emp-card-stars">'+strs(e.skill)+'</span></div>'+empSwipeRow(e.id,'<div class="emp-card-namebar" onclick="'+empNamebarClick(e.id)+'"><span class="spec-name" style="color:'+(onLeave?"#94a3b8":nc)+'">'+esc(e.name)+'</span>'+attS+'<span class="emp-card-jobcnt">'+jc+' việc</span></div>')+'<div class="emp-card-loc" title="'+esc(el.src)+'">📍 '+esc(el.src)+'</div><div class="emp-card-tasks">'+empCardTasksHTML(e)+'</div></div>';
   });
   h+='</div>';return h
 }
@@ -5510,11 +6181,11 @@ function initMapLeaflet(force) {
     if(el && el.loc && el.loc.lat!=null) {
       bounds.push([el.loc.lat, el.loc.lng]);
       var isWorking = acts.some(function(a){return a.empId===e.id});
-      var isLeave = e.status === "leave";
+      var isLeave = isEmpOnLeave(e);
       var orgFlags = empMapOrgFlags(e);
 
       var statusText = "<b style='color:#10b981'>Đang rảnh</b>";
-      if (isLeave) { statusText = "<b style='color:#ef4444'>Đang nghỉ</b>"; }
+      if (isLeave) { statusText = "<b style='color:#ef4444'>"+esc(empLeaveLabel(e)||"Đang nghỉ phép")+"</b>"; }
       else if (isWorking) { statusText = "<b style='color:#f97316'>Đang làm việc</b>"; }
 
       var locKey = el.loc.lat.toFixed(4) + "_" + el.loc.lng.toFixed(4);
@@ -5670,7 +6341,7 @@ function vGiaoViec(id){
     if(!list.length)h+='<div style="font-size:13px;color:var(--c-muted3);padding:4px 0 8px 4px">Chưa có nhân sự</div>';
     list.forEach(function(e){
       // Chỉ khoá khi đã có phân công active/paused — người chỉ có trong đội (Chỉnh đội) vẫn giao được
-      var dis=assignedJobs.indexOf(e.id)>=0;
+      var dis=assignedJobs.indexOf(e.id)>=0||isEmpOnLeave(e);
       var extra=!dis&&S.giaoPick[e.id]?giaoPickExtraHTML(e.id,p):"";
       h+=giaoEmpRow(e,{sel:!!S.giaoPick[e.id],dis:dis,extra:extra});
     });
@@ -5688,7 +6359,7 @@ function vGoiYReq(id){
   h+='<div style="font-size:13px;color:var(--c-muted2)">Chọn ngành cần cho dự án, nhập số lượng và kỹ năng tối thiểu. Ngành không cần thì bỏ tick.</div>';
   if(pl)h+='<div style="font-size:12px;color:var(--c-muted);margin-top:6px">📍 '+esc(pl.name)+' · Trọng số: gần <b>'+S.cfg.wP+'</b> · rảnh <b>'+S.cfg.wA+'</b> · tay nghề <b>'+S.cfg.wS+'</b></div>';
   h+='</div>';
-  getGroups().forEach(function(g,i){if(isOversightGroup(g))return;var r=req[g]||{on:false,qty:1,skill:3},cnt=S.emp.filter(function(e){return e.group===g}).length;
+  fieldGroups().forEach(function(g,i){var r=req[g]||{on:false,qty:1,skill:3},cnt=fieldEmp(S.emp.filter(function(e){return e.group===g})).length;
     h+='<div class="goiy-req-row'+(r.on?" on":"")+'"><div class="row" style="gap:10px;align-items:center"><input type="checkbox" class="giao-chk" data-act="goiYReqTog" data-gi="'+i+'"'+(r.on?" checked":"")+'><div class="gdot" style="background:'+groupColor(g)+';color:'+groupColor(g)+'"></div><span style="font-size:14px;font-weight:600;flex:1">'+esc(g)+'</span><span style="font-size:12px;color:var(--c-muted4)">'+cnt+' người</span></div>';
     if(r.on)h+='<div class="goiy-req-fields"><div><div class="lab">Số lượng cần</div><input type="number" id="gyq_'+i+'" min="1" max="99" value="'+(r.qty||1)+'"></div><div><div class="lab">Kỹ năng tối thiểu</div><select id="gys_'+i+'">'+[1,2,3,4,5].map(function(n){return'<option value="'+n+'" '+(n===(r.skill||3)?"selected":"")+'>'+n+' ★</option>'}).join("")+'</select></div></div>';
     h+='</div>';});
@@ -5751,7 +6422,7 @@ function vTeamEdit(id){
     if(!list.length)h+='<div style="font-size:13px;color:var(--c-muted3);padding:4px 0 8px 4px">Chưa có nhân sự</div>';
     else{
       h+='<div class="giao-pick-list">';
-      list.forEach(function(e){h+=giaoEmpPickRow(e,{sel:!!S.giaoPick[e.id]});});
+      list.forEach(function(e){h+=giaoEmpPickRow(e,{sel:!!S.giaoPick[e.id],dis:isEmpOnLeave(e)});});
       h+='</div>';
     }
     h+='</div>';
@@ -5901,7 +6572,7 @@ function vQual(){
   var canRate=canViewSensitive();
   var canRework=canOperate();
   var h='<h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Đánh giá &amp; KPI thi đua</h2>';
-  h+='<p style="font-size:13px;color:var(--c-muted);margin-bottom:14px">KPI = (0.5·E + 0.5·Q) × (0.35 + 0.65·D/100). Chuẩn chuyên cần: <b>'+stdWorkDaysMonth()+'</b> ngày/tháng. <b>Giám sát / Điều hành</b> không chấm công và không nằm trong bảng KPI.</p>';
+  h+='<p style="font-size:13px;color:var(--c-muted);margin-bottom:14px">KPI = (0.5·E + 0.5·Q) × (0.35 + 0.65·D/100). Chuẩn chuyên cần: <b>'+stdWorkDaysMonth()+'</b> ngày/tháng. <b>Giám sát / Điều hành / Chỉ huy trưởng / Hành chính</b> không chấm công hiện trường và không nằm trong bảng KPI.</p>';
 
   h+='<div class="card card-p" style="margin-bottom:16px"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px"><h3 style="font-size:16px;font-weight:700;color:var(--c-accent);margin:0">Bảng thi đua · '+esc(range.label)+'</h3>';
   h+='<div class="hist-sub" style="margin-bottom:0">';
@@ -6166,7 +6837,7 @@ function empM(f){
   var lk=f.loginKey||nameToLoginKey(f.name);
   var hasAcct=!!f.authUid;
   var orgs=forceChiefScope(f.group,(Array.isArray(f.orgIds)&&f.orgIds.length)?f.orgIds.slice():[currentOrgId()]);
-  var orgLabel=isOversightGroup(f.group)?"Phạm vi đội (Điều hành / Giám sát)":"Đội tham gia";
+  var orgLabel=isOversightGroup(f.group)||isAdminHrGroup(f.group)?"Phạm vi đội — "+(f.group||"văn phòng"):"Đội tham gia";
   var b=fld("Họ tên",'<input id="fn" value="'+esc(f.name)+'">')
     +fld("Tổ",'<select id="fg" onchange="A.grpSel(this.value)">'+go(f.group,{allowCreate:true})+'</select>')
     +fld(orgLabel,empOrgPickHTML(orgs))
@@ -6209,7 +6880,7 @@ function empAsgnCardM(a){
   if(p)b+='<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--c-muted);margin-bottom:4px">Dự án</div><div style="font-size:14px">'+esc(p.name)+' · '+bdg(p.group,groupColor(p.group))+'</div></div>';
   if(asgnHandoffLine(a))b+='<div class="asgn-handoff-note" style="margin-bottom:12px">'+asgnHandoffLine(a)+'</div>';
   b+=asgnReceiptHTML(a);
-  if(mates.length)b+='<div><div style="font-size:12px;color:var(--c-muted);margin-bottom:8px">Cùng làm chung</div><div class="row" style="gap:8px;flex-wrap:wrap">'+mates.map(function(n){return bdg(n,groupColor(p?p.group:"Hệ thống"),"transparent")}).join("")+'</div></div>';
+  if(mates.length)b+='<div><div style="font-size:12px;color:var(--c-muted);margin-bottom:8px">Cùng làm chung ('+mates.length+')</div><div class="row" style="gap:8px;flex-wrap:wrap">'+mates.map(function(n){return bdg(n,groupColor(p?p.group:"Hệ thống"),"transparent")}).join("")+'</div></div>';
   return mw("Chi tiết công việc",b,btn("btn-primary","Đóng","A.cm()"),"");
 }
 
@@ -6267,7 +6938,7 @@ function sapXepM(f){
   var a=asgnById(f.asgnId);if(!a)return"";
   var e=eById(a.empId),p=pById(a.projId),info=asgnInfo(a),mode=f.mode||"transfer";
   var projs=S.proj.filter(function(x){return x.status!=="done"&&x.id!==a.projId});
-  var emps=p?staffEmp(S.emp.filter(function(x){return x.group===p.group&&x.id!==a.empId&&x.status!=="leave"})):[];
+  var emps=p?staffEmp(S.emp.filter(function(x){return x.group===p.group&&x.id!==a.empId&&!isEmpOnLeave(x)})):[];
   var body='<p style="font-size:13px;color:var(--c-muted2);margin-bottom:14px"><b>'+esc(e?e.name:"?")+'</b> · '+esc(info.title)+' · hiện tại <b style="color:#38bdf8">'+a.prog+'%</b></p>';
   body+=fld("Hình thức",'<select id="sxpMode" onchange="A.sxmMode(this.value)"><option value="transfer" '+(mode==="transfer"?"selected":"")+'>Tạm chuyển sang dự án khác (quay lại sau)</option><option value="handoff" '+(mode==="handoff"?"selected":"")+'>Bàn giao phần việc còn dang dở</option></select>');
   if(mode==="transfer"){
@@ -6336,7 +7007,7 @@ window.A={
     showAppToast("Đã lưu VAPID key — có thể bật thông báo nền.","ok");
     render();
   },
-  go:function(t){if(!tabAllowed(t))return;if(S.tab!==t){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab=t;S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.selMyAsgnOrg="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.giaoItemStaff={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;if(t==="chat"){if(S.pendingChatDm){if(!applyPendingChatDm())S.chatTo="";}else S.chatTo="";}if(t==="hist")purgeExpiredTrash();render();if(t==="chat"){setTimeout(initChatScroll,50);setTimeout(markOpenChatRead,80);}if(t==="report")setTimeout(initReportPreview,50);if(t==="chamcong")setTimeout(initAttPreview,50)},
+  go:function(t){if(!tabAllowed(t))return;if(S.tab!==t){S.hist=S.hist||[];S.hist.push(S.tab);if(S.hist.length>20)S.hist=S.hist.slice(-20);}S.tab=t;S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.selMyAsgnOrg="";S.giaoProj="";S.giaoMode="";S.goiYReq={};S.giaoPick={};S.giaoItemStaff={};S.teamToTruong="";S.teamVatTu="";S.modal=null;S.form=null;S.attFlow=null;S.arrivalFlow=null;S.leaveBoardId="";if(t==="chat"){if(S.pendingChatDm){if(!applyPendingChatDm())S.chatTo="";}else S.chatTo="";}if(t==="hist")purgeExpiredTrash();render();if(t==="chat"){setTimeout(initChatScroll,50);setTimeout(markOpenChatRead,80);}if(t==="report")setTimeout(initReportPreview,50);if(t==="chamcong")setTimeout(initAttPreview,50)},
   histView:function(v){if(!canViewHist())return;S.histView=v||"actions";if(v==="trash")purgeExpiredTrash();render()},
   undo:function(){openUndoList()},
   undoPick:function(id){doUndoById(id)},
@@ -6349,7 +7020,14 @@ window.A={
     S.tab="lich";S.selEmp="";S.selProjDet="";S.selCust="";S.selMyAsgn="";S.giaoProj="";S.giaoMode="";S.modal=null;S.form=null;render();
   },
   lichBack:function(){if(S.hist&&S.hist.length)S.tab=S.hist.pop();else S.tab="dash";S.modal=null;S.form=null;render()},
-  goReport:function(asgnId){S.reportAsgn=asgnId||"";S.selMyAsgn="";S.selMyAsgnOrg="";S.tab="report";render();setTimeout(initReportPreview,50)},
+  goReport:function(asgnId,orgHint){
+    S._reportReturn={tab:S.tab,selMyAsgn:S.selMyAsgn||asgnId||"",selMyAsgnOrg:S.selMyAsgnOrg||orgHint||""};
+    S.reportAsgn=asgnId||"";
+    S.selMyAsgn="";S.selMyAsgnOrg="";
+    S.tab="report";
+    render();
+    setTimeout(initReportPreview,50);
+  },
   rptAsgn:function(id){S.reportAsgn=id;render();setTimeout(initReportPreview,50)},
   savePassword:function(){
     if(!S.auth||!S.auth.uid)return alert("Cần đăng nhập cloud.");
@@ -6489,6 +7167,167 @@ window.A={
       render();
     }).catch(function(e){alert(e.message||"Không lưu được.");});
   },
+  leaveDaysPreview:function(){
+    var start=(document.getElementById("leave-start")||{}).value||td();
+    var days=Math.max(1,Math.round(Number((document.getElementById("leave-days")||{}).value||1)));
+    var el=document.getElementById("leave-end-hint");
+    if(el)el.innerHTML="Nghỉ đến hết ngày: <b>"+dFmt(leaveEndFrom(start,days))+"</b>";
+    var prev=document.getElementById("leave-letter-preview");
+    if(prev)prev.textContent=leaveLetterPreviewHTML();
+  },
+  submitLeave:function(){
+    if(!S.auth||!S.auth.empId)return alert("Tài khoản chưa gắn hồ sơ nhân sự.");
+    if(isDir())return alert("Giám đốc không gửi đơn nghỉ phép tại đây.");
+    if(!(isEmp()||isAdminHr()||canOperate()||isSuperviseOnly()||isChiefOnly()))return;
+    var start=(document.getElementById("leave-start")||{}).value||"";
+    var days=Math.round(Number((document.getElementById("leave-days")||{}).value||0));
+    var reason=((document.getElementById("leave-reason")||{}).value||"").trim();
+    if(!start)return alert("Chọn ngày bắt đầu nghỉ.");
+    if(!(days>=1&&days<=90))return alert("Số ngày nghỉ phải từ 1 đến 90.");
+    if(!reason)return alert("Nhập lý do xin nghỉ phép (viết đầy đủ câu).");
+    if(reason.length<8)return alert("Vui lòng nêu lý do rõ ràng hơn (ví dụ: Tôi có việc gia đình cần xử lý…).");
+    var me=eById(S.auth.empId);
+    var recipients=leaveNotifyRecipients();
+    if(!recipients.length)return alert("Chưa có giám đốc / Hành chính có tài khoản để nhận đơn.");
+    var end=leaveEndFrom(start,days);
+    var letter=composeLeaveRequestLetter(me?me.name:"",start,days,reason);
+    var btn=document.getElementById("leave-submit");
+    if(btn){btn.disabled=true;btn.textContent="Đang gửi…";}
+    var finishOk=function(res){
+      alert("Đã gửi đơn nghỉ phép — mở bảng tin chung trong tab Nghỉ phép.");
+      var rid=res&&res.id;
+      S.tab="leave";
+      S.leaveBoardId=rid||"";
+      S.chatTo="";
+      render();
+      if(rid)setTimeout(function(){initLeaveBoardScroll();markOpenLeaveBoardRead();},40);
+    };
+    var finishFail=function(e){
+      alert((e&&e.message)||"Không gửi được đơn nghỉ phép.");
+      if(btn){btn.disabled=false;btn.textContent="Gửi đơn nghỉ phép";}
+    };
+    if(typeof window.__CV3_submitLeave==="function"){
+      window.__CV3_submitLeave({
+        empId:S.auth.empId,
+        empName:me?me.name:"",
+        startDate:start,
+        days:days,
+        reason:reason,
+        letter:letter,
+        notifyTo:recipients
+      }).then(finishOk).catch(finishFail);
+      return;
+    }
+    var req={id:uid(),empId:S.auth.empId,empName:me?me.name:"",uid:S.auth.uid||"",startDate:start,endDate:end,days:days,reason:reason,status:"pending",createdAt:Date.now(),rejectReason:"",roomParticipants:leaveRoomParticipants({uid:S.auth.uid})};
+    S.leaveReqs=(S.leaveReqs||[]).slice();
+    S.leaveReqs.unshift(req);
+    ps2Ws("cv3_leave",S.leaveReqs);
+    notifyLeaveRoom(letter,req,"leave_req").then(finishOk);
+  },
+  leaveApprove:function(reqId){
+    if(!isDir())return alert("Chỉ giám đốc được duyệt đơn nghỉ phép.");
+    var req=leaveReqById(reqId);
+    if(!req||req.status!=="pending")return alert("Đơn không còn chờ duyệt.");
+    if(!confirm("Đồng ý cho "+(req.empName||"nhân viên")+" nghỉ phép từ "+dFmt(req.startDate)+" đến "+dFmt(req.endDate)+"?"))return;
+    var apply=function(){
+      var e=eById(req.empId);
+      if(e){
+        e.leaveStart=req.startDate;
+        e.leaveEnd=req.endDate;
+        if(td()>=req.startDate&&td()<=req.endDate)e.status="leave";
+        sv();
+      }
+      var text=composeLeaveApproveLetter(req.empName,req.startDate,req.endDate,req.days);
+      notifyLeaveRoom(text,req,"leave_decision").then(function(){
+        markLeaveBoardRead(req.id);
+        alert("Đã duyệt — phản hồi đã vào bảng tin Nghỉ phép.");
+        S.tab="leave";S.leaveBoardId=req.id;S.chatTo="";
+        render();
+        setTimeout(function(){initLeaveBoardScroll();markOpenLeaveBoardRead();},40);
+      });
+    };
+    if(typeof window.__CV3_decideLeave==="function"){
+      window.__CV3_decideLeave(reqId,"approved","",req._orgId||"").then(function(){
+        req.status="approved";
+        req.decidedBy=(S.auth&&S.auth.uid)||"";
+        req.decidedByName=(S.auth&&(S.auth.displayName||S.auth.username))||"Giám đốc";
+        apply();
+      }).catch(function(e){alert(e.message||"Không duyệt được.");});
+    }else{
+      req.status="approved";
+      req.decidedBy=(S.auth&&S.auth.uid)||"";
+      req.decidedByName=(S.auth&&(S.auth.displayName||S.auth.username))||"Giám đốc";
+      ps2Ws("cv3_leave",S.leaveReqs||[]);
+      apply();
+    }
+  },
+  leaveRejectOpen:function(reqId){
+    if(!isDir())return;
+    var req=leaveReqById(reqId);
+    if(!req||req.status!=="pending")return alert("Đơn không còn chờ duyệt.");
+    S.leaveReject={reqId:reqId};
+    render();
+  },
+  leaveRejectCancel:function(ev){
+    if(ev&&ev.target&&ev.target!==ev.currentTarget)return;
+    S.leaveReject=null;render();
+  },
+  leaveRejectSend:function(){
+    if(!isDir())return;
+    var f=S.leaveReject||{};
+    var req=leaveReqById(f.reqId);
+    if(!req||req.status!=="pending")return alert("Đơn không còn chờ duyệt.");
+    var reason=((document.getElementById("leave-reject-reason")||{}).value||"").trim();
+    if(!reason)return alert("Nhập lý do từ chối và giải pháp bổ sung.");
+    var apply=function(){
+      S.leaveReject=null;
+      var text=composeLeaveRejectLetter(req.empName,req.startDate,req.endDate,req.days,reason);
+      notifyLeaveRoom(text,req,"leave_decision").then(function(){
+        markLeaveBoardRead(req.id);
+        alert("Đã gửi từ chối trên bảng tin Nghỉ phép.");
+        S.tab="leave";S.leaveBoardId=req.id;S.chatTo="";
+        render();
+        setTimeout(function(){initLeaveBoardScroll();markOpenLeaveBoardRead();},40);
+      });
+    };
+    if(typeof window.__CV3_decideLeave==="function"){
+      window.__CV3_decideLeave(req.id,"rejected",reason,req._orgId||"").then(function(){
+        req.status="rejected";
+        req.rejectReason=reason;
+        req.decidedBy=(S.auth&&S.auth.uid)||"";
+        req.decidedByName=(S.auth&&(S.auth.displayName||S.auth.username))||"Giám đốc";
+        apply();
+      }).catch(function(e){alert(e.message||"Không từ chối được.");});
+    }else{
+      req.status="rejected";
+      req.rejectReason=reason;
+      req.decidedBy=(S.auth&&S.auth.uid)||"";
+      req.decidedByName=(S.auth&&(S.auth.displayName||S.auth.username))||"Giám đốc";
+      ps2Ws("cv3_leave",S.leaveReqs||[]);
+      apply();
+    }
+  },
+  setLeaveReqs:function(rows,opts){
+    rows=Array.isArray(rows)?rows:[];
+    opts=opts||{};
+    if(opts.liveOrg){
+      var scope=opts.liveOrg,map={},id;
+      (S.leaveReqs||[]).forEach(function(x){
+        if(!x||!x.id)return;
+        if((x._orgId||"")===scope)return;
+        map[(x._orgId||"")+":"+x.id]=x;
+      });
+      rows.forEach(function(x){
+        if(!x||!x.id)return;
+        map[(x._orgId||scope)+":"+x.id]=Object.assign({},x,{_orgId:x._orgId||scope});
+      });
+      rows=[];
+      for(id in map){if(Object.prototype.hasOwnProperty.call(map,id))rows.push(map[id]);}
+    }
+    S.leaveReqs=rows;
+    if(S.tab==="leave"||S.tab==="chat"||S.tab==="dash"||S.leaveReject)render();
+    else updateRemindBadge();
+  },
   submitReport:function(){
     if(!isEmp())return;
     var asgnId=(document.getElementById("rpt-asgn")||{}).value;
@@ -6514,10 +7353,15 @@ window.A={
     if(btn){btn.disabled=true;btn.textContent="Đang gửi…";}
     window.__CV3_submitReport({asgnId:asgnId,orgId:reportOrg,date:date,prog:prog,note:note,photos:files})
       .then(function(){
+        var ret=S._reportReturn;
+        S._reportReturn=null;
+        S.reportAsgn="";
+        // Quay lại trang trước (chi tiết công việc) — xác nhận đã lưu xong
+        S.tab="mywork";
+        S.selMyAsgn=(ret&&ret.selMyAsgn)||asgnId;
+        S.selMyAsgnOrg=(ret&&ret.selMyAsgnOrg)||reportOrg||"";
         alert("Đã gửi báo cáo ngày "+dFmt(date)+".");
-        S.reportAsgn=asgnId;
         render();
-        setTimeout(initReportPreview,50);
       })
       .catch(function(e){
         alert(e.message||"Không gửi được báo cáo.");
@@ -6557,7 +7401,7 @@ window.A={
     S.attMonth=v||attMonthKey();
     render();
     if(typeof window.__CV3_ensureAttendanceMonth==="function"){
-      var empId=(isEmp()&&S.auth&&S.auth.empId)?S.auth.empId:(S.selEmp||"");
+      var empId=canViewAttCompany()?undefined:((isEmp()&&S.auth&&S.auth.empId)?S.auth.empId:(S.selEmp||""));
       window.__CV3_ensureAttendanceMonth(S.attMonth,empId||undefined).then(function(rows){
         if(rows&&rows.length)render();
       }).catch(function(e){console.warn("att history:",e);});
@@ -6672,7 +7516,20 @@ window.A={
       setTimeout(initArrivalPreview,50);
     });
   },
-  selectChatTo:function(val){S.chatTo=val||defaultChatTo();render();setTimeout(function(){initChatScroll();markOpenChatRead();},30);},
+  selectChatTo:function(val){
+    if(isLeaveChatTo(val)){A.openLeaveRoom(leaveIdFromChatTo(val));return;}
+    S.chatTo=val||defaultChatTo();render();setTimeout(function(){initChatScroll();markOpenChatRead();},30);
+  },
+  openLeaveRoom:function(reqId){
+    var id=String(reqId||"").trim();
+    if(!id)return;
+    S.tab="leave";
+    S.leaveBoardId=id;
+    S.chatTo="";
+    render();
+    setTimeout(function(){initLeaveBoardScroll();markOpenLeaveBoardRead();},30);
+  },
+  leaveBoardBack:function(){S.leaveBoardId="";render();},
   chatBack:function(){S.chatTo="";render();},
   hideChat:function(id){
     S.cfg.hiddenChats = S.cfg.hiddenChats || {};
@@ -6701,11 +7558,22 @@ window.A={
     var inp=document.getElementById("chat-input");
     var t=inp?inp.value:"";
     if(!t.trim())return;
-    ensureChatTo();
-    var chatTo=S.chatTo,opts;
+    var chatTo,opts;
+    if(S.tab==="leave"&&S.leaveBoardId){
+      chatTo=leaveRoomKey(S.leaveBoardId);
+    }else{
+      ensureChatTo();
+      chatTo=S.chatTo;
+    }
     if(chatTo==="broadcast"){
       if(!canOperate())return alert("Chỉ giám đốc hoặc Điều hành mới được gửi thông báo toàn đội.");
       opts={type:"broadcast"};
+    }else if(isLeaveChatTo(chatTo)){
+      var lid=leaveIdFromChatTo(chatTo);
+      var req=leaveReqById(lid)||{id:lid,uid:""};
+      var parts=leaveRoomParticipants(req);
+      if(parts.length<2)return alert("Chưa đủ người tham gia bảng tin nghỉ phép (cần giám đốc / Hành chính có tài khoản).");
+      opts={type:"leave",leaveReqId:lid,participants:parts,kind:"leave_chat",forOrg:req._orgId||""};
     }else{
       var r=chatRecipientById(chatTo);
       if(!r)return alert("Chọn người nhận để gửi tin.");
@@ -6721,7 +7589,9 @@ window.A={
         if(!msg||msg.indexOf("Missing or insufficient permissions")>=0){
           msg=opts.type==="broadcast"
             ?"Không có quyền gửi thông báo toàn đội."
-            :"Không có quyền gửi tin nhắn riêng. Người nhận cần có tài khoản trong cùng tổ chức.";
+            :(opts.type==="leave"
+              ?"Không có quyền gửi trên bảng tin nghỉ phép."
+              :"Không có quyền gửi tin nhắn riêng. Người nhận cần có tài khoản trong cùng tổ chức.");
         }
         alert(msg||"Không gửi được tin nhắn.");
       });
@@ -6784,6 +7654,7 @@ window.A={
   egv:function(){
     if(!giaoGuard())return;
     var emp=eById(S.selEmp);if(!emp)return;
+    if(isAdminHrEmp(emp))return alert("Hành chính không cần giao việc / chấm công hiện trường — họ theo dõi nghỉ phép và chấm công để tính lương.");
     if(isOversightEmp(emp))return alert("Giám sát / Điều hành không cần giao việc theo dự án — họ theo dõi theo phạm vi đội được gán.");
     var defWork=isChiefEmp(emp)?"Kiểm tra / báo cáo tình trạng thi công":"";
     S.form={type:"egiao",workContent:defWork,startDate:td(),endDate:dAdd(td(),14),custId:"",custName:"",contact:"",taskKind:isChiefEmp(emp)?"chief":""};
@@ -6830,6 +7701,7 @@ window.A={
     if(!giaoGuard())return;
     if(!S.selEmp||!S.form||S.form.type!=="egiao")return;
     var emp=eById(S.selEmp);if(!emp)return;
+    if(isAdminHrEmp(emp))return alert("Hành chính không cần giao việc / chấm công hiện trường — họ theo dõi nghỉ phép và chấm công để tính lương.");
     if(isOversightEmp(emp))return alert("Giám sát / Điều hành không cần giao việc theo dự án — họ xem theo phạm vi đội được gán.");
     var custId=document.getElementById("egcu").value||"";
     if(custId&&empCustBlocked(S.selEmp,custId))return alert("Nhân viên này đang làm dự án chưa hoàn tất tại khách hàng đó — chọn khách hàng khác.");
@@ -7001,7 +7873,7 @@ window.A={
     });
     // Đồng bộ phân công theo hạng mục + %
     keep.forEach(function(eid){
-      var emp=eById(eid);if(!emp||isOversightEmp(emp)||isChiefEmp(emp))return;
+      var emp=eById(eid);if(!emp||isOfficeStaffEmp(emp))return;
       items.forEach(function(w){
         if(w.confirmedDone&&!isDir())return; // hạng mục đã khoá thống kê
         var pct=normLoads[w.id]&&normLoads[w.id][eid]?Number(normLoads[w.id][eid].pct)||0:0;
@@ -7075,6 +7947,7 @@ window.A={
   asgn:function(eid){
     if(!giaoGuard())return;
     var emp=eById(eid);if(!emp)return;
+    if(isAdminHrEmp(emp))return alert("Hành chính không cần giao việc / chấm công hiện trường — họ theo dõi nghỉ phép và chấm công để tính lương.");
     if(isOversightEmp(emp))return alert("Giám sát / Điều hành không cần giao vào dự án — họ xem theo phạm vi đội được gán.");
     var proj=pById(S.selProj);var dates=proj?asgnDates(proj):{start:td(),end:""};
     var na=mkAsgn(eid,S.selProj,0,{startDate:dates.start,endDate:dates.end});
@@ -7090,6 +7963,8 @@ window.A={
   },
   giaoTog:function(eid){
     var emp=eById(eid);
+    if(isEmpOnLeave(emp))return alert((empLeaveLabel(emp)||"Nhân viên đang nghỉ phép")+" — không thể chọn giao việc.");
+    if(isAdminHrEmp(emp))return alert("Hành chính không cần giao việc / chấm công hiện trường — họ theo dõi nghỉ phép và chấm công để tính lương.");
     if(isOversightEmp(emp))return alert("Giám sát / Điều hành không cần thêm vào đội dự án — họ theo dõi theo phạm vi đội được gán.");
     if(isChiefEmp(emp))return alert("Chỉ huy trưởng không giao vào hạng mục thi công — dùng «Giao việc» riêng nếu cần kiểm tra.");
     var p=pById(S.giaoProj);
@@ -7221,7 +8096,7 @@ window.A={
     var pickIds=[],reasonLines=[],travelLines=[],allOverlapIds=[],perEmp={},suggestStart="",suggestTravelDays=0,perSched={};
     Object.keys(S.giaoPick).forEach(function(eid){
       if(!S.giaoPick[eid]||asd[eid])return;
-      var emp=eById(eid);if(!emp||isOversightEmp(emp))return;
+      var emp=eById(eid);if(!emp||isOfficeStaffEmp(emp))return;
       pickIds.push(eid);
       var sch=giaoEmpSched(eid,p);
       var sEl=document.getElementById("gsd_"+eid),eEl=document.getElementById("ged_"+eid);
@@ -7267,7 +8142,7 @@ window.A={
       dates=asgnDates(p);
       arriveRaw=readArriveAtInput("giao-arrive");
       if(arriveRaw==="invalid")arriveRaw="";
-      pickIds=Object.keys(S.giaoPick).filter(function(eid){return S.giaoPick[eid]&&!isOversightEmp(eById(eid));});
+      pickIds=Object.keys(S.giaoPick).filter(function(eid){return S.giaoPick[eid]&&!isOfficeStaffEmp(eById(eid));});
       perEmp={};
       perSched={};
       pickIds.forEach(function(eid){
@@ -7475,7 +8350,7 @@ window.A={
     render();
   },
   gm:function(lat,lng){window.open("https://maps.google.com/?q="+lat+","+lng,"_blank")},
-  oe:function(id){if(!staffGuard())return;if(id){var cur=eById(id);if(cur&&!isStaffEmp(cur))return alert("Hồ sơ giám đốc quản lý tại Cài đặt → Tài khoản.");}S._grpParent="emp";S.form=id?JSON.parse(JSON.stringify(eById(id))):{name:"",group:getGroups()[0]||"Điện",province:DP,skill:3,status:"available",note:"",loginKey:"",accountRole:"employee",orgIds:[currentOrgId()]};S.modal=empM(S.form);render()},
+  oe:function(id){if(!staffGuard())return;if(id){var cur=eById(id);if(cur&&!isStaffEmp(cur))return alert("Hồ sơ giám đốc quản lý tại Cài đặt → Tài khoản.");}S._grpParent="emp";S.form=id?JSON.parse(JSON.stringify(eById(id))):{name:"",group:defaultFieldGroup(),province:DP,skill:3,status:"available",note:"",loginKey:"",accountRole:"employee",orgIds:[currentOrgId()]};S.modal=empM(S.form);render()},
   fst:function(_,n){S.form.skill=n;document.getElementById("fsk").innerHTML=strs(n,"fst")},
   se:function(){
     if(!staffGuard())return;
@@ -7703,6 +8578,7 @@ window.A={
   },
   wiToggleEmp:function(wid,eid){
     if(!S.form)return;
+    if(isAdminHrEmp(eById(eid)))return alert("Hành chính không cần giao việc / chấm công hiện trường.");
     if(isOversightEmp(eById(eid)))return alert("Giám sát / Điều hành không cần giao vào hạng mục thi công.");
     if(isChiefEmp(eById(eid)))return alert("Chỉ huy trưởng không giao vào hạng mục thi công — dùng «Giao việc» riêng nếu cần kiểm tra.");
     var y=captureModalScroll();
@@ -8449,7 +9325,7 @@ window.__CV3={
   prepareOrgWorkspace:function(){
     S.modal=null;S.form=null;
     S.selProj="";S.selProjDet="";S.selEmp="";S.selCust="";S.giaoProj="";
-    S.reports=[];S.attendance=[];S._reportsSig="";S._attSig="";
+    S.reports=[];S.attendance=[];S.leaveReqs=[];S.leaveBoardId="";S._reportsSig="";S._attSig="";
     S._empMasterSig="";S._custMasterSig="";
     S.asgnOther=[];S.projOther=[];S.otherOrgId="";
     S.proj=loadWs("cv3_p",[]);
@@ -8594,7 +9470,7 @@ window.__CV3={
       var e0=a.empId?eById(a.empId):null;
       var g0=(a.empGroup||(e0&&e0.group)||"");
       var fullUI=g0==="Điều hành"||g0==="Giám sát";
-      S.tab=fullUI?"dash":"mywork";
+      S.tab=g0==="Hành chính"?"chamcong":(fullUI?"dash":"mywork");
       S.selMyAsgn="";S.selMyAsgnOrg="";S.selEmp="";S.reportAsgn="";S.attFlow=null;S.arrivalFlow=null;S.modal=null;S.form=null;S.empPushMsg="";S.empPushBusy=0;
     }
     if(!same&&a.role&&a.uid){
@@ -8624,17 +9500,33 @@ window.__CV3={
     if(sig===S._chatSig){S.chat=msgs;updateRemindBadge();return;}
     var me=S.auth&&S.auth.uid;
     if(me&&prev.length){
-      var openTid="",key;
-      if(S.tab==="chat"&&S.chatTo&&S.chatTo!=="broadcast"){
-        key=chatToThreadKey(S.chatTo);
-        if(key&&key.indexOf("dm:")===0)openTid=dmThreadId(me,key.slice(3));
+      var openTid="",openLeave="",key;
+      if(S.tab==="leave"&&S.leaveBoardId)openLeave=String(S.leaveBoardId);
+      else if(S.tab==="chat"&&S.chatTo&&S.chatTo!=="broadcast"){
+        if(isLeaveChatTo(S.chatTo))openLeave=leaveIdFromChatTo(S.chatTo);
+        else{
+          key=chatToThreadKey(S.chatTo);
+          if(key&&key.indexOf("dm:")===0)openTid=dmThreadId(me,key.slice(3));
+        }
       }
       var i,m;
       for(i=0;i<msgs.length;i++){
         m=msgs[i];
         if(!m||!m.id||prevIds[m.id])continue;
-        if(m.type!=="dm")continue;
         if(m.uid===me)continue;
+        if(m.type==="leave"){
+          if(!m.participants||m.participants.indexOf(me)<0)continue;
+          if(openLeave&&m.leaveReqId===openLeave)continue;
+          toastIncomingChat(m);
+          break;
+        }
+        if(m.type!=="dm")continue;
+        if(isLeaveRelatedDm(m)){
+          if(openLeave&&m.leaveReqId===openLeave)continue;
+          if(m.toUid&&m.toUid!==me&&m.uid!==me)continue;
+          toastIncomingChat(m);
+          break;
+        }
         if(m.toUid&&m.toUid!==me)continue;
         if(openTid&&m.threadId===openTid)continue;
         toastIncomingChat(m);
@@ -8644,8 +9536,30 @@ window.__CV3={
     S._chatSig=sig;S.chat=msgs;
     updateRemindBadge();
     if(S.tab==="chat"){render();setTimeout(initChatScroll,30);setTimeout(markOpenChatRead,60);}
+    else if(S.tab==="leave"){render();if(S.leaveBoardId)setTimeout(function(){initLeaveBoardScroll();markOpenLeaveBoardRead();},30);}
   },
   syncAppBadge:function(){updateRemindBadge();},
+  setLeaveReqs:function(rows,opts){
+    rows=Array.isArray(rows)?rows:[];
+    opts=opts||{};
+    if(opts.liveOrg){
+      var scope=opts.liveOrg,map={},id;
+      (S.leaveReqs||[]).forEach(function(x){
+        if(!x||!x.id)return;
+        if((x._orgId||"")===scope)return;
+        map[(x._orgId||"")+":"+x.id]=x;
+      });
+      rows.forEach(function(x){
+        if(!x||!x.id)return;
+        map[(x._orgId||scope)+":"+x.id]=Object.assign({},x,{_orgId:x._orgId||scope});
+      });
+      rows=[];
+      for(id in map){if(Object.prototype.hasOwnProperty.call(map,id))rows.push(map[id]);}
+    }
+    S.leaveReqs=rows;
+    if(S.tab==="leave"||S.tab==="chat"||S.tab==="dash"||S.leaveReject)render();
+    else updateRemindBadge();
+  },
   setReports:function(reports,opts){
     reports=reports||[];
     opts=opts||{};

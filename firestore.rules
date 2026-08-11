@@ -40,6 +40,29 @@ service cloud.firestore {
         && userDoc().empGroup == 'Điều hành';
     }
 
+    function isHanhChinh() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().empGroup == 'Hành chính';
+    }
+
+    function isGiamSat() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (userDoc().empGroup == 'Giám sát' || userDoc().empGroup == 'Quản lý');
+    }
+
+    function isChiHuyTruong() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().empGroup == 'Chỉ huy trưởng';
+    }
+
+    /** Đọc đơn nghỉ phép chung công ty: GD / DH / GS / HC / CHT */
+    function canReadCompanyLeave() {
+      return isDirector() || isDieuHanh() || isGiamSat() || isHanhChinh() || isChiHuyTruong();
+    }
+
     function canOperateWorkspace() {
       return isDirector() || isDieuHanh();
     }
@@ -54,10 +77,41 @@ service cloud.firestore {
         && request.auth.uid in data.participants;
     }
 
+    function isLeaveParticipant(data) {
+      return data.type == 'leave'
+        && data.participants is list
+        && request.auth.uid in data.participants;
+    }
+
     function validMsgText(data) {
       return data.text is string
         && data.text.size() > 0
         && data.text.size() <= 2000;
+    }
+
+    function participantOk(orgId, uid) {
+      return uid is string
+        && uid.size() > 0
+        && exists(/databases/$(database)/documents/users/$(uid))
+        && (
+          orgId in otherUserOrgIds(uid)
+          || get(/databases/$(database)/documents/users/$(uid)).data.role == 'director'
+        );
+    }
+
+    function validLeaveParticipants(orgId, parts) {
+      return parts is list
+        && parts.size() >= 2
+        && parts.size() <= 8
+        && request.auth.uid in parts
+        && participantOk(orgId, parts[0])
+        && participantOk(orgId, parts[1])
+        && (parts.size() < 3 || participantOk(orgId, parts[2]))
+        && (parts.size() < 4 || participantOk(orgId, parts[3]))
+        && (parts.size() < 5 || participantOk(orgId, parts[4]))
+        && (parts.size() < 6 || participantOk(orgId, parts[5]))
+        && (parts.size() < 7 || participantOk(orgId, parts[6]))
+        && (parts.size() < 8 || participantOk(orgId, parts[7]));
     }
 
     function validDmCreate(orgId, data) {
@@ -76,6 +130,18 @@ service cloud.firestore {
         && orgId in otherUserOrgIds(data.toUid);
     }
 
+    function validLeaveCreate(orgId, data) {
+      return data.type == 'leave'
+        && data.uid == request.auth.uid
+        && data.leaveReqId is string
+        && data.leaveReqId.size() > 0
+        && data.leaveReqId.size() <= 80
+        && data.threadId == ('leave:' + data.leaveReqId)
+        && validLeaveParticipants(orgId, data.participants)
+        && (!('kind' in data)
+            || data.kind in ['leave_req', 'leave_decision', 'leave_chat']);
+    }
+
     function validBroadcastCreate(data) {
       return data.type == 'broadcast'
         && data.uid == request.auth.uid
@@ -84,8 +150,8 @@ service cloud.firestore {
 
     function validMsgReceiptUpdate() {
       let diff = request.resource.data.diff(resource.data).affectedKeys();
-      return resource.data.type == 'dm'
-        && isDmParticipant(resource.data)
+      return (resource.data.type == 'dm' || resource.data.type == 'leave')
+        && (isDmParticipant(resource.data) || isLeaveParticipant(resource.data))
         && request.auth.uid != resource.data.uid
         && diff.hasOnly(['deliveredAt', 'readAt'])
         && (!diff.hasAny(['deliveredAt']) || request.resource.data.deliveredAt is string)
@@ -155,12 +221,21 @@ service cloud.firestore {
     }
 
     match /workspaces/{orgId}/messages/{msgId} {
-      allow read: if sameOrg(orgId)
-        && (isBroadcastMsg(resource.data) || isDmParticipant(resource.data));
-      allow create: if sameOrg(orgId)
-        && validMsgText(request.resource.data)
-        && (validDmCreate(orgId, request.resource.data) || validBroadcastCreate(request.resource.data));
-      allow update: if sameOrg(orgId) && validMsgReceiptUpdate();
+      // Oversight đọc được tin nghỉ phép ở cả 2 đội
+      allow read: if (sameOrg(orgId) || (canReadCompanyLeave() && isLeaveParticipant(resource.data)))
+        && (isBroadcastMsg(resource.data)
+            || isDmParticipant(resource.data)
+            || isLeaveParticipant(resource.data));
+      allow create: if validMsgText(request.resource.data)
+        && (
+          (sameOrg(orgId)
+            && (validDmCreate(orgId, request.resource.data)
+                || validBroadcastCreate(request.resource.data)
+                || validLeaveCreate(orgId, request.resource.data)))
+          || (isDirector() && validLeaveCreate(orgId, request.resource.data))
+        );
+      allow update: if (sameOrg(orgId) || (canReadCompanyLeave() && isLeaveParticipant(resource.data)))
+        && validMsgReceiptUpdate();
       allow delete: if false;
     }
 
@@ -177,6 +252,51 @@ service cloud.firestore {
     match /workspaces/{orgId}/arrivals/{recordId} {
       allow read: if sameOrg(orgId);
       allow create, update, delete: if false;
+    }
+
+    // Đơn xin nghỉ phép: chung cả 2 đội với giám đốc; NV tạo (pending), GD duyệt/từ chối
+    match /workspaces/{orgId}/leaveRequests/{reqId} {
+      allow read: if sameOrg(orgId) || canReadCompanyLeave();
+      allow create: if sameOrg(orgId)
+        && signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.empId is string
+        && request.resource.data.empId.size() > 0
+        && request.resource.data.empId.size() <= 80
+        && (
+          !userDoc().keys().hasAny(['empId'])
+          || userDoc().empId == null
+          || userDoc().empId == ''
+          || request.resource.data.empId == userDoc().empId
+        )
+        && request.resource.data.status == 'pending'
+        && request.resource.data.startDate is string
+        && request.resource.data.startDate.size() == 10
+        && request.resource.data.endDate is string
+        && request.resource.data.endDate.size() == 10
+        && request.resource.data.days is number
+        && request.resource.data.days >= 1
+        && request.resource.data.days <= 90
+        && request.resource.data.days == int(request.resource.data.days)
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() <= 1000
+        && request.resource.data.empName is string
+        && request.resource.data.empName.size() <= 120;
+      allow update: if isDirector()
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.empId == resource.data.empId
+        && request.resource.data.startDate == resource.data.startDate
+        && request.resource.data.endDate == resource.data.endDate
+        && request.resource.data.days == resource.data.days
+        && request.resource.data.reason == resource.data.reason
+        && request.resource.data.uid == resource.data.uid
+        && (!('rejectReason' in request.resource.data)
+            || (request.resource.data.rejectReason is string
+                && request.resource.data.rejectReason.size() <= 1000));
+      allow delete: if false;
     }
   }
 }
