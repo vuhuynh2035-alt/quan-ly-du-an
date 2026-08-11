@@ -725,10 +725,10 @@ html[data-theme="light"] .wi-deps-note{color:#b45309}
 .busy-green{background:#22c55e;height:100%}
 .busy-red{background:#ef4444;height:100%;box-shadow:inset 0 0 4px rgba(255,100,100,.4)}
 .busy-pct{font-family:monospace;font-size:11px;color:rgba(200,225,255,.75);flex-shrink:0;min-width:30px;text-align:right}
-.emp-cards-flow{display:grid;grid-template-columns:1fr;gap:12px;align-items:start;width:100%}
+.emp-cards-flow{display:grid;grid-template-columns:1fr;gap:12px;align-items:stretch;width:100%}
 @media(min-width:640px){.emp-cards-flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(min-width:960px){.emp-cards-flow{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.emp-cards-flow .emp-card{width:100%;min-width:0;max-width:100%;height:auto;padding:12px 14px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;transition:transform .15s,border-color .15s,box-shadow .15s;cursor:default}
+.emp-cards-flow .emp-card{width:100%;min-width:0;max-width:100%;height:100%;padding:12px 14px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;transition:transform .15s,border-color .15s,box-shadow .15s;cursor:default}
 .emp-cards-flow .emp-card:hover{transform:translateY(-2px);border-color:rgba(74,174,255,.35)!important}
 .emp-card-grp{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;flex-shrink:0}
 .emp-card-grp .badge{font-size:10px;padding:2px 7px;flex-shrink:0}
@@ -750,6 +750,7 @@ html[data-theme="light"] .wi-deps-note{color:#b45309}
 .emp-card-jobcnt{flex-shrink:0;font-size:12px;font-weight:700;color:var(--c-text2);white-space:nowrap;line-height:1.2}
 .emp-card-loc{font-size:11px;line-height:1.35;color:var(--c-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;flex-shrink:0}
 .emp-card-tasks{flex:1 1 auto;min-height:0;max-height:min(52vh,360px);overflow-x:hidden;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin:2px 0;padding-right:2px;scrollbar-width:thin;-webkit-overflow-scrolling:touch;overscroll-behavior-y:auto}
+.emp-card-tasks-empty{font-size:10px;color:var(--c-muted3);font-style:italic;flex:1;display:flex;align-items:center}
 .emp-card-task{padding:6px 8px;border-radius:8px;flex-shrink:0;cursor:pointer;position:relative;
   background:var(--c-proj-cell);border:1px solid rgba(96,165,250,.22);
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
@@ -775,7 +776,6 @@ html[data-theme="light"] .wi-deps-note{color:#b45309}
 .emp-card-gantt-bar-wrap.sched-risk .emp-card-gantt-bar{background:linear-gradient(90deg,#ea580c,#fb923c)}
 .emp-card-gantt-bar-wrap.sched-late .emp-card-gantt-bar-bg{background:rgba(248,113,113,.14);border:1px solid rgba(248,113,113,.32)}
 .emp-card-gantt-bar-wrap.sched-late .emp-card-gantt-bar{background:linear-gradient(90deg,#dc2626,#f87171)}
-.emp-card-tasks-empty{font-size:10px;color:var(--c-muted3);font-style:italic}
 .giao-grp{margin-bottom:18px}
 .giao-grp-main{padding:12px;border-radius:14px;border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.06);margin-bottom:20px}
 .giao-grp-hd{display:flex;align-items:center;gap:8px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.08)}
@@ -873,6 +873,7 @@ html[data-theme="light"] .gantt-dep-arrow{fill:#d97706}
 .swipe-front{position:relative;z-index:1;width:100%;padding:4px 6px;transition:transform .22s ease;background:var(--c-swipe);border-radius:8px;touch-action:pan-y;cursor:grab;user-select:none;box-shadow:inset 0 0 0 1px var(--c-border4)}
 .swipe-front::after{content:"";position:absolute;top:0;right:-6px;bottom:0;width:10px;background:var(--c-swipe)}
 .swipe-front:active{cursor:grabbing}
+@media(pointer:fine){.swipe-front,.swipe-front:active,.emp-card-swipe .emp-card-namebar.swipe-front,.emp-card-swipe .emp-card-namebar.swipe-front:active{cursor:pointer}}
 .swipe-wrap.open .swipe-front{transform:translateX(-72px)}
 .list-swipe{margin:0 0 8px;width:100%;max-width:100%;align-self:stretch}
 .list-swipe .swipe-front{background:var(--c-emp-card);border:1px solid rgba(56,189,248,.22);padding:8px 10px;border-radius:10px;box-sizing:border-box;width:100%}
@@ -890,7 +891,9 @@ html[data-theme="light"] .gantt-dep-arrow{fill:#d97706}
 .proj-card-wi-bar{flex:0 0 56px;height:5px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden}
 .proj-card-wi-bar>i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#38bdf8,#60a5fa)}
 .proj-card-wi-pct{flex:0 0 auto;font-family:monospace;font-weight:700;font-size:12px;color:#38bdf8;min-width:2.6em;text-align:right}
-.proj-card-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;width:100%}
+.proj-card-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;width:100%;margin-top:auto}
+.cards-eq-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;align-items:stretch}
+.cards-eq-grid>.card{height:100%;display:flex;flex-direction:column;box-sizing:border-box}
 .gdot{width:10px;height:10px;border-radius:3px;flex-shrink:0;box-shadow:0 0 8px currentColor}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--c-scroll-track)}
@@ -1134,7 +1137,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="112">
+<meta name="app-build" content="118">
 <script src="/firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
