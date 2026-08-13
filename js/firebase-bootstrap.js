@@ -173,8 +173,12 @@ var custMasterById = {};
 var custMasterReady = false;
 var unsubChatBc = null;
 var unsubChatDm = null;
+var unsubChatLeaveOther = null;
+var unsubLeave = null;
+var unsubLeaveOther = null;
 var chatMsgsBc = [];
 var chatMsgsDm = [];
+var chatMsgsLeaveOther = [];
 var unsubReports = null;
 var unsubReportsOther = null;
 var unsubAttendance = null;
@@ -281,6 +285,11 @@ function scheduleSecondarySubs(cv3) {
         subscribeAttendance();
       } catch (e3) {
         console.warn("subscribeAttendance:", e3);
+      }
+      try {
+        subscribeLeaveRequests();
+      } catch (e4) {
+        console.warn("subscribeLeaveRequests:", e4);
       }
     }, 180);
     var wantPush =
@@ -441,12 +450,28 @@ function publishAuth(authInfo) {
   if (appCv3 && appCv3.setAuth) appCv3.setAuth(authInfo);
 }
 
-function chatColRef() {
-  return collection(doc(db, "workspaces", orgId), "messages");
+function chatColRef(forOrg) {
+  return collection(doc(db, "workspaces", normalizeOrgId(forOrg || orgId)), "messages");
 }
 
 function dmThreadId(uidA, uidB) {
   return [uidA, uidB].sort().join("_");
+}
+
+function leaveThreadId(leaveReqId) {
+  return "leave:" + String(leaveReqId || "").trim();
+}
+
+function uniqSortedUids(list) {
+  var map = {}, out = [], i, u;
+  (list || []).forEach(function (x) {
+    u = String(x || "").trim();
+    if (!u || map[u]) return;
+    map[u] = 1;
+    out.push(u);
+  });
+  out.sort();
+  return out;
 }
 
 function msgAtMs(m) {
@@ -462,7 +487,8 @@ var ackAsgnIds = {};
 
 function mergeChatMsgs() {
   var map = {};
-  chatMsgsBc.concat(chatMsgsDm).forEach(function (m) {
+  chatMsgsBc.concat(chatMsgsDm).concat(chatMsgsLeaveOther).forEach(function (m) {
+    if (!m || !m.id) return;
     map[m.id] = m;
   });
   var all = Object.keys(map)
@@ -480,8 +506,19 @@ function isoNow() {
   return new Date().toISOString();
 }
 
-function msgDocRef(msgId) {
-  return doc(db, "workspaces", orgId, "messages", msgId);
+function msgDocRef(msgId, forOrg) {
+  return doc(db, "workspaces", normalizeOrgId(forOrg || orgId), "messages", msgId);
+}
+
+function msgOrgOf(msgId) {
+  var known =
+    chatMsgsLeaveOther.find(function (m) {
+      return m && m.id === msgId && m._orgId;
+    }) ||
+    chatMsgsDm.find(function (m) {
+      return m && m.id === msgId && m._orgId;
+    });
+  return (known && known._orgId) || orgId;
 }
 
 async function markMessageDelivered(msgId) {
@@ -489,7 +526,7 @@ async function markMessageDelivered(msgId) {
   if (deliveredMsgIds[msgId]) return;
   deliveredMsgIds[msgId] = 1;
   try {
-    await updateDoc(msgDocRef(msgId), { deliveredAt: isoNow() });
+    await updateDoc(msgDocRef(msgId, msgOrgOf(msgId)), { deliveredAt: isoNow() });
   } catch (err) {
     delete deliveredMsgIds[msgId];
     console.warn("markMessageDelivered:", err);
@@ -502,12 +539,12 @@ async function markMessageRead(msgId) {
   readMsgIds[msgId] = 1;
   var now = isoNow();
   var patch = { readAt: now };
-  var known = chatMsgsDm.find(function (m) {
+  var known = chatMsgsDm.concat(chatMsgsLeaveOther).find(function (m) {
     return m && m.id === msgId;
   });
   if (!known || !known.deliveredAt) patch.deliveredAt = now;
   try {
-    await updateDoc(msgDocRef(msgId), patch);
+    await updateDoc(msgDocRef(msgId, (known && known._orgId) || msgOrgOf(msgId)), patch);
   } catch (err) {
     delete readMsgIds[msgId];
     console.warn("markMessageRead:", err);
@@ -518,9 +555,13 @@ function autoMarkIncomingDelivered(msgs) {
   if (!auth || !auth.currentUser) return;
   var me = auth.currentUser.uid;
   (msgs || []).forEach(function (m) {
-    if (!m || m.type !== "dm" || !m.id) return;
+    if (!m || !m.id) return;
     if (m.uid === me) return;
-    if (m.toUid && m.toUid !== me) return;
+    if (m.type === "leave") {
+      if (!Array.isArray(m.participants) || m.participants.indexOf(me) < 0) return;
+    } else if (m.type === "dm") {
+      if (m.toUid && m.toUid !== me) return;
+    } else return;
     if (m.deliveredAt || deliveredMsgIds[m.id]) return;
     markMessageDelivered(m.id);
   });
@@ -530,9 +571,13 @@ async function markChatThreadRead(msgs, myUid) {
   if (!myUid || !msgs || !msgs.length) return;
   var jobs = [];
   msgs.forEach(function (m) {
-    if (!m || m.type !== "dm" || !m.id) return;
+    if (!m || !m.id) return;
     if (m.uid === myUid) return;
-    if (m.toUid && m.toUid !== myUid) return;
+    if (m.type === "leave") {
+      if (!Array.isArray(m.participants) || m.participants.indexOf(myUid) < 0) return;
+    } else if (m.type === "dm") {
+      if (m.toUid && m.toUid !== myUid) return;
+    } else return;
     if (m.readAt || readMsgIds[m.id]) return;
     jobs.push(markMessageRead(m.id));
   });
@@ -613,10 +658,13 @@ function syncServiceWorkerBadge(count) {
 function unsubChatAll() {
   if (unsubChatBc) unsubChatBc();
   if (unsubChatDm) unsubChatDm();
+  if (unsubChatLeaveOther) unsubChatLeaveOther();
   unsubChatBc = null;
   unsubChatDm = null;
+  unsubChatLeaveOther = null;
   chatMsgsBc = [];
   chatMsgsDm = [];
+  chatMsgsLeaveOther = [];
 }
 
 function stopSubscriptions() {
@@ -631,6 +679,10 @@ function stopSubscriptions() {
   custMasterById = {};
   custMasterReady = false;
   unsubChatAll();
+  if (unsubLeave) unsubLeave();
+  unsubLeave = null;
+  if (unsubLeaveOther) unsubLeaveOther();
+  unsubLeaveOther = null;
   if (unsubReports) unsubReports();
   unsubReports = null;
   if (unsubReportsOther) unsubReportsOther();
@@ -651,12 +703,27 @@ function stopSubscriptions() {
   resetMasterSubsState();
 }
 
+function canSubscribeCompanyLeave() {
+  if (isDirectorRole()) return true;
+  var g = authEmpGroup();
+  if (
+    g === "Điều hành" ||
+    g === "Giám sát" ||
+    g === "Hành chính" ||
+    g === CHIEF_GROUP ||
+    g === "Quản lý"
+  )
+    return true;
+  return canSubscribeOtherOrgReports();
+}
+
 function subscribeChat() {
   unsubChatAll();
   if (!db || !auth || !auth.currentUser) return;
   var uid = auth.currentUser.uid;
+  var active = orgId;
   var qBc = query(
-    chatColRef(),
+    chatColRef(active),
     where("type", "==", "broadcast"),
     orderBy("at", "asc"),
     limit(200)
@@ -664,6 +731,7 @@ function subscribeChat() {
   unsubChatBc = onSnapshot(
     qBc,
     function (snap) {
+      if (orgId !== active) return;
       chatMsgsBc = snap.docs.map(function (d) {
         return Object.assign({ id: d.id }, d.data());
       });
@@ -674,7 +742,7 @@ function subscribeChat() {
     }
   );
   var qDm = query(
-    chatColRef(),
+    chatColRef(active),
     where("participants", "array-contains", uid),
     orderBy("at", "asc"),
     limit(300)
@@ -682,13 +750,41 @@ function subscribeChat() {
   unsubChatDm = onSnapshot(
     qDm,
     function (snap) {
+      if (orgId !== active) return;
       chatMsgsDm = snap.docs.map(function (d) {
-        return Object.assign({ id: d.id }, d.data());
+        return Object.assign({ id: d.id, _orgId: active }, d.data());
       });
       mergeChatMsgs();
     },
     function (err) {
       console.error("chat dm:", err);
+    }
+  );
+  // Nghỉ phép chung: lấy tin leave từ đội kia (giám đốc / tài khoản 2 đội)
+  if (!canSubscribeCompanyLeave()) return;
+  var other = otherOrgId(active);
+  var qLeaveOther = query(
+    chatColRef(other),
+    where("participants", "array-contains", uid),
+    orderBy("at", "asc"),
+    limit(300)
+  );
+  unsubChatLeaveOther = onSnapshot(
+    qLeaveOther,
+    function (snap) {
+      if (orgId !== active) return;
+      if (otherOrgId(orgId) !== other) return;
+      chatMsgsLeaveOther = snap.docs
+        .map(function (d) {
+          return Object.assign({ id: d.id, _orgId: other }, d.data());
+        })
+        .filter(function (m) {
+          return m && (m.type === "leave" || m.leaveReqId);
+        });
+      mergeChatMsgs();
+    },
+    function (err) {
+      console.warn("chat leave other org:", err);
     }
   );
 }
@@ -700,13 +796,18 @@ function chatSendErrMsg(err, type) {
     if (type === "broadcast") {
       return "Không có quyền gửi thông báo toàn đội. Chỉ giám đốc mới được gửi.";
     }
+    if (type === "leave") {
+      return "Không có quyền gửi trên bảng tin nghỉ phép.";
+    }
     return "Không có quyền gửi tin nhắn riêng. Người nhận cần có tài khoản đăng nhập trong cùng tổ chức.";
   }
   var msg = String(err.message || "");
   if (msg && msg.indexOf("Missing or insufficient permissions") >= 0) {
     return type === "broadcast"
       ? "Không có quyền gửi thông báo toàn đội."
-      : "Không có quyền gửi tin nhắn riêng. Kiểm tra người nhận đã có tài khoản.";
+      : type === "leave"
+        ? "Không có quyền gửi trên bảng tin nghỉ phép."
+        : "Không có quyền gửi tin nhắn riêng. Kiểm tra người nhận đã có tài khoản.";
   }
   return msg || "Không gửi được tin nhắn.";
 }
@@ -718,7 +819,8 @@ async function sendChatMessage(text, options) {
   var info = window.__CV3_AUTH || {};
   var uid = auth.currentUser.uid;
   var opts = options || {};
-  var type = opts.type === "broadcast" ? "broadcast" : "dm";
+  var type =
+    opts.type === "broadcast" ? "broadcast" : opts.type === "leave" ? "leave" : "dm";
   try {
     if (type === "broadcast") {
       if (!canOperateRole()) {
@@ -735,28 +837,256 @@ async function sendChatMessage(text, options) {
       });
       return;
     }
+    if (type === "leave") {
+      var leaveReqId = String(opts.leaveReqId || "").trim();
+      if (!leaveReqId) throw new Error("Thiếu mã đơn nghỉ phép.");
+      var participants = uniqSortedUids(opts.participants || []);
+      if (participants.indexOf(uid) < 0) participants = uniqSortedUids(participants.concat([uid]));
+      if (participants.length < 2) {
+        throw new Error("Bảng tin nghỉ phép cần ít nhất giám đốc hoặc Hành chính có tài khoản.");
+      }
+      if (participants.length > 8) participants = participants.slice(0, 8);
+      var leaveOrg = normalizeOrgId(opts.forOrg || orgId);
+      var leavePayload = {
+        text: t,
+        type: "leave",
+        threadId: leaveThreadId(leaveReqId),
+        leaveReqId: leaveReqId,
+        participants: participants,
+        kind: String(opts.kind || "leave_chat"),
+        from: info.username || userLabel(auth.currentUser),
+        fromName: userLabel(auth.currentUser),
+        role: info.role || "employee",
+        uid: uid,
+        at: serverTimestamp(),
+      };
+      await addDoc(chatColRef(leaveOrg), leavePayload);
+      return;
+    }
     var toUid = String(opts.toUid || "").trim();
     if (!toUid) throw new Error("Chọn người nhận để gửi tin nhắn riêng.");
     if (toUid === uid) throw new Error("Không thể nhắn tin cho chính mình.");
     var toName = String(opts.toName || "").trim() || toUid;
-    var participants = [uid, toUid].sort();
+    var participantsDm = [uid, toUid].sort();
     var threadId = dmThreadId(uid, toUid);
-    await addDoc(chatColRef(), {
+    var payload = {
       text: t,
       type: "dm",
       threadId: threadId,
       toUid: toUid,
       toName: toName,
-      participants: participants,
+      participants: participantsDm,
       from: info.username || userLabel(auth.currentUser),
       fromName: userLabel(auth.currentUser),
       role: info.role || "employee",
       uid: uid,
       at: serverTimestamp(),
-    });
+    };
+    if (opts.kind) payload.kind = String(opts.kind);
+    if (opts.leaveReqId) payload.leaveReqId = String(opts.leaveReqId);
+    await addDoc(chatColRef(), payload);
   } catch (err) {
     throw new Error(chatSendErrMsg(err, type));
   }
+}
+
+function leaveColRef(forOrg) {
+  return collection(doc(db, "workspaces", normalizeOrgId(forOrg || orgId)), "leaveRequests");
+}
+
+function subscribeLeaveRequests() {
+  if (unsubLeave) {
+    unsubLeave();
+    unsubLeave = null;
+  }
+  if (unsubLeaveOther) {
+    unsubLeaveOther();
+    unsubLeaveOther = null;
+  }
+  if (!db || !auth || !auth.currentUser) return;
+  var active = orgId;
+  function pushRows(rows, scope) {
+    var tagged = (rows || []).map(function (r) {
+      return Object.assign({}, r, { _orgId: scope });
+    });
+    if (appCv3 && appCv3.setLeaveReqs) {
+      appCv3.setLeaveReqs(tagged, { liveOrg: scope });
+    }
+  }
+  unsubLeave = onSnapshot(
+    query(leaveColRef(active), orderBy("createdAt", "desc"), limit(120)),
+    function (snap) {
+      if (orgId !== active) return;
+      pushRows(
+        snap.docs.map(function (d) {
+          return Object.assign({ id: d.id }, d.data());
+        }),
+        active
+      );
+    },
+    function (err) {
+      console.error("leaveRequests:", err);
+    }
+  );
+  // Giám đốc (và tài khoản 2 đội): gộp đơn nghỉ phép cả Công trình tỉnh + HCM
+  if (!canSubscribeCompanyLeave()) return;
+  var other = otherOrgId(active);
+  unsubLeaveOther = onSnapshot(
+    query(leaveColRef(other), orderBy("createdAt", "desc"), limit(120)),
+    function (snap) {
+      if (orgId !== active) return;
+      if (otherOrgId(orgId) !== other) return;
+      pushRows(
+        snap.docs.map(function (d) {
+          return Object.assign({ id: d.id }, d.data());
+        }),
+        other
+      );
+    },
+    function (err) {
+      console.warn("leaveRequests other org:", err);
+    }
+  );
+}
+
+async function submitLeaveRequest(payload) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  var info = window.__CV3_AUTH || {};
+  var empId = String((payload && payload.empId) || info.empId || "").trim();
+  if (!empId) throw new Error("Không xác định được nhân viên.");
+  var startDate = String((payload && payload.startDate) || "").trim();
+  var days = Math.round(Number((payload && payload.days) || 0));
+  var reason = String((payload && payload.reason) || "").trim();
+  var empName = String((payload && payload.empName) || "").trim() || empId;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    throw new Error("Ngày bắt đầu nghỉ không hợp lệ.");
+  }
+  if (!(days >= 1 && days <= 90)) throw new Error("Số ngày nghỉ phải từ 1 đến 90.");
+  if (!reason) throw new Error("Nhập lý do xin nghỉ phép.");
+  if (reason.length > 1000) throw new Error("Lý do quá dài (tối đa 1000 ký tự).");
+  var endParts = startDate.split("-").map(Number);
+  var endD = new Date(endParts[0], endParts[1] - 1, endParts[2]);
+  endD.setDate(endD.getDate() + (days - 1));
+  var endDate =
+    endD.getFullYear() +
+    "-" +
+    String(endD.getMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(endD.getDate()).padStart(2, "0");
+  // Đồng bộ empId lên users/{uid} để khớp security rules (nếu hồ sơ cloud thiếu).
+  try {
+    var meEmp =
+      appCv3 && appCv3.S && Array.isArray(appCv3.S.emp)
+        ? appCv3.S.emp.find(function (x) {
+            return x && x.id === empId;
+          })
+        : null;
+    await syncEmpGroupToUserDoc(empId, (meEmp && meEmp.group) || info.empGroup || "");
+  } catch (syncErr) {
+    console.warn("leave sync empId:", syncErr);
+  }
+  var ref;
+  var roomParticipants = [];
+  try {
+    roomParticipants = uniqSortedUids(
+      [auth.currentUser.uid].concat(
+        (Array.isArray(payload && payload.notifyTo) ? payload.notifyTo : [])
+          .map(function (r) {
+            return r && r.uid;
+          })
+          .concat(payload && payload.dirUid ? [payload.dirUid] : [])
+      )
+    );
+    if (roomParticipants.length < 2) {
+      throw new Error("Chưa có giám đốc / Hành chính có tài khoản để nhận đơn.");
+    }
+    ref = await addDoc(leaveColRef(), {
+      empId: empId,
+      empName: empName,
+      uid: auth.currentUser.uid,
+      startDate: startDate,
+      endDate: endDate,
+      days: days,
+      reason: reason,
+      status: "pending",
+      roomParticipants: roomParticipants,
+      createdAt: serverTimestamp(),
+    });
+    var text =
+      String((payload && payload.letter) || "").trim() ||
+      [
+        "Kính gửi Ban Giám đốc,",
+        "",
+        "Em tên là " + empName + ", hiện đang công tác tại công ty.",
+        "Em kính xin phép được nghỉ làm từ ngày " +
+          startDate +
+          " đến hết ngày " +
+          endDate +
+          " (tổng cộng " +
+          days +
+          " ngày).",
+        "",
+        "Lý do xin nghỉ: " + reason + (/[.!?…]$/.test(reason) ? "" : "."),
+        "",
+        "Em xin cam kết bàn giao công việc trước khi nghỉ và sẽ trở lại làm việc đúng thời hạn đã đăng ký.",
+        "Rất mong Ban Giám đốc xem xét và chấp thuận đơn xin nghỉ phép của em.",
+        "",
+        "Em xin chân thành cảm ơn.",
+        "",
+        "Trân trọng,",
+        empName,
+      ].join("\n");
+    try {
+      await sendChatMessage(text, {
+        type: "leave",
+        leaveReqId: ref.id,
+        participants: roomParticipants,
+        kind: "leave_req",
+      });
+    } catch (chatErr) {
+      console.warn("leave room notify:", chatErr);
+      throw new Error(
+        (chatErr && chatErr.message) ||
+          "Đã tạo đơn nhưng chưa gửi được vào khung chat chung. Thử lại hoặc kiểm tra tài khoản giám đốc / Hành chính."
+      );
+    }
+  } catch (err) {
+    var code = String((err && err.code) || "");
+    if (code.indexOf("permission") >= 0 || /insufficient permissions/i.test(String(err && err.message))) {
+      throw new Error(
+        "Không gửi được đơn nghỉ phép (thiếu quyền Firestore). Thử đăng xuất/đăng nhập lại; nếu vẫn lỗi hãy báo giám đốc kiểm tra tài khoản đã gắn nhân sự."
+      );
+    }
+    throw err;
+  }
+  return { id: ref.id, endDate: endDate, roomParticipants: roomParticipants };
+}
+
+async function decideLeaveRequest(reqId, decision, rejectReason, forOrg) {
+  if (!app || !auth || !auth.currentUser) {
+    throw new Error("Cần đăng nhập cloud.");
+  }
+  if (!isDirectorRole()) throw new Error("Chỉ giám đốc được duyệt đơn nghỉ phép.");
+  var id = String(reqId || "").trim();
+  if (!id) throw new Error("Thiếu mã đơn nghỉ phép.");
+  var status = decision === "approved" ? "approved" : "rejected";
+  var patch = {
+    status: status,
+    decidedAt: serverTimestamp(),
+    decidedBy: auth.currentUser.uid,
+  };
+  if (status === "rejected") {
+    patch.rejectReason = String(rejectReason || "").trim();
+    if (!patch.rejectReason) throw new Error("Nhập lý do từ chối gửi cho nhân viên.");
+    if (patch.rejectReason.length > 1000) throw new Error("Lý do từ chối quá dài.");
+  } else {
+    patch.rejectReason = "";
+  }
+  var oid = normalizeOrgId(forOrg || orgId);
+  await updateDoc(doc(leaveColRef(oid), id), patch);
+  return { id: id, status: status, _orgId: oid };
 }
 
 function reportsColRef(forOrg) {
@@ -879,16 +1209,20 @@ function subscribeReports() {
   );
 }
 
+function canSubscribeAllAttendance() {
+  if (isDirectorRole()) return true;
+  return authEmpGroup() === "Hành chính";
+}
+
 function subscribeAttendance() {
   if (unsubAttendance) unsubAttendance();
   unsubAttendance = null;
   if (!db || !auth || !auth.currentUser) return;
   var empId = window.__CV3_AUTH && window.__CV3_AUTH.empId;
-  var isDir = window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
   var since = historySinceIso();
   liveHistorySince = since;
   var q;
-  if (isDir) {
+  if (canSubscribeAllAttendance()) {
     q = query(
       attendanceColRef(),
       where("date", ">=", since),
@@ -987,7 +1321,7 @@ async function ensureAttendanceRange(from, to, empId) {
   if (from >= since) return [];
   var scopeEmp =
     empId ||
-    (window.__CV3_AUTH && window.__CV3_AUTH.role === "director"
+    (canSubscribeAllAttendance()
       ? ""
       : (window.__CV3_AUTH && window.__CV3_AUTH.empId) || "");
   var key =
@@ -3636,6 +3970,8 @@ async function bootOnline(cv3) {
   window.__CV3_completeProject = callCompleteProject;
   window.__CV3_submitAttendance = callSubmitAttendance;
   window.__CV3_confirmArrival = callConfirmArrival;
+  window.__CV3_submitLeave = submitLeaveRequest;
+  window.__CV3_decideLeave = decideLeaveRequest;
   window.__CV3_ensureAttendanceRange = ensureAttendanceRange;
   window.__CV3_ensureAttendanceMonth = ensureAttendanceMonth;
   window.__CV3_ensureReportsRange = ensureReportsRange;
@@ -3718,6 +4054,7 @@ async function bootOnline(cv3) {
   window.__CV3_openAuth = openAuthPanel;
   window.__CV3_sendChat = sendChatMessage;
   window.__CV3_dmThreadId = dmThreadId;
+  window.__CV3_leaveThreadId = leaveThreadId;
   window.__CV3_markMsgDelivered = markMessageDelivered;
   window.__CV3_markMsgRead = markMessageRead;
   window.__CV3_markChatThreadRead = markChatThreadRead;
