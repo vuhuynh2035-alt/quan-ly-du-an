@@ -2,6 +2,7 @@
 <html lang="vi">
 <head>
 <script>
+window.__APP_BASE__="%APP_BASE%";
 (function(){try{var c=localStorage.getItem("cv3_s");if(c){var j=JSON.parse(c);if(j.theme==="light")document.documentElement.setAttribute("data-theme","light");else document.documentElement.setAttribute("data-theme","dark");}}catch(e){}})();
 </script>
 <meta charset="UTF-8">
@@ -116,7 +117,10 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;bac
 .hdr-org-btn{border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.1);color:rgba(255,248,220,.85);font-size:11px;font-weight:700;padding:4px 8px;border-radius:8px;cursor:pointer;line-height:1.2}
 .hdr-org-btn.on{background:linear-gradient(145deg,rgba(251,191,36,.35),rgba(251,191,36,.15));color:#fff8c0;border-color:rgba(251,191,36,.55)}
 .hdr-org-btn:hover{filter:brightness(1.08)}
-@media(max-width:640px){.hdr-org-switch{max-width:110px}.hdr-org-btn{padding:3px 6px;font-size:10px}}
+@media(max-width:640px){
+  .hdr-org-switch{display:none!important}
+  .hdr-title-org{display:none}
+}
 .org-part-bar{display:none;margin:0 0 12px;padding:0}
 .org-part-bar.show{display:block}
 .org-part-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -144,7 +148,8 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;bac
   .hdr-row{justify-content:flex-start;padding:0 72px 0 0;min-height:26px}
   .hdr-row+.hdr-row{margin-top:6px;min-height:auto;align-items:flex-start}
   .saree-logo{font-size:30px;letter-spacing:.14em;padding-left:0}
-  .hdr-title-text{font-size:11px;letter-spacing:.06em;padding-left:0;text-align:left;white-space:normal;word-break:break-word;line-height:1.3;align-self:flex-start;width:100%;max-width:100%}
+  .hdr-title-text{font-size:11px;letter-spacing:.06em;padding-left:0;text-align:left;white-space:nowrap;line-height:1.3;align-self:flex-start;max-width:calc(100% - 4px)}
+  .hdr-title-org{display:none}
   .hdr-row:nth-child(2) .hdr-title-text{transform:translateX(20px)}
   .hdr-bell-btn{width:36px;height:36px;border-radius:10px}
   .hdr-bell-icon{font-size:19px}
@@ -1133,12 +1138,12 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 @media (min-width: 480px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
 @media (min-width: 900px) { .dash-grid { grid-template-columns: 1fr 1fr 1fr; } }
 </style>
-<link rel="manifest" href="/manifest.json">
-<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="manifest" href="%APP_BASE%manifest.json?v=__APP_BUILD__">
+<link rel="icon" type="image/png" sizes="192x192" href="%APP_BASE%icon-192.png?v=__APP_BUILD__">
+<link rel="apple-touch-icon" sizes="180x180" href="%APP_BASE%apple-touch-icon.png?v=__APP_BUILD__">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="127">
-<script src="/firebase-config.js"></script>
+<meta name="app-build" content="129">
+<script src="%APP_BASE%firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
 <body>
@@ -1214,7 +1219,7 @@ window.addEventListener('error', function(e) {
   <button class="fnav fnav-l" id="btn-prev" onclick="A.navPrev()" title="Trang trước"><span class="fnav-label">Quay lại</span></button>
   <button class="fnav fnav-r" id="btn-next" onclick="A.navNext()" title="Trang tiếp"><span class="fnav-label">Tiếp tục</span></button>
 </div>
-<script src="/js/app.js?v=__APP_BUILD__"></script>
+<script src="%APP_BASE%js/app.js?v=__APP_BUILD__"></script>
 <script type="module" src="./js/firebase-bootstrap.js"></script>
 </body>
 </html>

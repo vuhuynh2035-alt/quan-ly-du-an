@@ -647,7 +647,7 @@ function syncServiceWorkerBadge(count) {
       reg.active.postMessage({ type: "cv3-set-badge", count: n });
     } catch (e) {}
   };
-  navigator.serviceWorker.getRegistration("/").then(post).catch(function () {});
+  navigator.serviceWorker.getRegistration(import.meta.env.BASE_URL).then(post).catch(function () {});
   if (navigator.serviceWorker.controller) {
     try {
       navigator.serviceWorker.controller.postMessage({ type: "cv3-set-badge", count: n });
@@ -2895,7 +2895,12 @@ function refreshOrgSwitcherUI() {
   function setTitle(org) {
     if (!titleEl) return;
     var label = orgLabel(org || orgId);
-    titleEl.textContent = "QUẢN LÝ DỰ ÁN · " + label.toUpperCase();
+    titleEl.textContent = "";
+    titleEl.appendChild(document.createTextNode("QUẢN LÝ DỰ ÁN"));
+    var orgSpan = document.createElement("span");
+    orgSpan.className = "hdr-title-org";
+    orgSpan.textContent = " · " + label.toUpperCase();
+    titleEl.appendChild(orgSpan);
   }
 
   if (!a || !a.uid) {
@@ -3563,7 +3568,7 @@ function bindForegroundMessaging(messaging, cv3, onMessageFn) {
         try {
           new Notification(titleC, {
             body: bodyC,
-            icon: "/icon-192.png",
+            icon: import.meta.env.BASE_URL + "icon-192.png",
             tag: "chat_" + (d.msgId || "fg"),
             silent: false,
             data: {
@@ -3599,7 +3604,7 @@ function bindForegroundMessaging(messaging, cv3, onMessageFn) {
         try {
           new Notification(title, {
             body: body,
-            icon: "/icon-192.png",
+            icon: import.meta.env.BASE_URL + "icon-192.png",
             tag: "asgn_" + (d.asgnId || "fg"),
             silent: false,
           });
@@ -3618,7 +3623,7 @@ function bindForegroundMessaging(messaging, cv3, onMessageFn) {
         try {
           new Notification(titleS, {
             body: bodyS,
-            icon: "/icon-192.png",
+            icon: import.meta.env.BASE_URL + "icon-192.png",
             tag: "sched_" + (d.asgnId || "fg"),
             silent: false,
           });
@@ -3663,9 +3668,9 @@ async function registerMessaging(cv3, options) {
   if (!ok) return { ok: false, reason: "unsupported" };
   try {
     if (!("serviceWorker" in navigator)) return { ok: false, reason: "unsupported" };
-    // Always re-register so SW updates (cache-bust query); scope must stay "/".
-    var reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js?v=3", {
-      scope: "/",
+    // Always re-register so SW updates (cache-bust query); scope must stay at the app base.
+    var reg = await navigator.serviceWorker.register(import.meta.env.BASE_URL + "firebase-messaging-sw.js?v=3", {
+      scope: import.meta.env.BASE_URL,
       updateViaCache: "none",
     });
     try {

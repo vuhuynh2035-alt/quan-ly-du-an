@@ -1,17 +1,18 @@
 /* eslint-disable no-undef */
 /* cv3-fcm-sw v3 — bump this comment when changing SW so browsers refetch */
 var CV3_SW_VERSION = 3;
-var CV3_ICON = "/icon-192.png";
+var CV3_BASE = new URL("./", self.location.href).pathname;
+var CV3_ICON = CV3_BASE + "icon-192.png";
 var CV3_BADGE_CACHE = "cv3-badge-v1";
-var CV3_BADGE_URL = "/__cv3_badge_count";
+var CV3_BADGE_URL = CV3_BASE + "__cv3_badge_count";
 
 // Register click handler BEFORE importing FCM so the SDK does not overwrite it.
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
   var data = (event.notification && event.notification.data) || {};
   var tag = (event.notification && event.notification.tag) || "";
-  var url = "/";
-  if (data.type === "reminder" || tag.indexOf("rem_") === 0) url = "/?tab=lich";
+  var url = CV3_BASE;
+  if (data.type === "reminder" || tag.indexOf("rem_") === 0) url = CV3_BASE + "?tab=lich";
   else if (
     data.type === "arrival" ||
     data.type === "assignment" ||
@@ -20,9 +21,9 @@ self.addEventListener("notificationclick", function (event) {
     tag.indexOf("asgn_") === 0 ||
     tag.indexOf("sched_") === 0
   )
-    url = "/?tab=mywork";
+    url = CV3_BASE + "?tab=mywork";
   else if (data.type === "chat" || tag.indexOf("chat_") === 0) {
-    url = "/?tab=chat";
+    url = CV3_BASE + "?tab=chat";
     if (data.chatType !== "broadcast" && data.fromUid) {
       url += "&dm=" + encodeURIComponent(String(data.fromUid));
     }
@@ -32,7 +33,7 @@ self.addEventListener("notificationclick", function (event) {
       for (var i = 0; i < list.length; i++) {
         var c = list[i];
         if ("focus" in c) {
-          if ("navigate" in c && url !== "/") {
+          if ("navigate" in c && url !== CV3_BASE) {
             try {
               return c.navigate(url).then(function () {
                 return c.focus();
@@ -72,7 +73,7 @@ importScripts(
 importScripts(
   "https://www.gstatic.com/firebasejs/11.6.0/firebase-messaging-compat.js"
 );
-importScripts("/firebase-config.js");
+importScripts(CV3_BASE + "firebase-config.js");
 
 firebase.initializeApp(FIREBASE_CONFIG);
 var messaging = firebase.messaging();

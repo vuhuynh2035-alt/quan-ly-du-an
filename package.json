@@ -10,6 +10,8 @@
     "dev": "vite",
     "dev:host": "vite --host",
     "build": "vite build",
+    "build:du-an": "vite build --base=/du-an/ --outDir dist-du-an --emptyOutDir",
+    "package:du-an": "npm run build:du-an && tar -a -cf du-an.zip -C dist-du-an .",
     "preview": "vite preview",
     "start": "vite",
     "deploy": "npm run build && npx -y firebase-tools@latest deploy",

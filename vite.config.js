@@ -15,6 +15,9 @@ function readAppBuild() {
   }
 }
 
+let appBase = "/";
+let outDirAbs = path.join(root, "dist");
+
 export default defineConfig({
   root: ".",
   publicDir: "public",
@@ -48,18 +51,42 @@ export default defineConfig({
   plugins: [
     {
       name: "inject-app-build",
-      transformIndexHtml(html) {
+      configResolved(config) {
+        appBase = config.base;
+        outDirAbs = path.resolve(config.root, config.build.outDir);
+      },
+      transformIndexHtml: {
+        order: "pre",
+        handler(html) {
+          const build = String(readAppBuild());
+          return html
+            .replace(/(<meta name="app-build" content=")[^"]*(")/i, `$1${build}$2`)
+            .replace(/__APP_BUILD__/g, build)
+            .replace(/%APP_BASE%/g, appBase);
+        },
+      },
+    },
+    {
+      name: "version-pwa-assets",
+      closeBundle() {
         const build = String(readAppBuild());
-        return html
-          .replace(/(<meta name="app-build" content=")[^"]*(")/i, `$1${build}$2`)
-          .replace(/__APP_BUILD__/g, build);
+        const manifestPath = path.join(outDirAbs, "manifest.json");
+        if (!fs.existsSync(manifestPath)) return;
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        if (Array.isArray(manifest.icons)) {
+          manifest.icons = manifest.icons.map((icon) => ({
+            ...icon,
+            src: icon.src.includes("?") ? icon.src : `${icon.src}?v=${build}`,
+          }));
+        }
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
       },
     },
     {
       // app.js là classic script (vẽ UI từ cache trước khi tải Firebase module).
       name: "copy-app-js",
       async writeBundle(options) {
-        const outDir = options.dir || path.join(root, "dist");
+        const outDir = options.dir || outDirAbs;
         const destDir = path.join(outDir, "js");
         fs.mkdirSync(destDir, { recursive: true });
         const src = path.join(root, "js", "app.js");
@@ -79,7 +106,7 @@ export default defineConfig({
       },
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
-          if (req.url && req.url.split("?")[0] === "/js/app.js") {
+          if (req.url && req.url.split("?")[0] === appBase + "js/app.js") {
             res.setHeader("Content-Type", "application/javascript; charset=utf-8");
             fs.createReadStream(path.join(root, "js", "app.js")).pipe(res);
             return;

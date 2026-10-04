@@ -250,10 +250,11 @@ function bumpPatch(){
   ps2Ws("cv3_patch",p);
   return p;
 }
+function appUrl(p){return(window.__APP_BASE__||"/")+p;}
 function verStr(){return"v"+VER_MAJOR+"."+String(APP_BUILD).padStart(3,"0");}
 function checkAppUpdate(){
   if(isLocalDev())return;
-  fetch("/app-version.json?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).then(function(v){
+  fetch(appUrl("app-version.json?_="+Date.now()),{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).then(function(v){
     if(!v||typeof v.build!=="number"||v.build<=APP_BUILD)return;
     if(document.getElementById("update-bar"))return;
     var bar=document.createElement("div");
@@ -2573,7 +2574,7 @@ function showNoti(title, opts, type) {
     new Notification(title, opts);
   } catch (e) {}
   try {
-    var a = new Audio(type === "remind" ? "/remind.wav" : "/noti.wav");
+    var a = new Audio(appUrl(type === "remind" ? "remind.wav" : "noti.wav"));
     a.play().catch(function(){});
   } catch (e) {}
 }
@@ -3904,7 +3905,7 @@ function checkAttendanceRemind(){
   playBellSound();
   showAppToast(attRemindText(slot),"warn");
   if("Notification" in window&&Notification.permission==="granted"){
-    showNoti("Chấm công",{body:attRemindText(slot),icon:"/icon-192.png",tag:"att_"+td()+"_"+slot},"remind");
+    showNoti("Chấm công",{body:attRemindText(slot),icon:appUrl("icon-192.png"),tag:"att_"+td()+"_"+slot},"remind");
   }
 }
 function asgnLocLabel(a){
@@ -4183,7 +4184,7 @@ function toastIncomingChat(m){
 }
 function empPushNotifyTest(){
   if(typeof Notification==="undefined"||Notification.permission!=="granted")return;
-  showNoti("✓ Thông báo giao việc",{body:"Đã bật thành công — bạn sẽ nhận tin khi được giao việc mới.",icon:"/icon-192.png",tag:"emp_push_ok"},"noti");
+  showNoti("✓ Thông báo giao việc",{body:"Đã bật thành công — bạn sẽ nhận tin khi được giao việc mới.",icon:appUrl("icon-192.png"),tag:"emp_push_ok"},"noti");
 }
 function remindPushHint(){
   if(!window.__CV3_SKIP_SEED)return "Chế độ offline — nhắc hẹn chỉ kêu khi mở app. Đăng nhập cloud để nhận khi app đóng.";
@@ -4515,7 +4516,7 @@ function checkReminders(){
       showRemindToast(fresh);
       if("Notification" in window&&Notification.permission==="granted"){
         fresh.forEach(function(r){
-          showNoti("🔔 Nhắc hẹn",{body:r.text||"Đã đến giờ nhắc",icon:"/icon-192.png",tag:"rem_"+r.id},"remind");
+          showNoti("🔔 Nhắc hẹn",{body:r.text||"Đã đến giờ nhắc",icon:appUrl("icon-192.png"),tag:"rem_"+r.id},"remind");
         });
       }
     }
@@ -4545,7 +4546,7 @@ function remindListHTML(){
 }
 function remindPushNotifyTest(){
   if(typeof Notification==="undefined"||Notification.permission!=="granted")return;
-  showNoti("🔔 Nhắc hẹn",{body:"Đã bật thông báo nền — nhắc hẹn sẽ đến khi app đóng.",icon:"/icon-192.png",tag:"remind_push_ok"},"remind");
+  showNoti("🔔 Nhắc hẹn",{body:"Đã bật thông báo nền — nhắc hẹn sẽ đến khi app đóng.",icon:appUrl("icon-192.png"),tag:"remind_push_ok"},"remind");
 }
 function remindSettingsBody(){
   return ''
@@ -8308,7 +8309,7 @@ window.A={
     if(window.__CV3_HELP_LOADING){window.__CV3_HELP_LOADING.then(show);return;}
     window.__CV3_HELP_LOADING=new Promise(function(resolve,reject){
       var s=document.createElement("script");
-      s.src="/js/contextual-help.js";
+      s.src=appUrl("js/contextual-help.js");
       s.onload=function(){resolve();};
       s.onerror=function(){reject(new Error("help"));};
       document.head.appendChild(s);
