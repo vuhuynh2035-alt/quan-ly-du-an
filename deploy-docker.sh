@@ -6,4 +6,5 @@ git pull origin main
 docker compose down
 docker compose up -d --build
 echo "=== TRIEN KHAI THANH CONG! ==="
-echo "Truy cap tren trinh duyet noi bo: http://$(hostname -I | awk '{print $1}'):8084"
+echo "Truy cap noi bo: http://$(hostname -I | awk '{print $1}'):8084"
+echo "Truy cap domain qua Cloudflare Tunnel (Cong 8084): https://duan.saigonref.com (hoac domain ban gan)"
