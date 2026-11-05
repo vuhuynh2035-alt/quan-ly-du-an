@@ -1,0 +1,9 @@
+services:
+  quan-ly-du-an:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quan-ly-du-an-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8084}:80"
