@@ -1,62 +1,25 @@
-import { initializeApp } from "firebase/app";
-import {
-  getAuth,
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  updateProfile,
-  updatePassword,
-  EmailAuthProvider,
-  reauthenticateWithCredential,
-} from "firebase/auth";
-import {
-  getFirestore,
-  doc,
-  getDoc,
-  setDoc,
-  onSnapshot,
-  serverTimestamp,
-  collection,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  query,
-  where,
-  orderBy,
-  limit,
-  getDocs,
-  writeBatch,
-} from "firebase/firestore";
+import { loadBackend } from "./backend/index.js";
 
-/** Lazy SDK chunks — messaging / storage / functions / bio không chặn first paint. */
-var _fnModP = null;
-var _stModP = null;
-var _msgModP = null;
+/** Lazy chunk — bio không chặn first paint (SDK messaging/storage/functions lazy trong adapter). */
 var _bioModP = null;
-function loadFunctionsMod() {
-  if (!_fnModP) _fnModP = import("firebase/functions");
-  return _fnModP;
-}
-function loadStorageMod() {
-  if (!_stModP) _stModP = import("firebase/storage");
-  return _stModP;
-}
-function loadMessagingMod() {
-  if (!_msgModP) _msgModP = import("firebase/messaging");
-  return _msgModP;
-}
 function loadBioMod() {
   if (!_bioModP) _bioModP = import("./biometric-auth.js");
   return _bioModP;
 }
 async function cloudCallable(name, region) {
-  var mod = await loadFunctionsMod();
-  var fns = region ? mod.getFunctions(app, region) : mod.getFunctions(app);
-  return mod.httpsCallable(fns, name);
+  return backend.callable(name, region);
 }
 
-var cfg = window.FIREBASE_CONFIG;
+function serverTime() {
+  return backend.time.serverTime();
+}
+
+function mapSnapDocs(docs) {
+  return docs.map(function (d) {
+    return Object.assign({ id: d.id }, d.data);
+  });
+}
+
 var vapidKey = window.FIREBASE_VAPID_KEY;
 var ORG_ALIAS = { saree: "cong-trinh" };
 var CHIEF_GROUP = "Chỉ huy trưởng";
@@ -153,14 +116,10 @@ function clearLocalServiceWorkers() {
     return Promise.all(regs.map(function (r) { return r.unregister(); }));
   }).catch(function () {});
 }
-var configured =
-  cfg &&
-  cfg.apiKey &&
-  cfg.apiKey !== "YOUR_API_KEY" &&
-  cfg.projectId &&
-  cfg.projectId !== "YOUR_PROJECT_ID";
+var configured = false;
 
-var app = null;
+/** Adapter đang dùng (js/backend); auth/db là nhóm con của nó — null khi chạy offline. */
+var backend = null;
 var auth = null;
 var db = null;
 var orgId = defaultOrg;
@@ -373,8 +332,8 @@ async function resolveAccount(username, org, forSignup) {
   });
   if (!emps.length) {
     try {
-      var snap = await getDoc(doc(db, "workspaces", o, "data", "main"));
-      emps = snap.exists() ? snap.data().emp || [] : [];
+      var snap = await db.getDoc(workspacePath(o));
+      emps = snap.exists ? snap.data.emp || [] : [];
     } catch (e) {
       emps = [];
     }
@@ -450,8 +409,8 @@ function publishAuth(authInfo) {
   if (appCv3 && appCv3.setAuth) appCv3.setAuth(authInfo);
 }
 
-function chatColRef(forOrg) {
-  return collection(doc(db, "workspaces", normalizeOrgId(forOrg || orgId)), "messages");
+function chatColPath(forOrg) {
+  return "workspaces/" + normalizeOrgId(forOrg || orgId) + "/messages";
 }
 
 function dmThreadId(uidA, uidB) {
@@ -506,8 +465,8 @@ function isoNow() {
   return new Date().toISOString();
 }
 
-function msgDocRef(msgId, forOrg) {
-  return doc(db, "workspaces", normalizeOrgId(forOrg || orgId), "messages", msgId);
+function msgDocPath(msgId, forOrg) {
+  return chatColPath(forOrg) + "/" + msgId;
 }
 
 function msgOrgOf(msgId) {
@@ -526,7 +485,7 @@ async function markMessageDelivered(msgId) {
   if (deliveredMsgIds[msgId]) return;
   deliveredMsgIds[msgId] = 1;
   try {
-    await updateDoc(msgDocRef(msgId, msgOrgOf(msgId)), { deliveredAt: isoNow() });
+    await db.updateDoc(msgDocPath(msgId, msgOrgOf(msgId)), { deliveredAt: isoNow() });
   } catch (err) {
     delete deliveredMsgIds[msgId];
     console.warn("markMessageDelivered:", err);
@@ -544,7 +503,7 @@ async function markMessageRead(msgId) {
   });
   if (!known || !known.deliveredAt) patch.deliveredAt = now;
   try {
-    await updateDoc(msgDocRef(msgId, (known && known._orgId) || msgOrgOf(msgId)), patch);
+    await db.updateDoc(msgDocPath(msgId, (known && known._orgId) || msgOrgOf(msgId)), patch);
   } catch (err) {
     delete readMsgIds[msgId];
     console.warn("markMessageRead:", err);
@@ -722,18 +681,17 @@ function subscribeChat() {
   if (!db || !auth || !auth.currentUser) return;
   var uid = auth.currentUser.uid;
   var active = orgId;
-  var qBc = query(
-    chatColRef(active),
-    where("type", "==", "broadcast"),
-    orderBy("at", "asc"),
-    limit(200)
-  );
-  unsubChatBc = onSnapshot(
-    qBc,
-    function (snap) {
+  unsubChatBc = db.subscribeQuery(
+    chatColPath(active),
+    {
+      where: [["type", "==", "broadcast"]],
+      orderBy: [["at", "asc"]],
+      limit: 200,
+    },
+    function (docs) {
       if (orgId !== active) return;
-      chatMsgsBc = snap.docs.map(function (d) {
-        return Object.assign({ id: d.id }, d.data());
+      chatMsgsBc = docs.map(function (d) {
+        return Object.assign({ id: d.id }, d.data);
       });
       mergeChatMsgs();
     },
@@ -741,18 +699,17 @@ function subscribeChat() {
       console.error("chat broadcast:", err);
     }
   );
-  var qDm = query(
-    chatColRef(active),
-    where("participants", "array-contains", uid),
-    orderBy("at", "asc"),
-    limit(300)
-  );
-  unsubChatDm = onSnapshot(
-    qDm,
-    function (snap) {
+  unsubChatDm = db.subscribeQuery(
+    chatColPath(active),
+    {
+      where: [["participants", "array-contains", uid]],
+      orderBy: [["at", "asc"]],
+      limit: 300,
+    },
+    function (docs) {
       if (orgId !== active) return;
-      chatMsgsDm = snap.docs.map(function (d) {
-        return Object.assign({ id: d.id, _orgId: active }, d.data());
+      chatMsgsDm = docs.map(function (d) {
+        return Object.assign({ id: d.id, _orgId: active }, d.data);
       });
       mergeChatMsgs();
     },
@@ -763,20 +720,19 @@ function subscribeChat() {
   // Nghỉ phép chung: lấy tin leave từ đội kia (giám đốc / tài khoản 2 đội)
   if (!canSubscribeCompanyLeave()) return;
   var other = otherOrgId(active);
-  var qLeaveOther = query(
-    chatColRef(other),
-    where("participants", "array-contains", uid),
-    orderBy("at", "asc"),
-    limit(300)
-  );
-  unsubChatLeaveOther = onSnapshot(
-    qLeaveOther,
-    function (snap) {
+  unsubChatLeaveOther = db.subscribeQuery(
+    chatColPath(other),
+    {
+      where: [["participants", "array-contains", uid]],
+      orderBy: [["at", "asc"]],
+      limit: 300,
+    },
+    function (docs) {
       if (orgId !== active) return;
       if (otherOrgId(orgId) !== other) return;
-      chatMsgsLeaveOther = snap.docs
+      chatMsgsLeaveOther = docs
         .map(function (d) {
-          return Object.assign({ id: d.id, _orgId: other }, d.data());
+          return Object.assign({ id: d.id, _orgId: other }, d.data);
         })
         .filter(function (m) {
           return m && (m.type === "leave" || m.leaveReqId);
@@ -826,14 +782,14 @@ async function sendChatMessage(text, options) {
       if (!canOperateRole()) {
         throw new Error("Chỉ giám đốc hoặc Điều hành mới được gửi thông báo toàn đội.");
       }
-      await addDoc(chatColRef(), {
+      await db.addDoc(chatColPath(), {
         text: t,
         type: "broadcast",
         from: info.username || userLabel(auth.currentUser),
         fromName: userLabel(auth.currentUser),
         role: info.role || "director",
         uid: uid,
-        at: serverTimestamp(),
+        at: serverTime(),
       });
       return;
     }
@@ -858,9 +814,9 @@ async function sendChatMessage(text, options) {
         fromName: userLabel(auth.currentUser),
         role: info.role || "employee",
         uid: uid,
-        at: serverTimestamp(),
+        at: serverTime(),
       };
-      await addDoc(chatColRef(leaveOrg), leavePayload);
+      await db.addDoc(chatColPath(leaveOrg), leavePayload);
       return;
     }
     var toUid = String(opts.toUid || "").trim();
@@ -880,18 +836,18 @@ async function sendChatMessage(text, options) {
       fromName: userLabel(auth.currentUser),
       role: info.role || "employee",
       uid: uid,
-      at: serverTimestamp(),
+      at: serverTime(),
     };
     if (opts.kind) payload.kind = String(opts.kind);
     if (opts.leaveReqId) payload.leaveReqId = String(opts.leaveReqId);
-    await addDoc(chatColRef(), payload);
+    await db.addDoc(chatColPath(), payload);
   } catch (err) {
     throw new Error(chatSendErrMsg(err, type));
   }
 }
 
-function leaveColRef(forOrg) {
-  return collection(doc(db, "workspaces", normalizeOrgId(forOrg || orgId)), "leaveRequests");
+function leaveColPath(forOrg) {
+  return "workspaces/" + normalizeOrgId(forOrg || orgId) + "/leaveRequests";
 }
 
 function subscribeLeaveRequests() {
@@ -913,16 +869,12 @@ function subscribeLeaveRequests() {
       appCv3.setLeaveReqs(tagged, { liveOrg: scope });
     }
   }
-  unsubLeave = onSnapshot(
-    query(leaveColRef(active), orderBy("createdAt", "desc"), limit(120)),
-    function (snap) {
+  unsubLeave = db.subscribeQuery(
+    leaveColPath(active),
+    { orderBy: [["createdAt", "desc"]], limit: 120 },
+    function (docs) {
       if (orgId !== active) return;
-      pushRows(
-        snap.docs.map(function (d) {
-          return Object.assign({ id: d.id }, d.data());
-        }),
-        active
-      );
+      pushRows(mapSnapDocs(docs), active);
     },
     function (err) {
       console.error("leaveRequests:", err);
@@ -931,17 +883,13 @@ function subscribeLeaveRequests() {
   // Giám đốc (và tài khoản 2 đội): gộp đơn nghỉ phép cả Công trình tỉnh + HCM
   if (!canSubscribeCompanyLeave()) return;
   var other = otherOrgId(active);
-  unsubLeaveOther = onSnapshot(
-    query(leaveColRef(other), orderBy("createdAt", "desc"), limit(120)),
-    function (snap) {
+  unsubLeaveOther = db.subscribeQuery(
+    leaveColPath(other),
+    { orderBy: [["createdAt", "desc"]], limit: 120 },
+    function (docs) {
       if (orgId !== active) return;
       if (otherOrgId(orgId) !== other) return;
-      pushRows(
-        snap.docs.map(function (d) {
-          return Object.assign({ id: d.id }, d.data());
-        }),
-        other
-      );
+      pushRows(mapSnapDocs(docs), other);
     },
     function (err) {
       console.warn("leaveRequests other org:", err);
@@ -950,7 +898,7 @@ function subscribeLeaveRequests() {
 }
 
 async function submitLeaveRequest(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var info = window.__CV3_AUTH || {};
@@ -1002,7 +950,7 @@ async function submitLeaveRequest(payload) {
     if (roomParticipants.length < 2) {
       throw new Error("Chưa có giám đốc / Hành chính có tài khoản để nhận đơn.");
     }
-    ref = await addDoc(leaveColRef(), {
+    ref = await db.addDoc(leaveColPath(), {
       empId: empId,
       empName: empName,
       uid: auth.currentUser.uid,
@@ -1012,7 +960,7 @@ async function submitLeaveRequest(payload) {
       reason: reason,
       status: "pending",
       roomParticipants: roomParticipants,
-      createdAt: serverTimestamp(),
+      createdAt: serverTime(),
     });
     var text =
       String((payload && payload.letter) || "").trim() ||
@@ -1065,7 +1013,7 @@ async function submitLeaveRequest(payload) {
 }
 
 async function decideLeaveRequest(reqId, decision, rejectReason, forOrg) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   if (!isDirectorRole()) throw new Error("Chỉ giám đốc được duyệt đơn nghỉ phép.");
@@ -1074,7 +1022,7 @@ async function decideLeaveRequest(reqId, decision, rejectReason, forOrg) {
   var status = decision === "approved" ? "approved" : "rejected";
   var patch = {
     status: status,
-    decidedAt: serverTimestamp(),
+    decidedAt: serverTime(),
     decidedBy: auth.currentUser.uid,
   };
   if (status === "rejected") {
@@ -1085,19 +1033,16 @@ async function decideLeaveRequest(reqId, decision, rejectReason, forOrg) {
     patch.rejectReason = "";
   }
   var oid = normalizeOrgId(forOrg || orgId);
-  await updateDoc(doc(leaveColRef(oid), id), patch);
+  await db.updateDoc(leaveColPath(oid) + "/" + id, patch);
   return { id: id, status: status, _orgId: oid };
 }
 
-function reportsColRef(forOrg) {
-  return collection(
-    doc(db, "workspaces", normalizeOrgId(forOrg || orgId)),
-    "reports"
-  );
+function reportsColPath(forOrg) {
+  return "workspaces/" + normalizeOrgId(forOrg || orgId) + "/reports";
 }
 
-function attendanceColRef() {
-  return collection(doc(db, "workspaces", orgId), "attendance");
+function attendanceColPath() {
+  return "workspaces/" + orgId + "/attendance";
 }
 
 function canSubscribeOtherOrgReports() {
@@ -1112,23 +1057,29 @@ function buildReportsQuery(forOrg) {
   var empId = window.__CV3_AUTH && window.__CV3_AUTH.empId;
   var isDir = window.__CV3_AUTH && window.__CV3_AUTH.role === "director";
   var since = historySinceIso();
-  var col = reportsColRef(forOrg);
+  var col = reportsColPath(forOrg);
   if (isDir) {
-    return query(
-      col,
-      where("date", ">=", since),
-      orderBy("date", "desc"),
-      limit(REPORTS_LIVE_LIMIT)
-    );
+    return {
+      path: col,
+      spec: {
+        where: [["date", ">=", since]],
+        orderBy: [["date", "desc"]],
+        limit: REPORTS_LIVE_LIMIT,
+      },
+    };
   }
   if (!empId) return null;
-  return query(
-    col,
-    where("empId", "==", empId),
-    where("date", ">=", since),
-    orderBy("date", "desc"),
-    limit(REPORTS_LIVE_LIMIT)
-  );
+  return {
+    path: col,
+    spec: {
+      where: [
+        ["empId", "==", empId],
+        ["date", ">=", since],
+      ],
+      orderBy: [["date", "desc"]],
+      limit: REPORTS_LIVE_LIMIT,
+    },
+  };
 }
 
 function tagReportsOrg(rows, reportOrg) {
@@ -1157,12 +1108,6 @@ function historySinceIso() {
   return isoDaysAgo(HISTORY_WINDOW_DAYS);
 }
 
-function mapSnapDocs(snap) {
-  return snap.docs.map(function (d) {
-    return Object.assign({ id: d.id }, d.data());
-  });
-}
-
 function subscribeReports() {
   if (unsubReports) unsubReports();
   unsubReports = null;
@@ -1174,11 +1119,12 @@ function subscribeReports() {
   var active = orgId;
   var q = buildReportsQuery(active);
   if (!q) return;
-  unsubReports = onSnapshot(
-    q,
-    function (snap) {
+  unsubReports = db.subscribeQuery(
+    q.path,
+    q.spec,
+    function (docs) {
       if (orgId !== active) return;
-      var reports = tagReportsOrg(mapSnapDocs(snap), active);
+      var reports = tagReportsOrg(mapSnapDocs(docs), active);
       if (appCv3 && appCv3.setReports) {
         appCv3.setReports(reports, { liveSince: since, orgId: active });
       }
@@ -1193,12 +1139,13 @@ function subscribeReports() {
   var other = otherOrgId(active);
   var qOther = buildReportsQuery(other);
   if (!qOther) return;
-  unsubReportsOther = onSnapshot(
-    qOther,
-    function (snap) {
+  unsubReportsOther = db.subscribeQuery(
+    qOther.path,
+    qOther.spec,
+    function (docs) {
       if (orgId !== active) return;
       if (otherOrgId(orgId) !== other) return;
-      var reports = tagReportsOrg(mapSnapDocs(snap), other);
+      var reports = tagReportsOrg(mapSnapDocs(docs), other);
       if (appCv3 && appCv3.setReports) {
         appCv3.setReports(reports, { liveSince: since, orgId: other });
       }
@@ -1221,28 +1168,29 @@ function subscribeAttendance() {
   var empId = window.__CV3_AUTH && window.__CV3_AUTH.empId;
   var since = historySinceIso();
   liveHistorySince = since;
-  var q;
+  var spec;
   if (canSubscribeAllAttendance()) {
-    q = query(
-      attendanceColRef(),
-      where("date", ">=", since),
-      orderBy("date", "desc"),
-      limit(ATT_LIVE_LIMIT_DIR)
-    );
+    spec = {
+      where: [["date", ">=", since]],
+      orderBy: [["date", "desc"]],
+      limit: ATT_LIVE_LIMIT_DIR,
+    };
   } else {
     if (!empId) return;
-    q = query(
-      attendanceColRef(),
-      where("empId", "==", empId),
-      where("date", ">=", since),
-      orderBy("date", "desc"),
-      limit(ATT_LIVE_LIMIT_EMP)
-    );
+    spec = {
+      where: [
+        ["empId", "==", empId],
+        ["date", ">=", since],
+      ],
+      orderBy: [["date", "desc"]],
+      limit: ATT_LIVE_LIMIT_EMP,
+    };
   }
-  unsubAttendance = onSnapshot(
-    q,
-    function (snap) {
-      var rows = mapSnapDocs(snap);
+  unsubAttendance = db.subscribeQuery(
+    attendanceColPath(),
+    spec,
+    function (docs) {
+      var rows = mapSnapDocs(docs);
       if (appCv3 && appCv3.setAttendance) {
         appCv3.setAttendance(rows, { liveSince: since });
       }
@@ -1255,60 +1203,56 @@ function subscribeAttendance() {
 
 async function fetchAttendanceRange(from, to, empId) {
   if (!db || !from || !to) return [];
-  var snap;
+  var docs;
   if (empId) {
-    snap = await getDocs(
-      query(
-        attendanceColRef(),
-        where("empId", "==", empId),
-        where("date", ">=", from),
-        where("date", "<=", to),
-        orderBy("date", "desc"),
-        limit(ATT_RANGE_LIMIT)
-      )
-    );
+    docs = await db.getQuery(attendanceColPath(), {
+      where: [
+        ["empId", "==", empId],
+        ["date", ">=", from],
+        ["date", "<=", to],
+      ],
+      orderBy: [["date", "desc"]],
+      limit: ATT_RANGE_LIMIT,
+    });
   } else {
-    snap = await getDocs(
-      query(
-        attendanceColRef(),
-        where("date", ">=", from),
-        where("date", "<=", to),
-        orderBy("date", "desc"),
-        limit(ATT_RANGE_LIMIT)
-      )
-    );
+    docs = await db.getQuery(attendanceColPath(), {
+      where: [
+        ["date", ">=", from],
+        ["date", "<=", to],
+      ],
+      orderBy: [["date", "desc"]],
+      limit: ATT_RANGE_LIMIT,
+    });
   }
-  return mapSnapDocs(snap);
+  return mapSnapDocs(docs);
 }
 
 async function fetchReportsRange(from, to, empId, forOrg) {
   if (!db || !from || !to) return [];
   var targetOrg = normalizeOrgId(forOrg || orgId);
-  var col = reportsColRef(targetOrg);
-  var snap;
+  var col = reportsColPath(targetOrg);
+  var docs;
   if (empId) {
-    snap = await getDocs(
-      query(
-        col,
-        where("empId", "==", empId),
-        where("date", ">=", from),
-        where("date", "<=", to),
-        orderBy("date", "desc"),
-        limit(REPORTS_RANGE_LIMIT)
-      )
-    );
+    docs = await db.getQuery(col, {
+      where: [
+        ["empId", "==", empId],
+        ["date", ">=", from],
+        ["date", "<=", to],
+      ],
+      orderBy: [["date", "desc"]],
+      limit: REPORTS_RANGE_LIMIT,
+    });
   } else {
-    snap = await getDocs(
-      query(
-        col,
-        where("date", ">=", from),
-        where("date", "<=", to),
-        orderBy("date", "desc"),
-        limit(REPORTS_RANGE_LIMIT)
-      )
-    );
+    docs = await db.getQuery(col, {
+      where: [
+        ["date", ">=", from],
+        ["date", "<=", to],
+      ],
+      orderBy: [["date", "desc"]],
+      limit: REPORTS_RANGE_LIMIT,
+    });
   }
-  return tagReportsOrg(mapSnapDocs(snap), targetOrg);
+  return tagReportsOrg(mapSnapDocs(docs), targetOrg);
 }
 
 /**
@@ -1441,11 +1385,10 @@ function compressImageForUpload(file, maxEdge, quality) {
 
 async function uploadReportPhotos(files, asgnId, date, reportOrgId) {
   if (!files || !files.length) return [];
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
   }
-  var st = await loadStorageMod();
-  var storage = st.getStorage(app);
+  await backend.storage.prepare();
   var targetOrg = normalizeOrgId(reportOrgId || orgId);
   var urls = [];
   var max = Math.min(files.length, 8);
@@ -1475,10 +1418,10 @@ async function uploadReportPhotos(files, asgnId, date, reportOrgId) {
       i +
       "." +
       ext;
-    var storageRef = st.ref(storage, path);
     try {
-      await st.uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-      urls.push(await st.getDownloadURL(storageRef));
+      urls.push(
+        await backend.storage.upload(path, file, { contentType: file.type || "image/jpeg" })
+      );
     } catch (err) {
       var why = (err && err.message) || String(err);
       throw new Error("Không tải được ảnh lên máy chủ. " + why);
@@ -1489,11 +1432,10 @@ async function uploadReportPhotos(files, asgnId, date, reportOrgId) {
 
 async function uploadAttendancePhotos(files, kind, punchId, date) {
   if (!files || !files.length) return [];
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
   }
-  var st = await loadStorageMod();
-  var storage = st.getStorage(app);
+  await backend.storage.prepare();
   var urls = [];
   var max = Math.min(files.length, kind === "work" ? 12 : 1);
   var pid = String(punchId || Date.now());
@@ -1525,15 +1467,15 @@ async function uploadAttendancePhotos(files, kind, punchId, date) {
       i +
       "." +
       ext;
-    var storageRef = st.ref(storage, path);
-    await st.uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-    urls.push(await st.getDownloadURL(storageRef));
+    urls.push(
+      await backend.storage.upload(path, file, { contentType: file.type || "image/jpeg" })
+    );
   }
   return urls;
 }
 
 async function submitAttendance(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var date = payload.date || todayIso();
@@ -1582,7 +1524,7 @@ async function callSubmitAttendance(payload) {
 
 async function uploadArrivalPhoto(file, asgnId) {
   if (!file) return "";
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập.");
   }
   if (!file.type || file.type.indexOf("image/") !== 0) {
@@ -1592,8 +1534,7 @@ async function uploadArrivalPhoto(file, asgnId) {
   if (file.size > 8 * 1024 * 1024) {
     throw new Error("Ảnh quá 8MB.");
   }
-  var st = await loadStorageMod();
-  var storage = st.getStorage(app);
+  await backend.storage.prepare();
   var ext = "jpg";
   if (file.type && file.type.indexOf("jpeg") < 0) {
     ext = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "") || "jpg";
@@ -1609,13 +1550,11 @@ async function uploadArrivalPhoto(file, asgnId) {
     Date.now() +
     "." +
     ext;
-  var storageRef = st.ref(storage, path);
-  await st.uploadBytes(storageRef, file, { contentType: file.type || "image/jpeg" });
-  return await st.getDownloadURL(storageRef);
+  return await backend.storage.upload(path, file, { contentType: file.type || "image/jpeg" });
 }
 
 async function confirmArrival(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var photoUrl = await uploadArrivalPhoto(payload.photo, payload.asgnId);
@@ -1643,7 +1582,7 @@ async function callConfirmArrival(payload) {
 }
 
 async function submitDailyReport(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var date = payload.date || todayIso();
@@ -1690,7 +1629,7 @@ function callableUserMsg(err, fallback) {
 }
 
 async function callCompleteMyAssignment(asgnId, forOrg) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("completeMyAssignment", "us-central1");
@@ -1706,7 +1645,7 @@ async function callCompleteMyAssignment(asgnId, forOrg) {
 }
 
 async function callCompleteProject(projId, forOrg) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("completeProject", "us-central1");
@@ -1757,9 +1696,9 @@ async function syncEmpGroupToUserDoc(empId, group) {
   if (!auth || !auth.currentUser || !db) return;
   var g = String(group || "");
   try {
-    await setDoc(
-      doc(db, "users", auth.currentUser.uid),
-      { empId: empId || "", empGroup: g, updatedAt: serverTimestamp() },
+    await db.setDoc(
+      "users/" + auth.currentUser.uid,
+      { empId: empId || "", empGroup: g, updatedAt: serverTime() },
       { merge: true }
     );
     var cur = window.__CV3_AUTH || {};
@@ -1772,7 +1711,7 @@ async function syncEmpGroupToUserDoc(empId, group) {
 }
 
 async function hasDirectorInOrg(org) {
-  if (!app) return true;
+  if (!backend) return true;
   try {
     var fn = await cloudCallable("hasDirectorInOrg");
     var res = await fn({ orgId: org || defaultOrg });
@@ -1790,15 +1729,15 @@ async function claimDirectorRole(username, org) {
 
 async function saveMyFcmToken(token, empId) {
   if (!auth || !auth.currentUser || !db) return;
-  await setDoc(
-    doc(db, "users", auth.currentUser.uid),
+  await db.setDoc(
+    "users/" + auth.currentUser.uid,
     { fcmToken: token, empId: empId || "" },
     { merge: true }
   );
 }
 
 async function provisionEmployeeAccount(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("provisionEmployee");
@@ -1853,7 +1792,7 @@ function scheduleProvision(cv3, options) {
 async function provisionAllEmployees(cv3, options) {
   var opts = options || {};
   var force = !!opts.force;
-  if (!app || !auth || !auth.currentUser || !canOperateRole()) {
+  if (!backend || !auth || !auth.currentUser || !canOperateRole()) {
     if (force) throw new Error("Chỉ giám đốc hoặc Điều hành đã đăng nhập mới tạo được tài khoản.");
     return null;
   }
@@ -1928,7 +1867,7 @@ async function provisionAllEmployees(cv3, options) {
 }
 
 async function changeMyPassword(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var user = auth.currentUser;
@@ -1947,8 +1886,7 @@ async function changeMyPassword(payload) {
     throw new Error("Tài khoản không có email đăng nhập.");
   }
   try {
-    var cred = EmailAuthProvider.credential(user.email, currentPassword);
-    await reauthenticateWithCredential(user, cred);
+    await auth.reauthenticate(user, currentPassword);
   } catch (err) {
     var c = (err && err.code) || "";
     if (
@@ -1964,7 +1902,7 @@ async function changeMyPassword(payload) {
     throw new Error((err && err.message) || "Không xác minh được mật khẩu hiện tại.");
   }
   try {
-    await updatePassword(user, newPassword);
+    await auth.updatePassword(user, newPassword);
   } catch (err2) {
     var c2 = (err2 && err2.code) || "";
     if (c2 === "auth/weak-password") {
@@ -1990,7 +1928,7 @@ async function changeMyPassword(payload) {
 }
 
 async function updateMyProfile(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("updateMyProfile");
@@ -2017,7 +1955,7 @@ async function updateMyProfile(payload) {
 }
 
 async function updateMyUsername(payload) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("updateMyUsername");
@@ -2282,8 +2220,7 @@ async function enableBiometricForCurrentUser(password) {
   if (!user.email) throw new Error("Tài khoản chưa có email đăng nhập.");
   var bio = await loadBioMod();
   try {
-    var cred = EmailAuthProvider.credential(user.email, password);
-    await reauthenticateWithCredential(user, cred);
+    await auth.reauthenticate(user, password);
   } catch (err) {
     var code = (err && err.code) || "";
     if (
@@ -2383,7 +2320,7 @@ function updateAuthButtons(user) {
 async function doSignOut() {
   stopSubscriptions();
   try {
-    await signOut(auth);
+    await auth.signOut();
   } catch (err) {
     console.error("signOut:", err);
     setSync("error", "Không đăng xuất được");
@@ -2410,8 +2347,8 @@ function waitApp() {
   });
 }
 
-function workspaceRef(forOrg) {
-  return doc(db, "workspaces", normalizeOrgId(forOrg || orgId), "data", "main");
+function workspacePath(forOrg) {
+  return "workspaces/" + normalizeOrgId(forOrg || orgId) + "/data/main";
 }
 
 function payloadFromApp(cv3, forOrg) {
@@ -2438,7 +2375,7 @@ function payloadFromApp(cv3, forOrg) {
     trash: cv3.S.trash || [],
     cfg: cv3.S.cfg,
     patch: cv3.getPatch(),
-    updatedAt: serverTimestamp(),
+    updatedAt: serverTime(),
     updatedBy: auth && auth.currentUser ? userLabel(auth.currentUser) : "",
   };
 }
@@ -2524,23 +2461,24 @@ function mergeEmpLists(workspaceEmp, masterEmp, activeOrg) {
   return { all: all, forOrg: forOrg };
 }
 
-function empMasterColRef() {
-  return collection(doc(db, "company", "main"), "employees");
+function empMasterColPath() {
+  return "company/main/employees";
 }
 
-function custMasterColRef() {
-  return collection(doc(db, "company", "main"), "customers");
+function custMasterColPath() {
+  return "company/main/customers";
 }
 
 function subscribeEmpMaster(cv3) {
   if (unsubEmpMaster) unsubEmpMaster();
   if (!db) return;
-  unsubEmpMaster = onSnapshot(
-    empMasterColRef(),
-    function (snap) {
+  unsubEmpMaster = db.subscribeQuery(
+    empMasterColPath(),
+    null,
+    function (docs) {
       empMasterById = {};
-      snap.forEach(function (d) {
-        empMasterById[d.id] = Object.assign({ id: d.id }, d.data());
+      docs.forEach(function (d) {
+        empMasterById[d.id] = Object.assign({ id: d.id }, d.data);
       });
       if (!cv3 || !cv3.S) return;
       // Đang ghi master/workspace → đừng render liên tục (mỗi doc = 1 snapshot).
@@ -2560,13 +2498,14 @@ function subscribeEmpMaster(cv3) {
 function subscribeCustMaster(cv3) {
   if (unsubCustMaster) unsubCustMaster();
   if (!db) return;
-  unsubCustMaster = onSnapshot(
-    custMasterColRef(),
-    function (snap) {
+  unsubCustMaster = db.subscribeQuery(
+    custMasterColPath(),
+    null,
+    function (docs) {
       custMasterById = {};
       var list = [];
-      snap.forEach(function (d) {
-        var row = Object.assign({ id: d.id }, d.data(), { id: d.id });
+      docs.forEach(function (d) {
+        var row = Object.assign({ id: d.id }, d.data, { id: d.id });
         custMasterById[d.id] = row;
         list.push(row);
       });
@@ -2663,15 +2602,15 @@ function subscribeOtherOrgAsgn(cv3) {
     if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other, []);
     return;
   }
-  unsubOtherSnap = onSnapshot(
-    doc(db, "workspaces", other, "data", "main"),
+  unsubOtherSnap = db.subscribeDoc(
+    "workspaces/" + other + "/data/main",
     function (snap) {
       if (otherOrgId(orgId) !== other) return;
-      if (!snap.exists()) {
+      if (!snap.exists) {
         if (cv3 && cv3.setOtherOrgAsgn) cv3.setOtherOrgAsgn([], other, []);
         return;
       }
-      var data = snap.data() || {};
+      var data = snap.data || {};
       var asgn = (data.asgn || []).map(function (x) {
         return Object.assign({}, x, { _orgId: other });
       });
@@ -2690,9 +2629,9 @@ async function upsertEmpToMaster(emp) {
   if (!db || !emp || !emp.id) return;
   var payload = Object.assign({}, emp, {
     orgIds: normalizeOrgIds(emp.orgIds, orgId),
-    updatedAt: serverTimestamp(),
+    updatedAt: serverTime(),
   });
-  await setDoc(doc(db, "company", "main", "employees", emp.id), payload, {
+  await db.setDoc(empMasterColPath() + "/" + emp.id, payload, {
     merge: true,
   });
   empMasterById[emp.id] = Object.assign({}, payload, { updatedAt: Date.now() });
@@ -2702,9 +2641,9 @@ async function upsertCustToMaster(cust) {
   if (!db || !cust || !cust.id) return;
   var payload = Object.assign({}, cust, {
     id: cust.id,
-    updatedAt: serverTimestamp(),
+    updatedAt: serverTime(),
   });
-  await setDoc(doc(db, "company", "main", "customers", cust.id), payload, {
+  await db.setDoc(custMasterColPath() + "/" + cust.id, payload, {
     merge: true,
   });
   custMasterById[cust.id] = Object.assign({}, payload, { updatedAt: Date.now() });
@@ -2712,7 +2651,7 @@ async function upsertCustToMaster(cust) {
 
 async function deleteCustFromMaster(custId) {
   if (!db || !custId) return;
-  await deleteDoc(doc(db, "company", "main", "customers", custId));
+  await db.deleteDoc(custMasterColPath() + "/" + custId);
   delete custMasterById[custId];
 }
 
@@ -2720,11 +2659,7 @@ async function commitMasterBatches(ops) {
   if (!db || !ops || !ops.length) return;
   for (var i = 0; i < ops.length; i += MASTER_BATCH_LIMIT) {
     var slice = ops.slice(i, i + MASTER_BATCH_LIMIT);
-    var batch = writeBatch(db);
-    for (var j = 0; j < slice.length; j++) {
-      batch.set(slice[j].ref, slice[j].data, { merge: true });
-    }
-    await batch.commit();
+    await db.batchSet(slice, { merge: true });
     for (var k = 0; k < slice.length; k++) {
       var op = slice[k];
       if (op.kind === "emp") {
@@ -2754,12 +2689,12 @@ async function syncMastersFromApp(cv3) {
     });
     if (masterDocUnchanged(empPayload, empMasterById[e.id])) continue;
     var empWrite = Object.assign({}, empPayload, {
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTime(),
     });
     ops.push({
       kind: "emp",
       id: e.id,
-      ref: doc(db, "company", "main", "employees", e.id),
+      path: empMasterColPath() + "/" + e.id,
       data: empWrite,
       cache: empPayload,
     });
@@ -2771,12 +2706,12 @@ async function syncMastersFromApp(cv3) {
     if (masterDocUnchanged(c, custMasterById[c.id])) continue;
     var custPayload = Object.assign({}, c, { id: c.id });
     var custWrite = Object.assign({}, custPayload, {
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTime(),
     });
     ops.push({
       kind: "cust",
       id: c.id,
-      ref: doc(db, "company", "main", "customers", c.id),
+      path: custMasterColPath() + "/" + c.id,
       data: custWrite,
       cache: custPayload,
     });
@@ -2790,7 +2725,7 @@ async function syncCustMasterFromApp(cv3) {
 }
 
 async function setEmpOrgMembership(empId, orgIds) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("setEmpOrgMembership");
@@ -2803,7 +2738,7 @@ async function setEmpOrgMembership(empId, orgIds) {
 
 /** @deprecated Khách hàng đã dùng chung — gọi migrateSharedCustomers nếu cần. */
 async function copyCustomersToOrg(custIds, toOrg) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("migrateSharedCustomers");
@@ -2814,7 +2749,7 @@ async function copyCustomersToOrg(custIds, toOrg) {
 }
 
 async function runDualOrgMigration() {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("migrateDualOrgs");
@@ -2823,7 +2758,7 @@ async function runDualOrgMigration() {
 }
 
 async function exportCompanyBackup() {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("exportCompanyBackup");
@@ -2832,7 +2767,7 @@ async function exportCompanyBackup() {
 }
 
 async function restoreCompanyBackup(backup, targetOrg) {
-  if (!app || !auth || !auth.currentUser) {
+  if (!backend || !auth || !auth.currentUser) {
     throw new Error("Cần đăng nhập cloud.");
   }
   var fn = await cloudCallable("restoreCompanyBackup");
@@ -3092,9 +3027,9 @@ async function switchOrg(nextOrg) {
     refreshOrgSwitcherUI();
 
     if (auth && auth.currentUser && db) {
-      setDoc(
-        doc(db, "users", auth.currentUser.uid),
-        { activeOrgId: orgId, orgId: orgId, updatedAt: serverTimestamp() },
+      db.setDoc(
+        "users/" + auth.currentUser.uid,
+        { activeOrgId: orgId, orgId: orgId, updatedAt: serverTime() },
         { merge: true }
       ).catch(function (err) {
         console.warn("activeOrgId:", err);
@@ -3159,12 +3094,12 @@ function maybeRefreshEmpGroup(cv3) {
 }
 
 async function ensureUserDoc(user, org, username, preset) {
-  var ref = doc(db, "users", user.uid);
-  var snap = await getDoc(ref);
+  var ref = "users/" + user.uid;
+  var snap = await db.getDoc(ref);
   var un = username || user.displayName || emailToUsername(user.email);
   var chosenOrg = normalizeOrgId(org || defaultOrg);
   var role, empId, displayName, age, orgIds, empGroup;
-  if (!snap.exists()) {
+  if (!snap.exists) {
     var acct = preset || null;
     if (!acct) {
       try {
@@ -3192,7 +3127,7 @@ async function ensureUserDoc(user, org, username, preset) {
     orgIds = forceChiefOrgIds(empGroup, orgIds, chosenOrg);
     if (empGroup === CHIEF_GROUP) chosenOrg = CHIEF_ORG_ID;
     if (orgIds.indexOf(chosenOrg) < 0) chosenOrg = orgIds[0] || chosenOrg;
-    await setDoc(ref, {
+    await db.setDoc(ref, {
       username: un,
       orgId: chosenOrg,
       orgIds: orgIds,
@@ -3202,11 +3137,11 @@ async function ensureUserDoc(user, org, username, preset) {
       empGroup: empGroup || "",
       displayName: displayName,
       age: age,
-      createdAt: serverTimestamp(),
+      createdAt: serverTime(),
     });
     orgId = chosenOrg;
   } else {
-    var d = snap.data();
+    var d = snap.data;
     role = d.role || "employee";
     empId = d.empId || null;
     displayName = d.displayName || user.displayName || "";
@@ -3262,7 +3197,7 @@ async function ensureUserDoc(user, org, username, preset) {
         console.warn("Could not re-resolve account", e);
       }
     }
-    await setDoc(ref, patch, { merge: true });
+    await db.setDoc(ref, patch, { merge: true });
   }
   if (role === "employee" && empId && appCv3 && appCv3.S) {
     var pool = appCv3.S.empAll || appCv3.S.emp || [];
@@ -3272,7 +3207,7 @@ async function ensureUserDoc(user, org, username, preset) {
     if (empRow && empRow.group) empGroup = empRow.group;
   }
   if (role === "employee" && empId) {
-    await setDoc(
+    await db.setDoc(
       ref,
       { empId: empId, empGroup: empGroup || "" },
       { merge: true }
@@ -3355,7 +3290,7 @@ async function flushWrite(cv3, opts) {
     try {
       var payload = payloadFromApp(cv3, writeOrg);
       payload.patch = localPatch;
-      await setDoc(workspaceRef(writeOrg), payload, { merge: false });
+      await db.setDoc(workspacePath(writeOrg), payload, { merge: false });
       if (!opts.workspaceOnly) {
         try {
           await syncMastersFromApp(cv3);
@@ -3396,11 +3331,11 @@ function subscribeWorkspace(cv3, opts) {
   setSync("syncing", "Đang tải dữ liệu…");
   var subscribedOrg = orgId;
   var subscribedGen = orgSwitchGen;
-  unsubSnap = onSnapshot(
-    workspaceRef(subscribedOrg),
+  unsubSnap = db.subscribeDoc(
+    workspacePath(subscribedOrg),
     function (snap) {
       if (orgId !== subscribedOrg || orgSwitchGen !== subscribedGen) return;
-      if (!snap.exists()) {
+      if (!snap.exists) {
         if (!booted) {
           booted = true;
           forceWorkspaceApply = false;
@@ -3423,7 +3358,7 @@ function subscribeWorkspace(cv3, opts) {
         setSync("online", "Cloud mới · " + orgLabel(orgId));
         return;
       }
-      var data = snap.data();
+      var data = snap.data;
       var changed = applyRemote(cv3, data);
       if (!booted) {
         booted = true;
@@ -3452,8 +3387,8 @@ function subscribeWorkspace(cv3, opts) {
 async function persistFcmToken(token, cv3) {
   if (!auth || !auth.currentUser || !db) return;
   if (isDirectorRole()) {
-    await setDoc(
-      doc(db, "users", auth.currentUser.uid),
+    await db.setDoc(
+      "users/" + auth.currentUser.uid,
       { fcmToken: token, empId: "" },
       { merge: true }
     );
@@ -3535,10 +3470,10 @@ function shouldShowPushNotification(type, d) {
   return true;
 }
 
-function bindForegroundMessaging(messaging, cv3, onMessageFn) {
+function bindForegroundMessaging(messaging, cv3) {
   if (!messaging || messaging.__cv3Bound) return;
   messaging.__cv3Bound = true;
-  onMessageFn(messaging, function (payload) {
+  backend.push.onForegroundMessage(messaging, function (payload) {
     var type = payload.data && payload.data.type;
     var d = payload.data || {};
     if (type && !shouldShowPushNotification(type, d)) {
@@ -3663,13 +3598,12 @@ async function registerMessaging(cv3, options) {
   if (!configured || !key || key === "YOUR_VAPID_KEY") return { ok: false, reason: "no-config" };
   if (typeof Notification === "undefined") return { ok: false, reason: "unsupported" };
   if (!window.isSecureContext) return { ok: false, reason: "insecure" };
-  var msgMod = await loadMessagingMod();
-  var ok = await msgMod.isSupported();
+  var ok = await backend.push.isSupported();
   if (!ok) return { ok: false, reason: "unsupported" };
   try {
     if (!("serviceWorker" in navigator)) return { ok: false, reason: "unsupported" };
     // Always re-register so SW updates (cache-bust query); scope must stay at the app base.
-    var reg = await navigator.serviceWorker.register(import.meta.env.BASE_URL + "firebase-messaging-sw.js?v=3", {
+    var reg = await navigator.serviceWorker.register(import.meta.env.BASE_URL + backend.push.swUrl, {
       scope: import.meta.env.BASE_URL,
       updateViaCache: "none",
     });
@@ -3687,21 +3621,24 @@ async function registerMessaging(cv3, options) {
         setTimeout(resolve, 4000);
       });
     }
-    var messaging = msgMod.getMessaging(app);
+    var messaging = await backend.push.getClient();
     var perm = Notification.permission;
     if (perm !== "granted") {
       if (!opts.request) return { ok: false, reason: "denied" };
       perm = await Notification.requestPermission();
     }
     if (perm !== "granted") return { ok: false, reason: "denied" };
-    var token = await msgMod.getToken(messaging, { vapidKey: key, serviceWorkerRegistration: reg });
+    var token = await backend.push.getToken(messaging, {
+      vapidKey: key,
+      serviceWorkerRegistration: reg,
+    });
     if (!token) return { ok: false, reason: "no-token" };
     pushReady = true;
     window.__CV3_FCM = { token: token, messaging: messaging };
     localStorage.setItem("cv3_push_enabled", "1");
     await persistFcmToken(token, cv3);
     if (isDirectorRole()) localStorage.setItem("cv3_remind_push", "1");
-    bindForegroundMessaging(messaging, cv3, msgMod.onMessage);
+    bindForegroundMessaging(messaging, cv3);
     return { ok: true, token: token };
   } catch (err) {
     console.warn("FCM:", err);
@@ -3752,7 +3689,7 @@ function isRetryableAuthCredentialError(err) {
 
 async function signInWithIdentity(id, pass) {
   try {
-    return await signInWithEmailAndPassword(auth, id.email, pass);
+    return await auth.signIn(id.email, pass);
   } catch (err) {
     if (!isRetryableAuthCredentialError(err)) throw err;
     var candidates = id.legacyEmails;
@@ -3762,7 +3699,7 @@ async function signInWithIdentity(id, pass) {
     var lastErr = err;
     for (var i = 0; i < candidates.length; i++) {
       try {
-        return await signInWithEmailAndPassword(auth, candidates[i], pass);
+        return await auth.signIn(candidates[i], pass);
       } catch (e2) {
         lastErr = e2;
         if (!isRetryableAuthCredentialError(e2)) throw e2;
@@ -3801,9 +3738,9 @@ function bindAuthUI(cv3) {
             code: "auth/invalid-username",
           });
         }
-        var cred = await createUserWithEmailAndPassword(auth, id.email, pass);
+        var cred = await auth.signUp(id.email, pass);
         orgId = org;
-        await updateProfile(cred.user, { displayName: "Giám đốc" });
+        await auth.updateProfile(cred.user, { displayName: "Giám đốc" });
         await claimDirectorRole(id.username, org);
         await ensureUserDoc(cred.user, org, id.username, {
           role: "director",
@@ -3885,17 +3822,17 @@ function bindAuthUI(cv3) {
 async function maybeSuggestMigration(cv3) {
   if (!db || !isDirectorRole()) return;
   try {
-    var ct = await getDoc(doc(db, "workspaces", "cong-trinh", "data", "main"));
-    var saree = await getDoc(doc(db, "workspaces", "saree", "data", "main"));
+    var ct = await db.getDoc("workspaces/cong-trinh/data/main");
+    var saree = await db.getDoc("workspaces/saree/data/main");
     var ctEmpty =
-      !ct.exists() ||
+      !ct.exists ||
       !(
-        (ct.data().emp || []).length ||
-        (ct.data().proj || []).length ||
-        (ct.data().asgn || []).length ||
-        (ct.data().cust || []).length
+        (ct.data.emp || []).length ||
+        (ct.data.proj || []).length ||
+        (ct.data.asgn || []).length ||
+        (ct.data.cust || []).length
       );
-    if (saree.exists() && ctEmpty) {
+    if (saree.exists && ctEmpty) {
       var ok = confirm(
         "Phát hiện dữ liệu đội cũ (saree). Chạy migration sang 2 đội (Công trình tỉnh / Công trình HCM) ngay bây giờ?"
       );
@@ -3907,13 +3844,13 @@ async function maybeSuggestMigration(cv3) {
       return;
     }
     var wsCustCount = 0;
-    if (ct.exists()) wsCustCount += (ct.data().cust || []).length;
-    if (saree.exists()) wsCustCount += (saree.data().cust || []).length;
+    if (ct.exists) wsCustCount += (ct.data.cust || []).length;
+    if (saree.exists) wsCustCount += (saree.data.cust || []).length;
     var sharedCustCount = Object.keys(custMasterById).length;
     if (!sharedCustCount) {
       try {
-        var snap = await getDocs(custMasterColRef());
-        sharedCustCount = snap.size;
+        var custDocs = await db.getQuery(custMasterColPath());
+        sharedCustCount = custDocs.length;
       } catch (e) {}
     }
     if (wsCustCount && !sharedCustCount) {
@@ -4001,7 +3938,7 @@ async function bootOnline(cv3) {
   window.__CV3_upsertEmpMaster = upsertEmpToMaster;
   window.__CV3_upsertCustMaster = upsertCustToMaster;
   window.__CV3_deleteCustMaster = deleteCustFromMaster;
-  onAuthStateChanged(auth, async function (user) {
+  auth.onAuthChange(async function (user) {
     var epoch = ++authEpoch;
     var uid = user ? user.uid : null;
     updateAuthButtons(user);
@@ -4072,13 +4009,23 @@ async function bootOnline(cv3) {
 async function main() {
   var cv3 = await waitApp();
   appCv3 = cv3;
+  var adapter;
+  try {
+    adapter = await loadBackend();
+    configured = adapter.isConfigured();
+    if (configured) adapter.init();
+  } catch (err) {
+    console.error("Backend:", err);
+    configured = false;
+    return bootOffline(cv3);
+  }
   if (!configured) {
     console.info("Firebase chưa cấu hình — chạy offline localStorage.");
     return bootOffline(cv3);
   }
-  app = initializeApp(cfg);
-  auth = getAuth(app);
-  db = getFirestore(app);
+  backend = adapter;
+  auth = adapter.auth;
+  db = adapter.data;
   await bootOnline(cv3);
 }
 

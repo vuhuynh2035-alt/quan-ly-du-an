@@ -1144,7 +1144,7 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
 <meta name="app-build" content="129">
 <script src="%APP_BASE%firebase-config.js"></script>
-<script>window.__CV3_SKIP_SEED=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
+<script>window.__CV3_SKIP_SEED=String(window.APP_BACKEND||"").trim().toLowerCase()==="selfhost"||!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
 <body>
 <script>
