@@ -1,0 +1,97 @@
+{
+  "name": "Quản lý dự án",
+  "branch": "main",
+  "remote": "origin",
+  "tagPrefix": "v",
+  "versionFloor": "1.133.0",
+  "version": {
+    "source": "package.json",
+    "bumpCommand": "npm version {version} --no-git-tag-version --allow-same-version && node scripts/bump-app-version.js"
+  },
+  "liveVersions": [],
+  "actions": {
+    "deploy-hosting": {
+      "label": "Deploy Hosting",
+      "kind": "deploy",
+      "bump": true,
+      "checks": [
+        {
+          "type": "node_modules"
+        },
+        {
+          "type": "firebase-login"
+        }
+      ],
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npx vite build && npx -y firebase-tools@latest deploy --only hosting"
+        }
+      ]
+    },
+    "deploy-full": {
+      "label": "Deploy toàn bộ (hosting + rules + functions)",
+      "kind": "deploy",
+      "bump": true,
+      "checks": [
+        {
+          "type": "node_modules"
+        },
+        {
+          "type": "firebase-login"
+        }
+      ],
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npx vite build && npx -y firebase-tools@latest deploy"
+        }
+      ]
+    },
+    "deploy-rules": {
+      "label": "Deploy rules",
+      "kind": "deploy",
+      "bump": false,
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run deploy:rules"
+        }
+      ]
+    },
+    "deploy-functions": {
+      "label": "Deploy functions",
+      "kind": "deploy",
+      "bump": false,
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run deploy:functions"
+        }
+      ]
+    },
+    "deploy-storage-lifecycle": {
+      "label": "Deploy storage lifecycle",
+      "kind": "deploy",
+      "bump": false,
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run deploy:storage-lifecycle"
+        }
+      ]
+    },
+    "deploy-photo-retention": {
+      "label": "Deploy photo retention",
+      "kind": "deploy",
+      "bump": false,
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run deploy:photo-retention"
+        }
+      ]
+    }
+  },
+  "releaseAction": "deploy-hosting"
+}
