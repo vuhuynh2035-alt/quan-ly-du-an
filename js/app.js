@@ -236,6 +236,7 @@ function companyWebsiteHref(url){
 }
 var APP_BUILD=+(document.querySelector('meta[name="app-build"]')?.getAttribute("content")||0);
 var VER_MAJOR=1;
+var VER_TAG="-HP";
 function isLocalDev(){var h=location.hostname;return h==="localhost"||h==="127.0.0.1"||h==="[::1]"}
 function loadPatch(){return loadWs("cv3_patch",0);}
 function remotePatchHint(){
@@ -251,7 +252,7 @@ function bumpPatch(){
   return p;
 }
 function appUrl(p){return(window.__APP_BASE__||"/")+p;}
-function verStr(){return"v"+VER_MAJOR+"."+String(APP_BUILD).padStart(3,"0");}
+function verStr(){return"v"+VER_MAJOR+"."+String(APP_BUILD).padStart(3,"0")+VER_TAG;}
 function checkAppUpdate(){
   if(isLocalDev())return;
   fetch(appUrl("app-version.json?_="+Date.now()),{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).then(function(v){
@@ -260,7 +261,8 @@ function checkAppUpdate(){
     var bar=document.createElement("div");
     bar.id="update-bar";
     bar.style.cssText="position:fixed;bottom:max(12px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:9999;padding:12px 18px;border-radius:12px;background:linear-gradient(135deg,#1a6fd4,#0d4fa0);color:#fff;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:14px;align-items:center;flex-wrap:wrap;max-width:min(96vw,420px)";
-    bar.innerHTML='<span>🚀 Đã có phiên bản cập nhật <b>v'+VER_MAJOR+"."+String(v.build).padStart(3,"0")+'</b>!</span><button type="button" class="btn btn-accent btn-sm" style="background:#4ade80;color:#000" onclick="window.location.href=window.location.href.split(\'?\')[0]+\'?_v=\'+Date.now()">Tải lại trang</button>';
+    var tag=(v.tag?("-"+v.tag):VER_TAG);
+    bar.innerHTML='<span>🚀 Đã có phiên bản cập nhật <b>v'+VER_MAJOR+"."+String(v.build).padStart(3,"0")+tag+'</b>!</span><button type="button" class="btn btn-accent btn-sm" style="background:#4ade80;color:#000" onclick="window.location.href=window.location.href.split(\'?\')[0]+\'?_v=\'+Date.now()">Tải lại trang</button>';
     document.body.appendChild(bar);
   }).catch(function(){});
 }

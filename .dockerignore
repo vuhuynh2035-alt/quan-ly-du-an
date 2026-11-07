@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-du-an
+du-an.zip
+.git
+.github
+.vscode
+.idea
+*.log

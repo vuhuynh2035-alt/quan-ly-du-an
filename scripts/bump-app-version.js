@@ -3,13 +3,15 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const file = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "app-version.json");
-let data = { build: 0, at: "" };
+let data = { build: 0, tag: "HP", version: "", at: "" };
 try {
   data = JSON.parse(fs.readFileSync(file, "utf8"));
 } catch {
   /* first run */
 }
 data.build = (Number(data.build) || 0) + 1;
+data.tag = "HP";
+data.version = `v1.${String(data.build).padStart(3, "0")}-HP`;
 data.at = new Date().toISOString();
 fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 
@@ -23,4 +25,4 @@ if (fs.existsSync(htmlFile)) {
   fs.writeFileSync(htmlFile, html);
 }
 
-console.log(`App build bumped -> v1.${String(data.build).padStart(3, "0")} (${data.at})`);
+console.log(`App build bumped -> ${data.version} (${data.at})`);

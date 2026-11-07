@@ -1142,14 +1142,26 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <link rel="icon" type="image/png" sizes="192x192" href="%APP_BASE%icon-192.png?v=__APP_BUILD__">
 <link rel="apple-touch-icon" sizes="180x180" href="%APP_BASE%apple-touch-icon.png?v=__APP_BUILD__">
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
-<meta name="app-build" content="129">
+<meta name="app-build" content="133">
 <script src="%APP_BASE%firebase-config.js"></script>
 <script>window.__CV3_SKIP_SEED=String(window.APP_BACKEND||"").trim().toLowerCase()==="selfhost"||!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");</script>
 </head>
 <body>
 <script>
 window.addEventListener('error', function(e) {
-  document.body.innerHTML = '<div style="color:red;padding:20px;z-index:9999;position:relative;background:white;">Global Error: ' + e.message + '<br>' + (e.error ? e.error.stack : '') + '</div>';
+  console.error('[App Error]', e.message, e.error);
+  var errEl = document.getElementById('global-err-banner');
+  if (!errEl && document.body) {
+    errEl = document.createElement('div');
+    errEl.id = 'global-err-banner';
+    errEl.style.cssText = 'position:fixed;bottom:12px;right:12px;max-width:380px;background:#ef4444;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;z-index:99999;box-shadow:0 4px 16px rgba(0,0,0,.4);display:flex;align-items:center;gap:8px;';
+    errEl.innerHTML = '<span style="flex:1">Lỗi hệ thống: ' + (e.message || 'Không xác định') + '</span><button type="button" onclick="this.parentElement.remove()" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:0 4px;">&times;</button>';
+    document.body.appendChild(errEl);
+    setTimeout(function() { if (errEl && errEl.parentElement) errEl.remove(); }, 6000);
+  }
+});
+window.addEventListener('unhandledrejection', function(e) {
+  console.warn('[Unhandled Promise]', e.reason);
 });
 </script>
 <div id="app">
