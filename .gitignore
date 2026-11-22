@@ -18,3 +18,18 @@ migrate-export.json
 serviceAccount*.json
 
 server/smoke-*.log
+
+# Android / APK (build local qua «Công cụ phát hành»)
+dist-app
+APK/
+*.apk
+*.keystore
+*.jks
+android/keystore.properties
+android/local.properties
+android/.gradle
+android/build
+android/app/build
+android/app/src/main/assets/public
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json

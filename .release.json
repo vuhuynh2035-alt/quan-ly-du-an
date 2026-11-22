@@ -6,7 +6,7 @@
   "versionFloor": "1.133.0",
   "version": {
     "source": "package.json",
-    "bumpCommand": "npm version {version} --no-git-tag-version --allow-same-version && node scripts/bump-app-version.js"
+    "bumpCommand": "npm version {version} --no-git-tag-version --allow-same-version && node scripts/bump-app-version.js && node scripts/sync-android-version.cjs {version}"
   },
   "liveVersions": [],
   "actions": {
@@ -91,7 +91,111 @@
           "run": "npm run deploy:photo-retention"
         }
       ]
+    },
+    "apk-current": {
+      "label": "Tạo APK cho bản hiện tại (không tăng version)",
+      "kind": "apk",
+      "bump": false,
+      "verifyApk": true,
+      "requires": [
+        {
+          "file": "android/keystore.properties",
+          "orEnv": "QLDA_KEYSTORE_PASSWORD"
+        }
+      ],
+      "checks": [
+        {
+          "type": "node_modules"
+        },
+        {
+          "type": "keystore",
+          "properties": "android/keystore.properties",
+          "envStoreFile": "QLDA_KEYSTORE_FILE"
+        },
+        {
+          "type": "android-sdk"
+        }
+      ],
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run apk"
+        }
+      ]
+    },
+    "apk": {
+      "label": "Tạo APK bản mới (tăng version)",
+      "kind": "apk",
+      "bump": true,
+      "verifyApk": true,
+      "requires": [
+        {
+          "file": "android/keystore.properties",
+          "orEnv": "QLDA_KEYSTORE_PASSWORD"
+        }
+      ],
+      "checks": [
+        {
+          "type": "node_modules"
+        },
+        {
+          "type": "keystore",
+          "properties": "android/keystore.properties",
+          "envStoreFile": "QLDA_KEYSTORE_FILE"
+        },
+        {
+          "type": "android-sdk"
+        }
+      ],
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run apk"
+        }
+      ]
+    },
+    "release": {
+      "label": "Phát hành đầy đủ (APK + hosting + rules + functions)",
+      "kind": "release",
+      "bump": true,
+      "verifyApk": true,
+      "requires": [
+        {
+          "file": "android/keystore.properties",
+          "orEnv": "QLDA_KEYSTORE_PASSWORD"
+        }
+      ],
+      "checks": [
+        {
+          "type": "node_modules"
+        },
+        {
+          "type": "keystore",
+          "properties": "android/keystore.properties",
+          "envStoreFile": "QLDA_KEYSTORE_FILE"
+        },
+        {
+          "type": "android-sdk"
+        },
+        {
+          "type": "firebase-login"
+        }
+      ],
+      "steps": [
+        {
+          "cwd": ".",
+          "run": "npm run apk"
+        },
+        {
+          "cwd": ".",
+          "run": "npx vite build && npx -y firebase-tools@latest deploy"
+        }
+      ]
     }
   },
-  "releaseAction": "deploy-hosting"
+  "releaseAction": "release",
+  "apk": {
+    "output": "APK/QuanLyDuAn-v{version}.apk",
+    "certSha256": "7E:96:68:F3:98:89:EC:81:C4:C5:91:44:B5:D7:05:4E:68:B5:B6:AB:B7:BB:5F:21:B1:46:7B:76:AF:22:E9:65"
+  }
 }

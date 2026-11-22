@@ -1,6 +1,7 @@
 /* eslint-disable no-undef */
-/* cv3-fcm-sw v4 — bump this comment when changing SW so browsers refetch */
-var CV3_SW_VERSION = 4;
+/* cv3-fcm-sw v5 — bump this comment when changing SW so browsers refetch */
+var CV3_SW_VERSION = 5;
+var CV3_SHELL_CACHE = "cv3-shell-v1";
 var CV3_BASE = new URL("./", self.location.href).pathname;
 var CV3_ICON = CV3_BASE + "icon-192.png";
 var CV3_BADGE_CACHE = "cv3-badge-v1";
@@ -64,7 +65,78 @@ self.addEventListener("install", function (event) {
 });
 
 self.addEventListener("activate", function (event) {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches
+      .keys()
+      .then(function (keys) {
+        return Promise.all(
+          keys
+            .filter(function (k) {
+              return k.indexOf("cv3-shell-") === 0 && k !== CV3_SHELL_CACHE;
+            })
+            .map(function (k) {
+              return caches.delete(k);
+            })
+        );
+      })
+      .then(function () {
+        return self.clients.claim();
+      })
+  );
+});
+
+// Offline app shell: mất mạng vẫn mở được app để chấm công (dữ liệu gửi qua hàng đợi offline).
+function cacheResponse(req, res) {
+  if (!res || res.status !== 200 || res.type === "opaque") return res;
+  var copy = res.clone();
+  caches.open(CV3_SHELL_CACHE).then(function (c) {
+    return c.put(req, copy);
+  }).catch(function () {});
+  return res;
+}
+
+self.addEventListener("fetch", function (event) {
+  var req = event.request;
+  if (req.method !== "GET") return;
+  var url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.indexOf(CV3_BASE) !== 0) return;
+  // Không cache dữ liệu động / kiểm tra phiên bản / badge nội bộ.
+  if (/app-version\.json$|__cv3_badge_count|\/api\//.test(url.pathname)) return;
+
+  var isHashedAsset = url.pathname.indexOf(CV3_BASE + "assets/") === 0;
+  if (isHashedAsset) {
+    // Tên file có hash → cache-first.
+    event.respondWith(
+      caches.match(req).then(function (hit) {
+        return (
+          hit ||
+          fetch(req).then(function (res) {
+            return cacheResponse(req, res);
+          })
+        );
+      })
+    );
+    return;
+  }
+  // Trang + file tĩnh khác: ưu tiên mạng, mất mạng thì dùng bản đã lưu.
+  event.respondWith(
+    fetch(req)
+      .then(function (res) {
+        return cacheResponse(req, res);
+      })
+      .catch(function () {
+        return caches.match(req).then(function (hit) {
+          if (hit) return hit;
+          if (req.mode === "navigate") {
+            return caches.match(CV3_BASE, { ignoreSearch: true }).then(function (h) {
+              return h || caches.match(CV3_BASE + "index.html", { ignoreSearch: true });
+            });
+          }
+          return Response.error();
+        });
+      })
+  );
 });
 
 importScripts(

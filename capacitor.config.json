@@ -1,0 +1,13 @@
+{
+  "appId": "com.saigonref.quanlyduan",
+  "appName": "Quản lý dự án",
+  "webDir": "dist-app",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    }
+  }
+}

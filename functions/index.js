@@ -3,7 +3,7 @@ const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
-const { getFirestore } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { getAuth } = require("firebase-admin/auth");
 const { getMessaging } = require("firebase-admin/messaging");
 const { getStorage } = require("firebase-admin/storage");
@@ -169,25 +169,78 @@ async function orgHasDirector(orgId) {
   });
 }
 
-async function empFcmToken(emp) {
-  if (!emp) return null;
-  if (emp.fcmToken) return emp.fcmToken;
+const MAX_DEVICE_TOKENS = 5;
+
+/** Tất cả token thiết bị của 1 user doc (token mới nhất + danh sách nhiều thiết bị). */
+const NATIVE_TOKENS = new Set(); // token của app Android (APK) — cần payload notification
+
+function userTokens(user) {
+  if (!user) return [];
+  (Array.isArray(user.fcmNativeList) ? user.fcmNativeList : []).forEach((t) => {
+    if (typeof t === "string" && t) NATIVE_TOKENS.add(t);
+  });
+  const out = [];
+  const add = (t) => {
+    if (typeof t === "string" && t && !out.includes(t)) out.push(t);
+  };
+  add(user.fcmToken);
+  (Array.isArray(user.fcmTokenList) ? user.fcmTokenList : []).forEach(add);
+  return out;
+}
+
+async function empFcmTokens(emp) {
+  if (!emp) return [];
+  const out = [];
+  const add = (list) => list.forEach((t) => !out.includes(t) && out.push(t));
+  if (emp.fcmToken) add([emp.fcmToken]);
   if (emp.authUid) {
     const u = await db.doc(`users/${emp.authUid}`).get();
-    if (docExists(u) && u.data().fcmToken) return u.data().fcmToken;
+    if (docExists(u)) add(userTokens(u.data()));
   }
-  if (emp.id) {
+  if (!out.length && emp.id) {
     const snap = await db
       .collection("users")
       .where("empId", "==", emp.id)
-      .limit(1)
+      .limit(3)
       .get();
-    if (!snap.empty) {
-      const t = snap.docs[0].data().fcmToken;
-      if (t) return t;
+    snap.docs.forEach((d) => add(userTokens(d.data())));
+  }
+  return out;
+}
+
+/** Gửi FCM, thử lại với lỗi tạm thời (máy chủ FCM bận / quá tải). */
+async function sendWithRetry(messaging, message) {
+  const transient = new Set([
+    "messaging/internal-error",
+    "messaging/server-unavailable",
+    "messaging/unknown-error",
+    "messaging/message-rate-exceeded",
+    "messaging/device-message-rate-exceeded",
+  ]);
+  let lastErr;
+  if (message && message.token && NATIVE_TOKENS.has(message.token)) {
+    // App Android: tin chỉ-dữ-liệu không tự hiện khi app đóng → thêm notification + ưu tiên cao.
+    const d = message.data || {};
+    message = {
+      ...message,
+      notification: { title: String(d.title || "Thông báo"), body: String(d.body || "") },
+      android: {
+        priority: "high",
+        ttl: 86400 * 1000,
+        notification: { sound: "default", defaultVibrateTimings: true },
+      },
+    };
+  }
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await messaging.send(message);
+    } catch (err) {
+      lastErr = err;
+      if (!transient.has(err && err.code)) throw err;
+      await new Promise((r) => setTimeout(r, 400 * (i + 1) * (i + 1)));
     }
   }
-  return null;
+  throw lastErr;
 }
 
 async function clearUserFcmToken(token, orgId) {
@@ -199,6 +252,17 @@ async function clearUserFcmToken(token, orgId) {
     .get();
   for (const d of snap.docs) {
     await d.ref.set({ fcmToken: null }, { merge: true });
+  }
+  const listSnap = await db
+    .collection("users")
+    .where("fcmTokenList", "array-contains", token)
+    .limit(3)
+    .get();
+  for (const d of listSnap.docs) {
+    await d.ref.update({
+      fcmTokenList: FieldValue.arrayRemove(token),
+      fcmNativeList: FieldValue.arrayRemove(token),
+    });
   }
   if (!orgId) return;
   const wsRef = db.doc(`workspaces/${orgId}/data/main`);
@@ -304,13 +368,13 @@ async function orgUserTokenEntries(orgId) {
   snap.docs.forEach((d) => {
     const user = d.data() || {};
     if (!userOrgIds(user).includes(org)) return;
-    const t = user.fcmToken;
-    if (!t) return;
-    tokens.push({
-      token: t,
-      uid: d.id,
-      audience: notifyAudience(user),
-      empId: user.empId || "",
+    userTokens(user).forEach((t) => {
+      tokens.push({
+        token: t,
+        uid: d.id,
+        audience: notifyAudience(user),
+        empId: user.empId || "",
+      });
     });
   });
   return tokens;
@@ -522,23 +586,24 @@ exports.dispatchReminders = onSchedule(
 
       for (const reminder of arrivalDue) {
         const emp = empById.get(reminder.empId);
-        const token = await empFcmToken(emp);
-        if (!token) continue;
-        try {
-          await messaging.send({
-            ...buildArrivalReminderMessage(reminder),
-            token,
-          });
-          pushesSent += 1;
-        } catch (err) {
-          const code = err && err.code;
-          if (
-            code === "messaging/registration-token-not-registered" ||
-            code === "messaging/invalid-registration-token"
-          ) {
-            await clearUserFcmToken(token, orgId);
+        const tokens = await empFcmTokens(emp);
+        for (const token of tokens) {
+          try {
+            await sendWithRetry(messaging, {
+              ...buildArrivalReminderMessage(reminder),
+              token,
+            });
+            pushesSent += 1;
+          } catch (err) {
+            const code = err && err.code;
+            if (
+              code === "messaging/registration-token-not-registered" ||
+              code === "messaging/invalid-registration-token"
+            ) {
+              await clearUserFcmToken(token, orgId);
+            }
+            console.warn("arrival push:", orgId, reminder.empId, String(err));
           }
-          console.warn("arrival push:", orgId, reminder.empId, String(err));
         }
       }
 
@@ -553,7 +618,7 @@ exports.dispatchReminders = onSchedule(
         for (const entry of tokenEntries) {
           for (const reminder of generalDue) {
             try {
-              await messaging.send({
+              await sendWithRetry(messaging, {
                 ...buildReminderMessage(reminder),
                 token: entry.token,
               });
@@ -564,9 +629,7 @@ exports.dispatchReminders = onSchedule(
                 code === "messaging/registration-token-not-registered" ||
                 code === "messaging/invalid-registration-token"
               ) {
-                await db
-                  .doc(`users/${entry.uid}`)
-                  .set({ fcmToken: null }, { merge: true });
+                await clearUserFcmToken(entry.token, orgId);
               }
               console.warn("reminder push:", orgId, entry.uid, String(err));
             }
@@ -626,10 +689,10 @@ exports.notifyAssignment = onDocumentWritten(
       const sentTokens = new Set();
 
       // 1) Always notify the assigned employee
-      const empToken = await empFcmToken(emp);
-      if (empToken) {
+      const empTokens = await empFcmTokens(emp);
+      for (const empToken of empTokens) {
         try {
-          await messaging.send({ ...payload, token: empToken });
+          await sendWithRetry(messaging, { ...payload, token: empToken });
           sentTokens.add(empToken);
           results.push({ token: empToken, ok: true, to: "assignee" });
         } catch (err) {
@@ -661,7 +724,7 @@ exports.notifyAssignment = onDocumentWritten(
           continue;
         }
         try {
-          await messaging.send({ ...payload, token: entry.token });
+          await sendWithRetry(messaging, { ...payload, token: entry.token });
           sentTokens.add(entry.token);
           results.push({
             token: entry.token,
@@ -707,7 +770,7 @@ exports.notifyChatMessage = onDocumentCreated(
     async function sendTo(token, meta) {
       if (!token || sentTokens.has(token)) return;
       try {
-        await messaging.send({ ...payload, token });
+        await sendWithRetry(messaging, { ...payload, token });
         sentTokens.add(token);
         results.push({ token, ok: true, ...(meta || {}) });
       } catch (err) {
@@ -733,20 +796,20 @@ exports.notifyChatMessage = onDocumentCreated(
     } else if (msg.type === "dm" && msg.toUid) {
       const toUid = String(msg.toUid);
       // 1) Direct recipient (employee or anyone)
-      let recipientToken = null;
+      let recipientTokens = [];
       const toSnap = await db.doc(`users/${toUid}`).get();
-      if (docExists(toSnap) && toSnap.data().fcmToken) {
-        recipientToken = toSnap.data().fcmToken;
-      }
-      if (!recipientToken) {
+      if (docExists(toSnap)) recipientTokens = userTokens(toSnap.data());
+      if (!recipientTokens.length) {
         const wsSnap = await db.doc(`workspaces/${orgId}/data/main`).get();
         if (docExists(wsSnap)) {
           const empList = wsSnap.data().emp || [];
           const emp = empList.find((e) => e && e.authUid === toUid);
-          recipientToken = await empFcmToken(emp);
+          recipientTokens = await empFcmTokens(emp);
         }
       }
-      await sendTo(recipientToken, { uid: toUid, to: "recipient" });
+      for (const t of recipientTokens) {
+        await sendTo(t, { uid: toUid, to: "recipient" });
+      }
 
       // 2) Fan-out: Điều hành + Giám sát see company DMs (not own outbound)
       //    Giám đốc: only all-company → no DM copies unless they are recipient
@@ -872,7 +935,37 @@ exports.syncFcmToken = onCall(async (request) => {
   const user = userSnap.data();
   const orgId = normalizeOrgId(user.activeOrgId || user.orgId);
   const empId = user.empId || "";
-  await userRef.set({ fcmToken: token, empId }, { merge: true });
+  // Thiết bị dùng chung: gỡ token này khỏi tài khoản khác (tránh gửi nhầm người).
+  try {
+    const others = new Map();
+    (await db.collection("users").where("fcmToken", "==", token).limit(5).get()).docs.forEach((d) => others.set(d.id, d));
+    (await db.collection("users").where("fcmTokenList", "array-contains", token).limit(5).get()).docs.forEach((d) => others.set(d.id, d));
+    for (const [oid, d] of others) {
+      if (oid === uid) continue;
+      const od = d.data() || {};
+      const patch = {
+        fcmTokenList: FieldValue.arrayRemove(token),
+        fcmNativeList: FieldValue.arrayRemove(token),
+      };
+      if (od.fcmToken === token) patch.fcmToken = null;
+      await d.ref.update(patch);
+    }
+  } catch (e) {
+    console.warn("syncFcmToken cleanup:", e);
+  }
+  const prevList = userTokens(user).filter((t) => t !== token);
+  const fcmTokenList = [token, ...prevList].slice(0, MAX_DEVICE_TOKENS);
+  const isNative = String(data.platform || "") === "android";
+  const prevNative = (Array.isArray(user.fcmNativeList) ? user.fcmNativeList : []).filter(
+    (t) => t !== token
+  );
+  const fcmNativeList = (isNative ? [token, ...prevNative] : prevNative).slice(0, MAX_DEVICE_TOKENS);
+  if (isNative) NATIVE_TOKENS.add(token);
+  else NATIVE_TOKENS.delete(token);
+  await userRef.set(
+    { fcmToken: token, fcmTokenList, fcmNativeList, fcmTokenAt: new Date(), empId },
+    { merge: true }
+  );
   let synced = false;
   if (empId) {
     synced = await syncFcmToWorkspace(orgId, empId, uid, token);
@@ -1855,6 +1948,43 @@ function attEvaluatePunchServer(type, when) {
   };
 }
 
+const ATT_GEOFENCE_RADIUS_M = 300; // bán kính công trường cho phép
+const ATT_MAX_GOOD_ACCURACY_M = 100; // sai số GPS tối đa coi là tin cậy
+const ATT_MAX_OFFLINE_AGE_MS = 48 * 3600 * 1000; // chấp nhận chấm công bù tối đa 48h
+
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Công trường gần nhất trong các việc đang giao cho nhân viên (toạ độ lấy từ khách hàng của dự án). */
+function nearestAssignedSite(ws, empId, date, lat, lng) {
+  const custById = new Map((ws.cust || []).map((c) => [c.id, c]));
+  const projById = new Map((ws.proj || []).map((p) => [p.id, p]));
+  let best = null;
+  for (const a of ws.asgn || []) {
+    if (!a || a.empId !== empId) continue;
+    const inRange =
+      a.status === "active" ||
+      (a.startDate && a.endDate && a.startDate <= date && date <= a.endDate);
+    if (!inRange) continue;
+    const proj = projById.get(a.projId);
+    const cust = proj && custById.get(proj.custId);
+    if (!cust || !Number.isFinite(Number(cust.lat)) || !Number.isFinite(Number(cust.lng))) continue;
+    const d = haversineMeters(lat, lng, Number(cust.lat), Number(cust.lng));
+    if (!best || d < best.distanceM) {
+      best = { distanceM: Math.round(d), name: cust.name || (proj && proj.name) || "", projId: a.projId };
+    }
+  }
+  return best;
+}
+
 exports.submitAttendance = onCall(async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "Cần đăng nhập.");
@@ -1884,12 +2014,30 @@ exports.submitAttendance = onCall(async (request) => {
   const punchId = String(data.punchId || Date.now()).replace(/[^0-9]/g, "") || String(Date.now());
   const recordId = `${user.empId}_${punchId}`;
 
+  // Idempotent: gửi lại (retry / hàng đợi offline) cùng punchId thì trả kết quả cũ.
+  const existingRec = await db.doc(`workspaces/${orgId}/attendance/${recordId}`).get();
+  if (docExists(existingRec)) {
+    const ex = existingRec.data();
+    const exAt = ex.at && ex.at.toDate ? ex.at.toDate() : new Date();
+    return { ok: true, id: recordId, at: exAt.toISOString(), type: ex.type, duplicate: true };
+  }
+
   const latRaw = data.lat;
   const lngRaw = data.lng;
   const lat =
     latRaw != null && Number.isFinite(Number(latRaw)) ? Number(latRaw) : null;
   const lng =
     lngRaw != null && Number.isFinite(Number(lngRaw)) ? Number(lngRaw) : null;
+  if (lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Chưa có vị trí GPS — bật định vị và chờ xác định vị trí trước khi chấm công."
+    );
+  }
+  const accRaw = Number(data.accuracy);
+  const accuracy = Number.isFinite(accRaw) && accRaw >= 0 ? Math.round(accRaw) : null;
+  const posAtMs = Number(data.posAt);
+  const posAt = Number.isFinite(posAtMs) && posAtMs > 0 ? new Date(posAtMs) : null;
 
   const sitePhoto = String(data.sitePhoto || "").trim();
   let workPhotos = [];
@@ -1949,7 +2097,27 @@ exports.submitAttendance = onCall(async (request) => {
   const ws = wsSnap.data();
   const emp = (ws.emp || []).find((e) => e.id === user.empId);
   const fromName = emp ? emp.name : user.username || "";
-  const punchedAt = new Date();
+  const serverNow = new Date();
+  // Chấm công bù khi mất mạng: dùng giờ thiết bị nếu hợp lý (không ở tương lai, ≤48h), đánh dấu offline.
+  let punchedAt = serverNow;
+  let offline = false;
+  const clientAtMs = Date.parse(String(data.clientAt || ""));
+  if (
+    Number.isFinite(clientAtMs) &&
+    clientAtMs <= serverNow.getTime() + 5 * 60 * 1000 &&
+    serverNow.getTime() - clientAtMs <= ATT_MAX_OFFLINE_AGE_MS &&
+    serverNow.getTime() - clientAtMs > 2 * 60 * 1000
+  ) {
+    punchedAt = new Date(clientAtMs);
+    offline = true;
+  }
+
+  // Xác minh vị trí so với công trường được giao.
+  const site = nearestAssignedSite(ws, user.empId, date, lat, lng);
+  let geoFlag = "no-site";
+  if (accuracy != null && accuracy > ATT_MAX_GOOD_ACCURACY_M) geoFlag = "low-accuracy";
+  else if (posAt && Math.abs(punchedAt.getTime() - posAt.getTime()) > 3 * 60 * 1000) geoFlag = "stale";
+  else if (site) geoFlag = site.distanceM - (accuracy || 0) > ATT_GEOFENCE_RADIUS_M ? "outside" : "ok";
 
   const evalResult = attEvaluatePunchServer(type, punchedAt);
   const lateReason = String(data.lateReason || "").trim().slice(0, 500);
@@ -1968,6 +2136,14 @@ exports.submitAttendance = onCall(async (request) => {
     at: punchedAt,
     lat,
     lng,
+    accuracy,
+    posAt,
+    geoFlag,
+    siteDistanceM: site ? site.distanceM : null,
+    siteName: site ? String(site.name).slice(0, 120) : "",
+    siteProjId: site ? site.projId : "",
+    offline,
+    syncedAt: serverNow,
     locationLabel: String(data.locationLabel || "").slice(0, 200),
     sitePhoto: type === "in" ? sitePhoto : "",
     workPhotos: type === "out" ? workPhotos : [],
@@ -1992,7 +2168,7 @@ exports.submitAttendance = onCall(async (request) => {
     empId: user.empId,
     empName: fromName,
     by: fromName,
-    text: `${fromName} chấm ${type === "in" ? "vào" : "ra"} lúc ${punchedAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh" })}${evalResult.flag !== "ok" ? " · " + evalResult.label : ""}`,
+    text: `${fromName} chấm ${type === "in" ? "vào" : "ra"} lúc ${punchedAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh" })}${evalResult.flag !== "ok" ? " · " + evalResult.label : ""}${geoFlag === "outside" ? " · ngoài công trường (" + site.distanceM + "m)" : ""}${offline ? " · chấm bù offline" : ""}`,
     meta: {
       attendanceId: recordId,
       punchType: type,
@@ -2002,10 +2178,12 @@ exports.submitAttendance = onCall(async (request) => {
   };
   const projLog = [...(ws.projLog || []), projLogEntry].slice(-500);
   const patch = (ws.patch || 0) + 1;
-  await wsRef.set({ ...ws, projLog, patch, updatedAt: punchedAt });
+  await wsRef.set({ ...ws, projLog, patch, updatedAt: serverNow });
 
   return {
     ok: true,
+    geoFlag,
+    siteDistanceM: site ? site.distanceM : null,
     id: recordId,
     at: punchedAt.toISOString(),
     type,

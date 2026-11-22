@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Quản lý dự án</string>
+    <string name="title_activity_main">Quản lý dự án</string>
+    <string name="package_name">com.saigonref.quanlyduan</string>
+    <string name="custom_url_scheme">com.saigonref.quanlyduan</string>
+</resources>

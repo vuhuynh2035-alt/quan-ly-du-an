@@ -237,7 +237,8 @@ function companyWebsiteHref(url){
 var APP_BUILD=+(document.querySelector('meta[name="app-build"]')?.getAttribute("content")||0);
 var VER_MAJOR=1;
 var VER_TAG="-HP";
-function isLocalDev(){var h=location.hostname;return h==="localhost"||h==="127.0.0.1"||h==="[::1]"}
+function isNativeApp(){try{return !!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())}catch(e){return false}}
+function isLocalDev(){if(isNativeApp())return false;var h=location.hostname;return h==="localhost"||h==="127.0.0.1"||h==="[::1]"}
 function loadPatch(){return loadWs("cv3_patch",0);}
 function remotePatchHint(){
   try{
@@ -3622,7 +3623,8 @@ function attAtMs(r){
 function attRecordsToday(type){
   var me=S.auth.empId;
   if(!me)return [];
-  return (S.attendance||[]).filter(function(r){
+  // Gồm cả lượt chấm đang chờ gửi (offline) để không chấm trùng khi chưa có mạng.
+  return (S.attendance||[]).concat(window.__CV3_pendingAtt||[]).filter(function(r){
     return r.empId===me&&r.date===td()&&(!type||r.type===type);
   }).sort(function(a,b){return attAtMs(a)-attAtMs(b)});
 }
@@ -3692,6 +3694,11 @@ function attPunchDetailHTML(r){
   var h="";
   if(ev.flag!=="ok")h+=' <span style="color:'+attFlagColor(ev.flag)+'">· '+esc(ev.label)+'</span>';
   if((ev.needsReason||r.outsideWindow)&&r.lateReason)h+=' · <span style="color:#fbbf24">Giải trình: '+esc(r.lateReason)+'</span>';
+  if(r.geoFlag==="outside")h+=' · <span style="color:#f87171">📍 Ngoài công trường'+(r.siteDistanceM!=null?' (cách '+(r.siteDistanceM>=1000?(r.siteDistanceM/1000).toFixed(1)+' km':r.siteDistanceM+' m')+(r.siteName?' · '+esc(r.siteName):'')+')':'')+'</span>';
+  else if(r.geoFlag==="low-accuracy"||r.geoFlag==="stale")h+=' · <span style="color:#fbbf24">📍 GPS kém tin cậy'+(r.accuracy!=null?' (±'+r.accuracy+' m)':'')+'</span>';
+  else if(r.geoFlag==="no-site")h+=' · <span style="color:var(--c-muted)">📍 Chưa có toạ độ công trình để đối chiếu</span>';
+  if(r.offline)h+=' · <span style="color:#fbbf24">⏱ Chấm bù (offline)</span>';
+  if(r.lat!=null&&r.lng!=null)h+=' · <a href="https://www.google.com/maps?q='+r.lat+','+r.lng+'" target="_blank" rel="noopener" style="color:#38bdf8">Xem vị trí</a>';
   return h;
 }
 function attCycleNoticeHTML(c){
@@ -5370,6 +5377,55 @@ function attModalShell(title,body,foot){
   var hd=title?'<div class="row" style="justify-content:space-between;margin-bottom:16px"><h3 style="font-size:18px;font-weight:700">'+title+'</h3><button type="button" class="x-btn" onclick="A.attCancel()">×</button></div>':"";
   return'<div class="overlay" onmousedown="A.ovDown(event)" onclick="A.attCancel(event)"><div class="modal att-modal" onclick="event.stopPropagation()">'+hd+body+(foot?'<div class="modal-foot" style="margin-top:16px"><div class="modal-foot-l">'+btn("btn-ghost","Huỷ","A.attCancel()")+'</div><div class="modal-foot-r">'+foot+'</div></div>':"")+'</div></div>';
 }
+var ATT_GPS_GOOD_M=30,ATT_GPS_MAX_M=100,_attGpsWatch=null,_attGpsTimer=null;
+function attGpsStop(){
+  if(_attGpsWatch!=null&&navigator.geolocation){try{navigator.geolocation.clearWatch(_attGpsWatch)}catch(e){}}
+  _attGpsWatch=null;
+  if(_attGpsTimer){clearTimeout(_attGpsTimer);_attGpsTimer=null;}
+}
+function attGpsStatusHTML(f){
+  f=f||{};
+  if(f.gpsErr)return '<span style="color:#f87171">✗ '+esc(f.gpsErr)+'</span> <button type="button" class="btn btn-ghost btn-sm" onclick="A.attGpsRetry()">Thử lại</button>';
+  if(f.lat==null)return '<span style="color:#fbbf24">⏳ Đang xác định vị trí GPS… (ra chỗ thoáng nếu lâu)</span>';
+  var acc=Math.round(f.accuracy||0);
+  if(f.accuracy!=null&&acc>ATT_GPS_MAX_M)return '<span style="color:#fbbf24">⚠ Vị trí kém chính xác (±'+acc+' m) — đang tìm tín hiệu tốt hơn…</span>';
+  return '<span style="color:#4ade80">✓ Đã xác định vị trí (±'+acc+' m)</span>';
+}
+function attGpsRefreshUI(){
+  var el=document.getElementById("att-gps-status");
+  if(el)el.innerHTML=attGpsStatusHTML(S.attFlow);
+}
+function attGpsStart(){
+  attGpsStop();
+  if(!S.attFlow)return;
+  S.attFlow=Object.assign({},S.attFlow,{lat:null,lng:null,accuracy:null,posAt:null,gpsErr:""});
+  if(!navigator.geolocation){
+    S.attFlow.gpsErr="Thiết bị không hỗ trợ GPS.";
+    attGpsRefreshUI();
+    return;
+  }
+  _attGpsWatch=navigator.geolocation.watchPosition(function(pos){
+    if(!S.attFlow||S.attFlow.step==="done"){attGpsStop();return;}
+    var c=pos.coords,cur=S.attFlow,acc=c.accuracy==null?9999:c.accuracy;
+    // Giữ kết quả chính xác nhất; chỉ thay khi tốt hơn hoặc vị trí cũ đã quá 20 giây.
+    if(cur.lat==null||acc<=(cur.accuracy==null?9999:cur.accuracy)||pos.timestamp-(cur.posAt||0)>20000){
+      S.attFlow=Object.assign({},cur,{lat:c.latitude,lng:c.longitude,accuracy:acc,posAt:pos.timestamp,gpsErr:""});
+    }
+    attGpsRefreshUI();
+    if(acc<=ATT_GPS_GOOD_M)attGpsStop();
+  },function(err){
+    if(!S.attFlow)return;
+    if(S.attFlow.lat!=null)return; // đã có 1 vị trí dùng được
+    var msg="Không lấy được vị trí.";
+    if(err&&err.code===1)msg="Chưa cho phép truy cập vị trí — bật Vị trí cho trình duyệt/ứng dụng trong Cài đặt rồi thử lại.";
+    else if(err&&err.code===2)msg="Không xác định được vị trí — bật GPS hoặc ra nơi thoáng.";
+    else if(err&&err.code===3)msg="Hết thời gian chờ GPS.";
+    S.attFlow=Object.assign({},S.attFlow,{gpsErr:msg});
+    attGpsRefreshUI();
+  },{enableHighAccuracy:true,maximumAge:0,timeout:30000});
+  // Dừng sau 60 giây để tiết kiệm pin, giữ kết quả tốt nhất.
+  _attGpsTimer=setTimeout(attGpsStop,60000);
+}
 function attModalHTML(){
   var f=S.attFlow||{};
   var type=f.type||"in";
@@ -5377,11 +5433,11 @@ function attModalHTML(){
   if(step==="done"){
     var lbl=type==="in"?"vào":"ra";
     var t=attFmtClock(f.doneAt||new Date());
-    return attModalShell("","<div class='att-done'><div class='att-done-icon'>✓</div><div class='att-done-title'>Chấm "+lbl+" hoàn tất</div><div class='att-done-time'>"+t+"</div><p class='att-done-hint'>Đã lưu vào báo cáo — không thể chỉnh sửa.</p></div>",btn("btn-primary","Xong","A.attDoneClose()"));
+    return attModalShell("","<div class='att-done'><div class='att-done-icon'>✓</div><div class='att-done-title'>Chấm "+lbl+" hoàn tất</div><div class='att-done-time'>"+t+"</div><p class='att-done-hint'>"+(f.queued?"⚠ Chưa có mạng — đã lưu trên máy, sẽ tự gửi khi có mạng (giữ nguyên giờ bạn bấm).":"Đã lưu vào báo cáo — không thể chỉnh sửa.")+"</p></div>",btn("btn-primary","Xong","A.attDoneClose()"));
   }
   if(step==="photo"){
     var hint=type==="in"?"Chụp <b>1 ảnh</b> nhà máy / công trường":"Chụp <b>ít nhất 3 ảnh</b> công việc đã làm xong";
-    var body='<div class="att-step-hint" style="font-size:15px;text-align:center;margin-bottom:18px;line-height:1.55">'+hint+'</div>';
+    var body='<div id="att-gps-status" class="att-gps-box" style="text-align:center;margin-bottom:12px;font-size:13px">'+attGpsStatusHTML(f)+'</div><div class="att-step-hint" style="font-size:15px;text-align:center;margin-bottom:18px;line-height:1.55">'+hint+'</div>';
     if(type==="in"){
       body+='<label class="att-camera-btn"><input type="file" id="att-photo-in" accept="image/*" capture="environment"><span>📷 Chụp ảnh</span></label><div id="att-preview-in" class="rpt-preview" style="justify-content:center"></div>';
     }else{
@@ -7461,22 +7517,20 @@ window.A={
     S.attFlow={type:type,step:"photo",lat:null,lng:null,punchId:String(Date.now()),needsReason:attNeedsReason(type,new Date())};
     render();
     setTimeout(initAttPreview,50);
-    if(navigator.geolocation){
-      navigator.geolocation.getCurrentPosition(function(pos){
-        if(!S.attFlow)return;
-        S.attFlow=Object.assign({},S.attFlow,{lat:pos.coords.latitude,lng:pos.coords.longitude});
-      },function(){},{enableHighAccuracy:true,timeout:15000,maximumAge:120000});
-    }
+    attGpsStart();
   },
   attCancel:function(ev){
     if(!overlayDismissOk(ev))return;
+    attGpsStop();
     S.attFlow=null;
     render();
   },
   attDoneClose:function(){
+    attGpsStop();
     S.attFlow=null;
     render();
   },
+  attGpsRetry:function(){attGpsStart();},
   attMonthPick:function(v){
     S.attMonth=v||attMonthKey();
     render();
@@ -7491,7 +7545,9 @@ window.A={
     if(!isEmp()||!S.attFlow)return;
     var f=S.attFlow;
     var punchId=f.punchId||String(Date.now());
-    var payload={type:f.type,date:td(),punchId:punchId,lat:f.lat,lng:f.lng};
+    if(f.lat==null||f.lng==null)return alert(f.gpsErr||"Chưa có vị trí GPS — chờ xác định vị trí (hoặc bấm «Thử lại») rồi gửi.");
+    if(f.accuracy!=null&&f.accuracy>ATT_GPS_MAX_M&&!confirm("Vị trí đang sai số lớn (±"+Math.round(f.accuracy)+" m) và sẽ bị đánh dấu «kém chính xác». Vẫn gửi?"))return;
+    var payload={type:f.type,date:td(),punchId:punchId,lat:f.lat,lng:f.lng,accuracy:f.accuracy,posAt:f.posAt,clientAt:new Date().toISOString()};
     if(f.type==="in"){
       var inp=document.getElementById("att-photo-in");
       if(!inp||!inp.files||!inp.files.length)return alert("Chụp 1 ảnh nhà máy / công trường.");
@@ -7514,7 +7570,8 @@ window.A={
     window.__CV3_submitAttendance(payload)
       .then(function(res){
         var doneAt=res&&res.at?new Date(res.at):new Date();
-        S.attFlow={type:f.type,step:"done",doneAt:doneAt.toISOString(),punchId:punchId};
+        attGpsStop();
+        S.attFlow={type:f.type,step:"done",doneAt:doneAt.toISOString(),punchId:punchId,queued:!!(res&&res.queued)};
         render();
       })
       .catch(function(e){
@@ -9753,6 +9810,21 @@ else{
   // Hiện UI từ localStorage ngay, không chờ Firebase module parse xong.
   try{window.__CV3.finishBoot();}catch(eBoot){}
 }
+window.addEventListener("cv3-att-queue",function(ev){
+  var d=(ev&&ev.detail)||{};
+  if(d.type==="error")showAppToast(d.text,"err");
+  else if(d.type==="sent")showAppToast(d.text,"info");
+  render();
+});
+window.addEventListener("cv3-open-from-push",function(ev){
+  var d=(ev&&ev.detail)||{},t=String(d.type||"");
+  if(t==="chat"){
+    if(d.chatType==="broadcast")S.pendingChatDm="broadcast";
+    else if(d.fromUid)S.pendingChatDm=String(d.fromUid);
+    if(typeof A!=="undefined"&&A.go)A.go("chat");
+  }else if(t==="reminder"){if(typeof A!=="undefined"&&A.go)A.go("lich");}
+  else if(t==="assignment"||t==="schedule"||t==="arrival"){if(typeof A!=="undefined"&&A.go)A.go("mywork");}
+});
 if("serviceWorker" in navigator){
   navigator.serviceWorker.addEventListener("message",function(ev){
     var p=ev&&ev.data;

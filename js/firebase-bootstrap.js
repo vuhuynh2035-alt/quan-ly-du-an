@@ -1,4 +1,5 @@
 import { loadBackend } from "./backend/index.js";
+import { queueAttPut, queueAttDelete, queueAttAll, isTransientError } from "./offline-queue.js";
 
 /** Lazy chunk — bio không chặn first paint (SDK messaging/storage/functions lazy trong adapter). */
 var _bioModP = null;
@@ -105,7 +106,16 @@ function authAllowedOrgIds(a, fallback) {
 
 var defaultOrg = normalizeOrgId(window.FIREBASE_DEFAULT_ORG || "cong-trinh");
 
+function isNativeApp() {
+  try {
+    return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  } catch (e) {
+    return false;
+  }
+}
+
 function isLocalDevHost() {
+  if (isNativeApp()) return false; // APK chạy ở https://localhost nhưng không phải máy dev
   var h = location.hostname;
   return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
 }
@@ -257,6 +267,7 @@ function scheduleSecondarySubs(cv3) {
         localStorage.getItem("cv3_push_enabled") === "1" ||
         (isDirectorRole() && localStorage.getItem("cv3_remind_push") === "1"));
     if (wantPush) {
+      startPushHealthCheck(cv3);
       var startPush = function () {
         registerMessaging(cv3, { request: true }).catch(function () {});
       };
@@ -267,6 +278,35 @@ function scheduleSecondarySubs(cv3) {
       }
     }
   }, 420);
+}
+
+/**
+ * Giữ thông báo luôn sống: định kỳ + mỗi khi app quay lại màn hình, nếu quyền còn "granted"
+ * thì lấy lại token (FCM có thể đổi/hết hạn) và đồng bộ lên server khi token đổi hoặc đã lâu.
+ */
+var _pushHealthStarted = false;
+var _pushHealthLastAt = 0;
+function startPushHealthCheck(cv3) {
+  if (_pushHealthStarted) return;
+  _pushHealthStarted = true;
+  var run = function (force) {
+    var now = Date.now();
+    if (!force && now - _pushHealthLastAt < 30 * 60 * 1000) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    if (!auth || !auth.currentUser) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    _pushHealthLastAt = now;
+    registerMessaging(cv3, { request: true }).catch(function () {});
+  };
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) run(false);
+  });
+  window.addEventListener("online", function () {
+    run(false);
+  });
+  setInterval(function () {
+    run(false);
+  }, 6 * 60 * 60 * 1000);
 }
 
 function resetSecondarySubs() {
@@ -1504,10 +1544,89 @@ async function submitAttendance(payload) {
   return res.data || {};
 }
 
+var _attFlushing = false;
+function attQueueEmit(type, text) {
+  try {
+    window.dispatchEvent(new CustomEvent("cv3-att-queue", { detail: { type: type, text: text || "" } }));
+  } catch (e) {}
+}
+async function refreshAttPendingCache() {
+  try {
+    var rows = await queueAttAll();
+    window.__CV3_pendingAtt = rows.map(function (r) {
+      return {
+        id: "pending_" + r.punchId,
+        empId: r.empId,
+        date: r.payload && r.payload.date,
+        type: r.payload && r.payload.type,
+        at: r.payload && r.payload.clientAt,
+        pending: true,
+      };
+    });
+  } catch (e) {
+    window.__CV3_pendingAtt = window.__CV3_pendingAtt || [];
+  }
+}
+async function flushAttendanceQueue() {
+  if (_attFlushing || !auth || !auth.currentUser || !backend) return;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  _attFlushing = true;
+  var sent = 0;
+  try {
+    var rows = await queueAttAll();
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row.uid !== auth.currentUser.uid) continue;
+      try {
+        await submitAttendance(row.payload);
+        await queueAttDelete(row.punchId);
+        sent++;
+      } catch (err) {
+        if (isTransientError(err)) break; // vẫn chưa có mạng — thử lại sau, giữ nguyên thứ tự
+        var detail = (err && err.details) || (err && err.message) || String(err);
+        await queueAttDelete(row.punchId);
+        attQueueEmit("error", "Chấm công bù không được ghi nhận: " + detail);
+      }
+    }
+  } catch (e) {
+    console.warn("flushAttendanceQueue:", e);
+  } finally {
+    _attFlushing = false;
+    await refreshAttPendingCache();
+    if (sent) attQueueEmit("sent", "Đã gửi " + sent + " lượt chấm công lưu offline.");
+  }
+}
+function startAttendanceQueue() {
+  if (window.__CV3_attQueueStarted) return;
+  window.__CV3_attQueueStarted = true;
+  refreshAttPendingCache().then(flushAttendanceQueue);
+  window.addEventListener("online", flushAttendanceQueue);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) flushAttendanceQueue();
+  });
+  setInterval(flushAttendanceQueue, 60000);
+}
+
 async function callSubmitAttendance(payload) {
   try {
     return await submitAttendance(payload);
   } catch (err) {
+    if (isTransientError(err)) {
+      try {
+        await queueAttPut({
+          punchId: String(payload.punchId),
+          uid: auth && auth.currentUser ? auth.currentUser.uid : "",
+          empId: (window.__CV3_AUTH && window.__CV3_AUTH.empId) || "",
+          createdAt: Date.now(),
+          payload: payload,
+        });
+        await refreshAttPendingCache();
+        return { ok: true, queued: true, at: payload.clientAt || new Date().toISOString() };
+      } catch (qe) {
+        console.warn("attendance queue:", qe);
+        throw new Error("Không có mạng và không lưu tạm được trên máy — thử lại khi có mạng.");
+      }
+    }
     var msg = (err && err.message) || String(err);
     if (err && err.code === "functions/invalid-argument" && err.details) {
       msg = String(err.details);
@@ -3384,7 +3503,7 @@ function subscribeWorkspace(cv3, opts) {
   );
 }
 
-async function persistFcmToken(token, cv3) {
+async function persistFcmToken(token, cv3, platform) {
   if (!auth || !auth.currentUser || !db) return;
   if (isDirectorRole()) {
     await db.setDoc(
@@ -3394,7 +3513,7 @@ async function persistFcmToken(token, cv3) {
     );
     try {
       var fnDir = await cloudCallable("syncFcmToken");
-      await fnDir({ token: token });
+      await fnDir({ token: token, platform: platform || "web" });
     } catch (err) {
       console.warn("syncFcmToken:", err);
     }
@@ -3406,7 +3525,7 @@ async function persistFcmToken(token, cv3) {
   await saveMyFcmToken(token, empId || "");
   try {
     var fn = await cloudCallable("syncFcmToken");
-    await fn({ token: token });
+    await fn({ token: token, platform: platform || "web" });
   } catch (err) {
     console.warn("syncFcmToken:", err);
   }
@@ -3474,6 +3593,12 @@ function bindForegroundMessaging(messaging, cv3) {
   if (!messaging || messaging.__cv3Bound) return;
   messaging.__cv3Bound = true;
   backend.push.onForegroundMessage(messaging, function (payload) {
+    handleForegroundPayload(payload, cv3);
+  });
+}
+
+function handleForegroundPayload(payload, cv3) {
+  {
     var type = payload.data && payload.data.type;
     var d = payload.data || {};
     if (type && !shouldShowPushNotification(type, d)) {
@@ -3575,7 +3700,7 @@ function bindForegroundMessaging(messaging, cv3) {
       }
       if (typeof cv3.syncAppBadge === "function") cv3.syncAppBadge();
     }
-  });
+  }
 }
 
 function fcmFailReason(err) {
@@ -3592,8 +3717,83 @@ function fcmFailReason(err) {
   return msg.slice(0, 160) || "unknown";
 }
 
+var _nativePush = { bound: false, waiters: [] };
+async function registerNativePush(cv3, opts) {
+  var mod = await import("@capacitor/push-notifications");
+  var PN = mod.PushNotifications;
+  var perm = await PN.checkPermissions();
+  if (perm.receive !== "granted") {
+    if (!opts.request) return { ok: false, reason: "denied" };
+    perm = await PN.requestPermissions();
+  }
+  if (perm.receive !== "granted") return { ok: false, reason: "denied" };
+  if (!_nativePush.bound) {
+    _nativePush.bound = true;
+    await PN.addListener("registration", function (t) {
+      var w = _nativePush.waiters.splice(0);
+      w.forEach(function (f) {
+        f({ token: t.value });
+      });
+      if (!w.length && t.value) {
+        // FCM tự cấp token mới (xoay token) — lưu lên server.
+        window.__CV3_FCM = { token: t.value, native: true };
+        persistFcmToken(t.value, cv3, "android").catch(function () {});
+      }
+    });
+    await PN.addListener("registrationError", function (e) {
+      _nativePush.waiters.splice(0).forEach(function (f) {
+        f({ error: String((e && e.error) || "error") });
+      });
+    });
+    await PN.addListener("pushNotificationReceived", function (n) {
+      handleForegroundPayload(
+        { data: (n && n.data) || {}, notification: { title: n && n.title, body: n && n.body } },
+        cv3
+      );
+    });
+    await PN.addListener("pushNotificationActionPerformed", function (a) {
+      var d = (a && a.notification && a.notification.data) || {};
+      try {
+        window.dispatchEvent(new CustomEvent("cv3-open-from-push", { detail: d }));
+      } catch (e) {}
+    });
+  }
+  var res = await new Promise(function (resolve) {
+    var timer = setTimeout(function () {
+      resolve({ error: "timeout" });
+    }, 15000);
+    _nativePush.waiters.push(function (r) {
+      clearTimeout(timer);
+      resolve(r);
+    });
+    PN.register().catch(function (e) {
+      clearTimeout(timer);
+      resolve({ error: String(e) });
+    });
+  });
+  if (!res.token) {
+    var em = String(res.error || "");
+    return { ok: false, reason: /firebase|google|default.*app/i.test(em) ? "no-google-services" : "no-token" };
+  }
+  pushReady = true;
+  window.__CV3_FCM = { token: res.token, native: true };
+  localStorage.setItem("cv3_push_enabled", "1");
+  await persistFcmToken(res.token, cv3, "android");
+  if (isDirectorRole()) localStorage.setItem("cv3_remind_push", "1");
+  startPushHealthCheck(cv3);
+  return { ok: true, token: res.token };
+}
+
 async function registerMessaging(cv3, options) {
   var opts = options || {};
+  if (isNativeApp()) {
+    try {
+      return await registerNativePush(cv3, opts);
+    } catch (err) {
+      console.warn("native push:", err);
+      return { ok: false, reason: "no-token" };
+    }
+  }
   if (isLocalDevHost() && !opts.request) {
     return { ok: false, reason: "local-dev" };
   }
@@ -3640,6 +3840,7 @@ async function registerMessaging(cv3, options) {
     });
     if (!token) return { ok: false, reason: "no-token" };
     pushReady = true;
+    startPushHealthCheck(cv3);
     window.__CV3_FCM = { token: token, messaging: messaging };
     localStorage.setItem("cv3_push_enabled", "1");
     await persistFcmToken(token, cv3);
@@ -3993,6 +4194,7 @@ async function bootOnline(cv3) {
   window.__CV3_completeMyAssignment = callCompleteMyAssignment;
   window.__CV3_completeProject = callCompleteProject;
   window.__CV3_submitAttendance = callSubmitAttendance;
+  startAttendanceQueue();
   window.__CV3_confirmArrival = callConfirmArrival;
   window.__CV3_submitLeave = submitLeaveRequest;
   window.__CV3_decideLeave = decideLeaveRequest;
