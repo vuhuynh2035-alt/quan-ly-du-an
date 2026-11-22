@@ -74,6 +74,14 @@ Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
 npm run package:du-an
 ```
 
-Script **bắt buộc** có `public/firebase-config.js` hợp lệ (không nằm trong Git). File này phải có trong zip/`dist-du-an` cùng cấp `index.html`. Thiếu → app offline, không có dữ liệu cloud. Backend tự host (Phase 2) chưa sẵn sàng — giữ Firebase.
+Script **bắt buộc** có `public/firebase-config.js` hợp lệ (không nằm trong Git). File này phải có trong zip/`dist-du-an` cùng cấp `index.html`. Thiếu → app offline, không có dữ liệu cloud. Mặc định vẫn dùng Firebase; Phase 2 selfhost nằm trong `server/`.
 
-Hướng dẫn upload server: [scripts/DEPLOY-DU-AN.md](./scripts/DEPLOY-DU-AN.md).
+Hướng dẫn upload server: [scripts/DEPLOY-DU-AN.md](./scripts/DEPLOY-DU-AN.md). Selfhost: [server/README.md](./server/README.md).
+
+```powershell
+# Deploy zip qua SSH
+.\scripts\deploy-du-an-remote.ps1 -HostName <IP> -User root -RemotePath /var/www/du-an -ReloadNginx
+
+# Selfhost Docker
+npm run selfhost:docker:up
+```

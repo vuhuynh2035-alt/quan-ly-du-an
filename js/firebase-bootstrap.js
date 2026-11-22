@@ -3909,7 +3909,7 @@ function offlineReasonMessage(err) {
       return {
         title: "Backend tự host chưa sẵn sàng",
         detail:
-          "APP_BACKEND=selfhost nhưng chưa có SELFHOST_API (Phase 2). Đặt lại APP_BACKEND=firebase và kèm firebase-config.js trên server, hoặc chờ bản server SQLite.",
+          "APP_BACKEND=selfhost nhưng chưa có SELFHOST_API. Đặt window.SELFHOST_API (vd. https://host/api) hoặc APP_BACKEND=firebase + firebase-config.js.",
         selfhostStub: true,
       };
     }

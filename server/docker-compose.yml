@@ -1,0 +1,22 @@
+services:
+  selfhost:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quan-ly-du-an-selfhost
+    restart: unless-stopped
+    ports:
+      - "${SELFHOST_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      PORT: "3000"
+    volumes:
+      - selfhost_data:/data
+    # Optional: serve Vite dist from host (Nginx can also serve static + proxy /api /ws)
+    # volumes:
+    #   - ../dist:/app/public:ro
+
+volumes:
+  selfhost_data:

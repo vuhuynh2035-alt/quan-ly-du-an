@@ -1144,11 +1144,16 @@ html[data-theme="light"] .gantt-bar-label,html[data-theme="light"] .gantt-bar-me
 <meta name="theme-color" content="#1a6fd4" id="meta-theme-color">
 <meta name="app-build" content="133">
 <script src="%APP_BASE%firebase-config.js"></script>
+<!-- Backend: mặc định Firebase. Selfhost (Phase 2):
+  window.APP_BACKEND = 'selfhost';
+  window.SELFHOST_API = 'https://YOUR_HOST/api';
+  (có thể đặt trong firebase-config.js hoặc file config riêng trước bootstrap)
+-->
 <script>
 (function(){
   var be=String(window.APP_BACKEND||"").trim().toLowerCase();
   var fb=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");
-  // selfhost chỉ skip seed khi đã có SELFHOST_API (Phase 2). Stub không sẵn sàng → giữ chế độ local có UI.
+  // selfhost chỉ skip seed khi đã có SELFHOST_API. Stub không sẵn sàng → giữ chế độ local có UI.
   var selfOk=be==="selfhost"&&!!(window.SELFHOST_API&&String(window.SELFHOST_API).trim());
   window.__CV3_SKIP_SEED=selfOk||fb;
 })();

@@ -10,3 +10,9 @@ scripts/deploy-apps.local.json
 firebase-debug.log
 firebase-debug.*.log
 functions/node_modules
+server/node_modules
+server/data
+server/.env
+migrate-export.json
+*-service-account.json
+serviceAccount*.json

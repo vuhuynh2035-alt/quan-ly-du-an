@@ -22,7 +22,15 @@
     "deploy:storage-lifecycle": "node scripts/apply-storage-lifecycle.cjs",
     "deploy:photo-retention": "npx -y firebase-tools@latest deploy --only functions:purgeExpiredPhotos,storage && node scripts/apply-storage-lifecycle.cjs",
     "serve": "node server.js",
-    "test": "node scripts/test-app.cjs"
+    "test": "node scripts/test-app.cjs",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "selfhost:install": "npm install --prefix server",
+    "selfhost:start": "npm start --prefix server",
+    "selfhost:docker:up": "docker compose -f server/docker-compose.yml --project-directory server up -d --build",
+    "selfhost:docker:down": "docker compose -f server/docker-compose.yml --project-directory server down",
+    "migrate:export": "node scripts/migrate/export-firestore.js",
+    "migrate:import": "node scripts/migrate/import-sqlite.js"
   },
   "dependencies": {
     "express": "^5.3.0",

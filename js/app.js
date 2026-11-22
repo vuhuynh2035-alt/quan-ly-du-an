@@ -6784,7 +6784,7 @@ function cloudStatusBody(){
       h+='<li>Tải lại trang (có thể cần xoá cache / Hard refresh)</li>';
       h+='</ol>';
     }else if(st.selfhostStub){
-      h+='<p style="margin:0 0 12px">Phase 2 (Node+SQLite) chưa triển khai. Để dùng dữ liệu thật ngay: đặt <code>APP_BACKEND=firebase</code> và kèm <code>firebase-config.js</code>.</p>';
+      h+='<p style="margin:0 0 12px">Selfhost cần <code>window.SELFHOST_API</code> (ví dụ <code>https://host/api</code>). Để dùng Firebase: đặt <code>APP_BACKEND=firebase</code> và kèm <code>firebase-config.js</code>.</p>';
     }else{
       h+='<p style="margin:0 0 12px">Dữ liệu hiện chỉ nằm trên trình duyệt này (localStorage), không đồng bộ đội.</p>';
     }
