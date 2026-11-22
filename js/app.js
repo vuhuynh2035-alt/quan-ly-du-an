@@ -393,7 +393,11 @@ function staffLevel(){
   if(g==="Hành chính")return "admin_hr";
   return "";
 }
-function hasFullUI(){return staffLevel()==="operate"||staffLevel()==="supervise"}
+function hasFullUI(){
+  // Offline / chưa đăng nhập cloud: quyền local đã bypass qua __CV3_SKIP_SEED — cần full tab (cfg) thay vì EMP trống.
+  if(!window.__CV3_SKIP_SEED&&!(S.auth&&S.auth.role))return true;
+  return staffLevel()==="operate"||staffLevel()==="supervise";
+}
 function canOperate(){return staffLevel()==="operate"}
 function isSuperviseOnly(){return staffLevel()==="supervise"}
 function isChiefOnly(){return staffLevel()==="chief"}
@@ -6729,8 +6733,70 @@ function vHist(){
 
 function btnSignOut(){return'<div class="divider"></div><div style="margin-top:16px">'+btn("btn-ghost","Đăng xuất","window.__CV3_signOut&&window.__CV3_signOut()")+'</div>';}
 function cfgSec(id,title,body){
-  var open=!!(S.cfgOpen&&S.cfgOpen[id]);
+  var forcedCloud=id==="cfg-cloud"||id==="gate-cloud"||id==="emp-cloud";
+  var st=forcedCloud?cloudStatusInfo():null;
+  var defOpen=forcedCloud&&!(st&&st.online&&S.auth&&S.auth.role);
+  var open=S.cfgOpen&&Object.prototype.hasOwnProperty.call(S.cfgOpen,id)?!!S.cfgOpen[id]:defOpen;
   return'<div class="cfg-acc'+(open?" open":"")+'"><button type="button" class="cfg-acc-hd" onclick="A.cfgTog(\''+id+'\')"><span class="cfg-acc-title">'+title+'</span><span class="cfg-acc-chev" aria-hidden="true">▾</span></button><div class="cfg-acc-bd">'+body+'</div></div>';
+}
+function cloudStatusInfo(){
+  var c=window.__CV3_CLOUD||null;
+  var fb=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey&&window.FIREBASE_CONFIG.apiKey!=="YOUR_API_KEY");
+  var be=String(window.APP_BACKEND||"firebase").trim().toLowerCase()||"firebase";
+  if(c)return{
+    online:!!c.online,
+    kind:c.kind||be,
+    reason:c.reason||"",
+    detail:c.detail||"",
+    canLogin:!!c.canLogin,
+    missingConfig:!!c.missingConfig||(be!=="selfhost"&&!fb),
+    selfhostStub:!!c.selfhostStub
+  };
+  return{
+    online:!!window.__CV3_SKIP_SEED&&fb,
+    kind:be,
+    reason:fb?"":"Thiếu cấu hình Firebase",
+    detail:fb?"":"Không có firebase-config.js hợp lệ trên server.",
+    canLogin:!!(window.__CV3_openAuth&&window.__CV3_SKIP_SEED&&fb),
+    missingConfig:!fb&&be!=="selfhost",
+    selfhostStub:be==="selfhost"&&!(window.SELFHOST_API&&String(window.SELFHOST_API).trim())
+  };
+}
+function cloudStatusBody(){
+  var st=cloudStatusInfo();
+  var authed=!!(S.auth&&S.auth.role);
+  var h='<div style="font-size:13px;line-height:1.55;color:var(--c-muted2)">';
+  if(st.online&&authed){
+    h+='<div style="color:#4ade80;font-weight:600;margin-bottom:8px">✓ Đã kết nối cloud</div>';
+    h+='<div>Backend: <b style="color:var(--c-text)">'+esc(st.kind)+'</b></div>';
+    h+='<div>Tài khoản: <b style="color:var(--c-text)">'+esc(authSessionLabel()||S.auth.username||"—")+'</b></div>';
+  }else if(st.online&&!authed){
+    h+='<div style="color:#fbbf24;font-weight:600;margin-bottom:8px">☁ Cloud sẵn sàng — chưa đăng nhập</div>';
+    h+='<p style="margin:8px 0 12px">Đăng nhập để tải dữ liệu đội từ server.</p>';
+    h+='<div class="row" style="gap:8px;flex-wrap:wrap">'+btn("btn-accent","Đăng nhập","A.openCloudAuth()")+'</div>';
+  }else{
+    h+='<div style="color:#f87171;font-weight:600;margin-bottom:8px">⚠ '+(esc(st.reason)||"Đang offline")+'</div>';
+    if(st.detail)h+='<p style="margin:8px 0 12px">'+esc(st.detail)+'</p>';
+    if(st.missingConfig){
+      h+='<ol style="margin:0 0 12px 18px;padding:0">';
+      h+='<li>Trên máy có Firebase: lấy <code>public/firebase-config.js</code></li>';
+      h+='<li>Chép vào thư mục deploy Nginx (cùng cấp <code>index.html</code>, thường dưới <code>/du-an/</code>)</li>';
+      h+='<li>Tải lại trang (có thể cần xoá cache / Hard refresh)</li>';
+      h+='</ol>';
+    }else if(st.selfhostStub){
+      h+='<p style="margin:0 0 12px">Phase 2 (Node+SQLite) chưa triển khai. Để dùng dữ liệu thật ngay: đặt <code>APP_BACKEND=firebase</code> và kèm <code>firebase-config.js</code>.</p>';
+    }else{
+      h+='<p style="margin:0 0 12px">Dữ liệu hiện chỉ nằm trên trình duyệt này (localStorage), không đồng bộ đội.</p>';
+    }
+    h+='<div class="row" style="gap:8px;flex-wrap:wrap">'+btn("btn-primary","Tải lại trang","location.reload()")+btn("btn-ghost","Xem hướng dẫn kết nối","A.openCloudAuth()")+'</div>';
+  }
+  return h+'</div>';
+}
+function vSettingsUnauthed(){
+  return'<div class="emp-portal"><div class="emp-page-hd"><h2 class="emp-page-title">Cài đặt</h2></div><div class="cfg-wrap">'
+    +cfgSec("gate-cloud","Kết nối cloud",cloudStatusBody())
+    +cfgSec("gate-theme","Giao diện",themeModeBody())
+    +'</div></div>';
 }
 function vDirAccountFields(){
   var a=S.auth||{};
@@ -6749,7 +6815,7 @@ function vDirAccountFields(){
 }
 
 function vEmpSettings(){
-  if(!isEmp())return "";
+  if(!isEmp())return vSettingsUnauthed();
   var pwBody=''
     +fld("Mật khẩu hiện tại",pwInput("set-pw-cur",{autocomplete:"current-password",placeholder:"Nhập mật khẩu đang dùng"}))
     +fld("Mật khẩu mới",pwInput("set-pw",{autocomplete:"new-password",placeholder:"Tối thiểu 6 ký tự"}))
@@ -6758,6 +6824,7 @@ function vEmpSettings(){
   var pushBody=empPushBlockHTML(S.auth.empId||"");
   var acctBody=empAcctCardHTML()+btnSignOut();
   return'<div class="emp-portal"><div class="emp-page-hd"><h2 class="emp-page-title">Cài đặt</h2></div><div class="cfg-wrap">'
+    +cfgSec("emp-cloud","Kết nối cloud",cloudStatusBody())
     +cfgSec("emp-theme","Giao diện",themeModeBody())
     +cfgSec("emp-company","Thông tin công ty",companyInfoViewHTML())
     +cfgSec("emp-push","Thông báo nền",pushBody)
@@ -6818,6 +6885,11 @@ function vCfg(){
   var acctBody=vDirAccountFields()+'<div class="divider"></div><div class="row" style="gap:8px">'+btn("btn-primary","Lưu","A.saveDirProfile()")+btn("btn-ghost","Đăng xuất","window.__CV3_signOut&&window.__CV3_signOut()")+'</div>';
   var backupBody='<div style="background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.25);border-radius:12px;padding:14px;margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:#4ade80;margin-bottom:6px">Sao lưu cả 2 đội</div><div style="font-size:12px;color:var(--c-muted4);margin-bottom:3px">Phiên bản: <b style="color:#38bdf8;font-family:monospace">'+verStr()+'</b></div><div style="font-size:12px;color:var(--c-muted2)">Sao lưu gần nhất: <b style="color:var(--c-text);font-family:monospace">'+lastBk+'</b></div></div><div style="margin-bottom:14px"><div class="lab">Lịch sử 7 ngày gần nhất</div>'+(bkLog.length===0?'<div style="font-size:13px;color:var(--c-muted3)">Chưa có lịch sử.</div>':bkLog.slice().reverse().slice(0,7).map(function(b){return'<div class="li" style="font-size:13px;font-family:monospace;color:rgba(160,195,255,.7)">'+b+'</div>';}).join(""))+'</div><div class="divider"></div><div class="row" style="gap:8px;flex-wrap:wrap">'+btn("btn-ghost","⬇ Sao lưu 2 đội","A.exp()")+btn("btn-accent","⬆ Khôi phục từ file","A.imp()")+'<input type="file" id="bk-restore-file" accept="application/json,.json" style="display:none" onchange="A.impFile(this)"></div>';
   var h='<h2 style="font-size:20px;font-weight:700;margin-bottom:14px">Cài đặt</h2><div class="cfg-wrap">';
+  h+=cfgSec("cfg-cloud","Kết nối cloud",cloudStatusBody());
+  if(!(S.auth&&S.auth.role)){
+    h+=cfgSec("cfg-theme","Giao diện",themeModeBody());
+    return h+'</div>';
+  }
   h+=cfgSec("cfg-theme","Giao diện",themeModeBody());
   if(hasFullUI())h+=cfgSec("cfg-company","Thông tin công ty",companyInfoBody());
   if(hasFullUI())h+=cfgSec("cfg-acct","Tài khoản",acctBody);
@@ -6996,6 +7068,11 @@ window.A={
     }
   },
   cfgTog:function(id){S.cfgOpen=S.cfgOpen||{};S.cfgOpen[id]=!S.cfgOpen[id];render()},
+  openCloudAuth:function(){
+    if(typeof window.__CV3_openAuth==="function"){window.__CV3_openAuth();return;}
+    var st=cloudStatusInfo();
+    alert((st.reason||"Chưa kết nối cloud")+"\n\n"+(st.detail||"Cần firebase-config.js trên server rồi tải lại trang."));
+  },
   openFirebasePush:function(){window.open("https://console.firebase.google.com/project/quan-ly-du-an-7d651/settings/cloudmessaging","_blank","noopener");},
   saveVapid:function(){
     if(!dirGuard())return;

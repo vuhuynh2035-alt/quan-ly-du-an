@@ -20,10 +20,14 @@ function asyncStub(what) {
 
 export var selfhostAdapter = {
   kind: "selfhost",
+  /** Phase 2 chưa có: báo chưa cấu hình để client vào offline có UI chẩn đoán (không ném init). */
   isConfigured: function () {
-    return true;
+    return !!(window.SELFHOST_API && String(window.SELFHOST_API).trim());
   },
-  init: stub("init"),
+  init: function () {
+    if (!this.isConfigured()) throw notImplemented("init");
+    throw notImplemented("init");
+  },
   auth: {
     get currentUser() {
       return null;

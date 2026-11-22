@@ -3875,8 +3875,84 @@ async function maybeSuggestMigration(cv3) {
   }
 }
 
-async function bootOffline(cv3) {
-  setSync("offline", "Chỉ lưu trên máy này");
+function firebaseConfigReady() {
+  var cfg = window.FIREBASE_CONFIG;
+  return !!(
+    cfg &&
+    cfg.apiKey &&
+    cfg.apiKey !== "YOUR_API_KEY" &&
+    cfg.projectId &&
+    cfg.projectId !== "YOUR_PROJECT_ID"
+  );
+}
+
+function publishCloudStatus(st) {
+  window.__CV3_CLOUD = Object.assign(
+    {
+      online: false,
+      kind: "none",
+      reason: "",
+      canLogin: false,
+      missingConfig: false,
+      selfhostStub: false,
+    },
+    st || {}
+  );
+}
+
+function offlineReasonMessage(err) {
+  var kind = String(window.APP_BACKEND || "firebase")
+    .trim()
+    .toLowerCase();
+  if (kind === "selfhost") {
+    if (!(window.SELFHOST_API && String(window.SELFHOST_API).trim())) {
+      return {
+        title: "Backend tự host chưa sẵn sàng",
+        detail:
+          "APP_BACKEND=selfhost nhưng chưa có SELFHOST_API (Phase 2). Đặt lại APP_BACKEND=firebase và kèm firebase-config.js trên server, hoặc chờ bản server SQLite.",
+        selfhostStub: true,
+      };
+    }
+    return {
+      title: "Không kết nối được backend tự host",
+      detail: (err && err.message) || "Lỗi khởi tạo selfhost.",
+      selfhostStub: true,
+    };
+  }
+  if (!firebaseConfigReady()) {
+    return {
+      title: "Thiếu cấu hình Firebase",
+      detail:
+        "Không tìm thấy firebase-config.js hợp lệ trên server (thường bị quên khi đóng gói zip tĩnh). Sao chép public/firebase-config.js vào thư mục deploy (cùng cấp index.html), rồi tải lại trang.",
+      missingConfig: true,
+    };
+  }
+  return {
+    title: "Chỉ lưu trên máy này",
+    detail: (err && err.message) || "Cloud chưa kết nối — dữ liệu chỉ nằm trên trình duyệt.",
+    missingConfig: false,
+  };
+}
+
+async function bootOffline(cv3, err) {
+  var kind = String(window.APP_BACKEND || "firebase")
+    .trim()
+    .toLowerCase();
+  var info = offlineReasonMessage(err);
+  publishCloudStatus({
+    online: false,
+    kind: kind === "selfhost" ? "selfhost" : "firebase",
+    reason: info.title,
+    detail: info.detail,
+    canLogin: false,
+    missingConfig: !!info.missingConfig,
+    selfhostStub: !!info.selfhostStub,
+  });
+  setSync("offline", info.title);
+  window.__CV3_openAuth = function () {
+    alert(info.title + "\n\n" + info.detail);
+  };
+  console.warn("[CV3] Offline:", info.title, info.detail, err || "");
   cv3.finishBoot();
 }
 
@@ -4023,15 +4099,24 @@ async function main() {
   } catch (err) {
     console.error("Backend:", err);
     configured = false;
-    return bootOffline(cv3);
+    return bootOffline(cv3, err);
   }
   if (!configured) {
-    console.info("Firebase chưa cấu hình — chạy offline localStorage.");
+    console.info("Backend chưa cấu hình — chạy offline localStorage.");
     return bootOffline(cv3);
   }
   backend = adapter;
   auth = adapter.auth;
   db = adapter.data;
+  publishCloudStatus({
+    online: true,
+    kind: adapter.kind || "firebase",
+    reason: "",
+    detail: "",
+    canLogin: true,
+    missingConfig: false,
+    selfhostStub: false,
+  });
   await bootOnline(cv3);
 }
 

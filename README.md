@@ -67,3 +67,13 @@ Chi tiết: [scripts/DEPLOY.md](./scripts/DEPLOY.md).
 ## File không commit (bí mật)
 
 - `public/firebase-config.js` — copy từ `firebase-config.example.js` trên mỗi máy
+
+### Đóng gói tĩnh Nginx (`/du-an/`)
+
+```powershell
+npm run package:du-an
+```
+
+Script **bắt buộc** có `public/firebase-config.js` hợp lệ (không nằm trong Git). File này phải có trong zip/`dist-du-an` cùng cấp `index.html`. Thiếu → app offline, không có dữ liệu cloud. Backend tự host (Phase 2) chưa sẵn sàng — giữ Firebase.
+
+Hướng dẫn upload server: [scripts/DEPLOY-DU-AN.md](./scripts/DEPLOY-DU-AN.md).
