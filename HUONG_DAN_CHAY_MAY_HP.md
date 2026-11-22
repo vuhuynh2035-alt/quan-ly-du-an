@@ -35,6 +35,8 @@ Tài liệu này hướng dẫn cách đưa chương trình từ máy Surface Bo
   npm run build
   ```
 
+> **Cấu hình Firebase trên máy HP:** `public/firebase-config.js` bị loại khỏi Git nên `git pull` không tải tệp này. Trước khi build/chạy, hãy sao chép tệp cấu hình Firebase đang dùng từ máy Surface sang đúng đường dẫn `public\firebase-config.js` trên HP bằng kênh chuyển tệp riêng. Không dùng nguyên các giá trị mẫu trong `firebase-config.example.js` và không đưa tệp cấu hình vào Git. Thiếu tệp hoặc còn giá trị mẫu sẽ khiến ứng dụng chạy offline, không dùng dữ liệu/tài khoản Firebase.
+
 ---
 
 ## 2. Cách chạy trên máy chủ HP (Windows Native)
@@ -46,7 +48,7 @@ Tài liệu này hướng dẫn cách đưa chương trình từ máy Surface Bo
 
 ### Bước 2: Khởi động máy chủ
 - **Cách 1 (Có cửa sổ theo dõi):** Double-click file **`Chay-Server.bat`**.
-  - File tự động kiểm tra `node_modules` và biên dịch bản build nếu chưa có.
+  - File kiểm tra cấu hình Firebase, cài `node_modules` nếu thiếu và build lại từ mã nguồn mỗi lần chạy.
   - Tự động mở trình duyệt web tới `http://localhost:8084`.
   - Hiển thị đầy đủ danh sách địa chỉ IP mạng nội bộ của máy HP (ví dụ: `http://192.168.1.xxx:8084`).
 - **Cách 2 (Chạy ngầm không hiện cửa sổ):** Double-click file **`Chay-Server-An.vbs`**.
@@ -58,6 +60,8 @@ Tài liệu này hướng dẫn cách đưa chương trình từ máy Surface Bo
 
 Nếu máy chủ HP đang chạy Proxmox hoặc Linux/Docker:
 
+Trước lần deploy đầu tiên, bảo đảm `public/firebase-config.js` đã được sao chép riêng lên máy HP như hướng dẫn ở trên. Script sẽ dừng và báo lỗi nếu thiếu cấu hình hoặc vẫn còn giá trị mẫu; container hiện tại sẽ tiếp tục chạy nếu build mới thất bại.
+
 ### Cập nhật và triển khai chỉ với 1 lệnh:
 ```bash
 bash deploy-docker.sh
@@ -65,7 +69,6 @@ bash deploy-docker.sh
 
 Hoặc chạy thủ công qua Docker Compose:
 ```bash
-docker compose down
 docker compose up -d --build
 ```
 - Ứng dụng chạy qua container Nginx siêu nhẹ, hiệu năng cao và tiết kiệm RAM.
@@ -80,6 +83,8 @@ docker compose up -d --build
 | **Trực tiếp trên máy HP** | `http://localhost:8084` |
 | **Điện thoại / iPad cùng Wi-Fi** | `http://<IP_MÁY_HP>:8084` |
 | **Môi trường phát triển dev** | `npm run dev` (cổng 5173) |
+
+> Muốn nhận push trên điện thoại, hãy mở bằng domain HTTPS (`https://project.saigonref.com`), không dùng `http://<IP_MÁY_HP>:8084`. PWA trên iOS cần được thêm vào Màn hình chính (iOS 16.4+). Domain HTTPS cần được Cloudflare Tunnel trỏ đúng về container HP.
 
 ---
 

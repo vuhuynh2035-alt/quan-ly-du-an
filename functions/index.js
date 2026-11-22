@@ -335,25 +335,12 @@ async function oversightFcmTokens(orgId) {
     }));
 }
 
-/** Public hosting origin — absolute icons/links improve closed-app & iOS PWA delivery. */
-const WEB_APP_ORIGIN = "https://quan-ly-du-an-7d651.web.app";
-
 /**
- * Web push display options + deep link. Top-level `notification` carries title/body;
- * here we set icon/tag/link so closed-app tray notifications work reliably.
+ * Data-only messages let each site's service worker display and route its own push.
  */
-function buildWebPush(linkPath, tag) {
-  const link = WEB_APP_ORIGIN + (linkPath || "/");
+function buildWebPush() {
   return {
     headers: { Urgency: "high", TTL: "86400" },
-    notification: {
-      icon: WEB_APP_ORIGIN + "/icon-192.png",
-      badge: WEB_APP_ORIGIN + "/icon-192.png",
-      tag: String(tag || "cv3"),
-      renotify: true,
-      requireInteraction: true,
-    },
-    fcmOptions: { link },
   };
 }
 
@@ -361,9 +348,7 @@ function buildReminderMessage(reminder) {
   const text = String(reminder.text || "Đã đến giờ nhắc").slice(0, 500);
   const rid = String(reminder.id || "");
   const title = "🔔 Nhắc hẹn";
-  const tag = "rem_" + (rid || "reminder");
   return {
-    notification: { title, body: text },
     data: {
       type: "reminder",
       title,
@@ -371,7 +356,7 @@ function buildReminderMessage(reminder) {
       reminderId: rid,
       badgeBump: "1",
     },
-    webpush: buildWebPush("/?tab=lich", tag),
+    webpush: buildWebPush(),
   };
 }
 
@@ -381,9 +366,7 @@ function buildArrivalReminderMessage(reminder) {
   const asgnId = String(reminder.asgnId || "");
   const empId = String(reminder.empId || "");
   const title = "📍 Xác nhận đến vị trí";
-  const tag = "arr_" + (rid || asgnId || "arrival");
   return {
-    notification: { title, body: text },
     data: {
       type: "arrival",
       title,
@@ -393,7 +376,7 @@ function buildArrivalReminderMessage(reminder) {
       empId,
       badgeBump: "1",
     },
-    webpush: buildWebPush("/?tab=mywork", tag),
+    webpush: buildWebPush(),
   };
 }
 
@@ -415,9 +398,7 @@ function buildMessage(emp, asgn, proj) {
     if (range) body = `${body} (${range})`;
   }
   const asgnId = asgn.id || "";
-  const tag = "asgn_" + (asgnId || "new");
   return {
-    notification: { title, body },
     data: {
       type: "assignment",
       title,
@@ -428,7 +409,7 @@ function buildMessage(emp, asgn, proj) {
       assignedByUid: String(asgn.assignedByUid || ""),
       badgeBump: "1",
     },
-    webpush: buildWebPush("/?tab=mywork", tag),
+    webpush: buildWebPush(),
   };
 }
 
@@ -444,9 +425,7 @@ function buildScheduleMessage(emp, asgn, proj) {
     500
   );
   const asgnId = (asgn && asgn.id) || "";
-  const tag = "sched_" + (asgnId || "adj");
   return {
-    notification: { title, body },
     data: {
       type: "schedule",
       title,
@@ -457,7 +436,7 @@ function buildScheduleMessage(emp, asgn, proj) {
       assignedByUid: String((asgn && asgn.assignedByUid) || ""),
       badgeBump: "1",
     },
-    webpush: buildWebPush("/?tab=mywork", tag),
+    webpush: buildWebPush(),
   };
 }
 
@@ -467,13 +446,8 @@ function buildChatMessage(msg) {
   const body = String(msg.text || "").slice(0, 180);
   const title = isBc ? "📢 Thông báo đội" : "💬 " + from;
   const msgId = String(msg.id || "");
-  const tag = "chat_" + (msgId || "new");
   const fromUid = String(msg.uid || "");
-  const chatLink = isBc
-    ? "/?tab=chat"
-    : "/?tab=chat&dm=" + encodeURIComponent(fromUid);
   return {
-    notification: { title, body },
     data: {
       type: "chat",
       title,
@@ -485,7 +459,7 @@ function buildChatMessage(msg) {
       chatType: isBc ? "broadcast" : "dm",
       badgeBump: "1",
     },
-    webpush: buildWebPush(chatLink, tag),
+    webpush: buildWebPush(),
   };
 }
 

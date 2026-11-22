@@ -213,7 +213,7 @@ var storage = {
 /* ---------- push (FCM) ---------- */
 
 var push = {
-  swUrl: "firebase-messaging-sw.js?v=3",
+  swUrl: "firebase-messaging-sw.js?v=4",
   isSupported: async function () {
     var mod = await loadMessagingMod();
     return mod.isSupported();

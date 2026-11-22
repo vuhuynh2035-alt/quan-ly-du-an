@@ -15,10 +15,21 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8084;
 const DIST_DIR = path.join(__dirname, 'dist');
+const FIREBASE_CONFIG_PATH = path.join(DIST_DIR, 'firebase-config.js');
 
 // Kiểm tra xem dist đã được build chưa
 if (!fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
-  console.log('⚠️ Thư mục dist chưa được biên dịch. Vui lòng chạy "npm run build" trước.');
+  console.error('Thư mục dist chưa được biên dịch. Hãy chạy Chay-Server.bat trước.');
+  process.exit(1);
+}
+if (!fs.existsSync(FIREBASE_CONFIG_PATH)) {
+  console.error('Thiếu dist/firebase-config.js. Hãy sao chép cấu hình Firebase lên HP và build lại.');
+  process.exit(1);
+}
+const firebaseConfig = fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8');
+if (/YOUR_API_KEY|YOUR_PROJECT_ID/.test(firebaseConfig)) {
+  console.error('dist/firebase-config.js vẫn còn giá trị mẫu. Hãy điền cấu hình Firebase thật và build lại.');
+  process.exit(1);
 }
 
 // Thiết lập header kiểm soát bộ nhớ đệm (Cache-Control) chuẩn PWA
@@ -32,6 +43,8 @@ app.use((req, res, next) => {
     url === '/app-version.json' ||
     url === '/firebase-config.js'
   ) {
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  } else if (url.startsWith('/js/')) {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   } else if (url === '/' || url === '/index.html') {
     res.set('Cache-Control', 'no-cache, must-revalidate');

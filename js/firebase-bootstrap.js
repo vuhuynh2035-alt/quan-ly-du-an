@@ -3499,12 +3499,14 @@ function bindForegroundMessaging(messaging, cv3) {
       }
       var titleC = d.title || "Tin nhắn mới";
       var bodyC = d.body || "";
+      if (cv3 && typeof cv3.playWorkAlert === "function") cv3.playWorkAlert();
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
           new Notification(titleC, {
             body: bodyC,
             icon: import.meta.env.BASE_URL + "icon-192.png",
             tag: "chat_" + (d.msgId || "fg"),
+            vibrate: [0, 350, 140, 350],
             silent: false,
             data: {
               type: "chat",
@@ -3535,12 +3537,14 @@ function bindForegroundMessaging(messaging, cv3) {
       }
       var title = d.title || "Công việc mới";
       var body = d.body || "";
+      if (typeof cv3.playWorkAlert === "function") cv3.playWorkAlert();
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
           new Notification(title, {
             body: body,
             icon: import.meta.env.BASE_URL + "icon-192.png",
             tag: "asgn_" + (d.asgnId || "fg"),
+            vibrate: [0, 450, 160, 450, 160, 700],
             silent: false,
           });
         } catch (e) {}
@@ -3554,12 +3558,14 @@ function bindForegroundMessaging(messaging, cv3) {
     if (type === "schedule" && cv3) {
       var titleS = d.title || "Lịch công việc đã điều chỉnh";
       var bodyS = d.body || "";
+      if (typeof cv3.playWorkAlert === "function") cv3.playWorkAlert();
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
           new Notification(titleS, {
             body: bodyS,
             icon: import.meta.env.BASE_URL + "icon-192.png",
             tag: "sched_" + (d.asgnId || "fg"),
+            vibrate: [0, 450, 160, 450, 160, 700],
             silent: false,
           });
         } catch (e) {}

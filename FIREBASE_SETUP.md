@@ -42,12 +42,14 @@ npm run deploy
 
 ## 6. Thông báo trên điện thoại
 
-1. Mở app trên điện thoại, đăng nhập cloud
+1. Mở app bằng domain HTTPS chính (`https://project.saigonref.com`) trên điện thoại, đăng nhập cloud
 2. Cho phép thông báo
 3. **Nhân sự** → chọn tên → **Bật thông báo trên thiết bị này**
 4. Khi có giao việc mới, điện thoại nhận push
 
-**iOS:** thêm vào Màn hình chính (PWA), iOS 16.4+.
+**iOS:** thêm vào Màn hình chính (PWA), iOS 16.4+; bật âm thanh thông báo trong cài đặt iOS. Web app không thể ép âm lượng, phát chuông lặp hoặc rung trên iOS.
+
+**Android:** cho phép thông báo và rung cho ứng dụng web trong cài đặt hệ thống. Rung khi app đóng do trình duyệt/hệ điều hành quyết định; chế độ im lặng và Không làm phiền vẫn có thể chặn âm thanh.
 
 ## 7. Lệnh
 

@@ -4126,7 +4126,7 @@ function empPushOk(empId){
   return !!(token&&typeof Notification!=="undefined"&&Notification.permission==="granted");
 }
 function empPushHint(empId){
-  if(isLocalDev())return "Đang chạy local (localhost) — dùng để test giao diện. Push khi đóng app cần bản HTTPS: quan-ly-du-an-7d651.web.app";
+  if(isLocalDev())return "Đang chạy local (localhost) — dùng để test giao diện. Push khi đóng app cần bản HTTPS: project.saigonref.com";
   if(!window.__CV3_SKIP_SEED)return "Chế độ offline — cần đăng nhập cloud để nhận thông báo.";
   if(!remindVapidOk())return remindVapidFailShort();
   if(empPushOk(empId))return "Đã bật — sẽ nhận push khi giám đốc giao việc mới / tin nhắn (kể cả khi đóng app). Số chưa đọc hiện trên icon nếu cài PWA (Android Chrome / desktop; iOS cần thêm Homescreen).";
@@ -9633,6 +9633,10 @@ window.__CV3={
     showRemindToast([r]);
     updateRemindBadge();
     if(S.tab==="mywork"||S.tab==="chamcong")render();
+  },
+  playWorkAlert:function(){
+    unlockAppAudio();
+    playBellSound();
   },
   onReminderPush:function(payload){
     var body=(payload.notification&&payload.notification.body)||(payload.data&&payload.data.body)||"Đã đến giờ nhắc";

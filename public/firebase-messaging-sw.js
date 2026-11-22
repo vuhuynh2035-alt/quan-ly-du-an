@@ -1,6 +1,6 @@
 /* eslint-disable no-undef */
-/* cv3-fcm-sw v3 — bump this comment when changing SW so browsers refetch */
-var CV3_SW_VERSION = 3;
+/* cv3-fcm-sw v4 — bump this comment when changing SW so browsers refetch */
+var CV3_SW_VERSION = 4;
 var CV3_BASE = new URL("./", self.location.href).pathname;
 var CV3_ICON = CV3_BASE + "icon-192.png";
 var CV3_BADGE_CACHE = "cv3-badge-v1";
@@ -161,8 +161,8 @@ function showPushNotification(payload) {
           ? "sched_" + (data.asgnId || "adj")
           : "asgn_" + (data.asgnId || "new");
   var vibrate = isRem || isArr
-    ? [0, 250, 120, 250, 120, 350, 120, 350]
-    : [0, 280, 140, 280, 140, 280, 140, 400];
+    ? [0, 450, 160, 450, 160, 700, 200, 700]
+    : [0, 450, 160, 450, 160, 700];
 
   // Attach routing data onto the displayed notification (needed when we show it ourselves).
   var notifData = Object.assign({}, data);
@@ -207,10 +207,7 @@ messaging.onBackgroundMessage(function (payload) {
     jobs.push(bumpAppBadge(1));
   }
 
-  // If FCM/webpush already included a display notification, the browser shows it.
-  // Still show our own when data-only, or when we need custom `data` for click routing.
-  // Prefer a single notification: skip duplicate when a notification payload is present
-  // AND we already have fcmOptions.link for navigation.
+  // Keep compatibility with older notification payloads while new messages are data-only.
   if (!hasDisplay) {
     jobs.push(showPushNotification(payload));
   } else if ((data.type === "chat" && data.msgId) || (data.type === "assignment" && data.asgnId)) {
