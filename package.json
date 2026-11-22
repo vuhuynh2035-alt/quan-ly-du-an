@@ -1,7 +1,7 @@
 {
   "name": "dieu-phoi-doi-thi-cong",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.133.1",
   "type": "module",
   "scripts": {
     "version:bump": "node scripts/bump-app-version.js",
