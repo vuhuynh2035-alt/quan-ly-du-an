@@ -1,4 +1,0 @@
-[selfhost] listening on :3000
-[selfhost] data dir: /data
-[selfhost] health: GET /api/health
-[selfhost] ws: /ws

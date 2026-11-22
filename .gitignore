@@ -16,3 +16,5 @@ server/.env
 migrate-export.json
 *-service-account.json
 serviceAccount*.json
+
+server/smoke-*.log
